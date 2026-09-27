@@ -1,6 +1,6 @@
 // Package transport 是接入层：负责监听、TLS、协议嗅探与连接分发。
 //
-// 它不认识任何具体协议：协议识别交给已注册的 plugin.Protocol（设计文档 3.1 / 10.5），
+// 它不认识任何具体协议：协议识别交给已注册的 plugin.Protocol，
 // 因此新增协议不需要改这里一行代码。
 package transport
 
@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	sdk "github.com/swiftmq/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 const (

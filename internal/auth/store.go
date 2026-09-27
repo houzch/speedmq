@@ -1,6 +1,6 @@
 // Package auth 提供 v1 的内置用户表与 SASL 机制实现（PLAIN / AMQPLAIN）。
 //
-// 设计文档 1.4：v1 只做 PLAIN / AMQPLAIN / EXTERNAL；EXTERNAL 依赖 TLS 客户端证书，
+// v1 只做 PLAIN / AMQPLAIN / EXTERNAL；EXTERNAL 依赖 TLS 客户端证书，
 // 随 TLS 支持一起补齐。LDAP / OAuth2 走认证授权插件，不进入内核。
 package auth
 
@@ -9,9 +9,9 @@ import (
 	"net"
 	"strings"
 
-	"github.com/swiftmq/swiftmq/internal/config"
-	"github.com/swiftmq/swiftmq/internal/protocol/codec"
-	"github.com/swiftmq/swiftmq/pkg/plugin"
+	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Store 是内置用户表。

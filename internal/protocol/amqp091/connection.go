@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/swiftmq/swiftmq/internal/protocol/codec"
-	"github.com/swiftmq/swiftmq/internal/protocol/spec"
-	"github.com/swiftmq/swiftmq/pkg/plugin"
+	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/swiftmq/internal/protocol/spec"
+	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // errClientClosed 表示客户端主动关闭连接，属于正常结束。
@@ -31,7 +31,7 @@ const (
 // connection 是一条 AMQP 0-9-1 连接的状态机。
 //
 // 顺序性保证：帧由单一读循环顺序处理，因此同一 Channel 上的消息天然严格有序
-// （设计文档 3.2）。写侧由 mu 串行化，避免主循环与心跳协程交错写出半个帧。
+// 写侧由 mu 串行化，避免主循环与心跳协程交错写出半个帧。
 type connection struct {
 	log  *slog.Logger
 	conn net.Conn
@@ -266,7 +266,7 @@ func (c *connection) loop(ctx context.Context) error {
 				return err
 			}
 		case codec.FrameHeader, codec.FrameBody:
-			// M1 尚未实现 basic.publish，收到内容帧属于预期外帧（设计文档 4.3 错误码 505）
+			// M1 尚未实现 basic.publish，收到内容帧属于预期外帧，返回 505 UNEXPECTED_FRAME
 			return c.failConnection(spec.UnexpectedFrame,
 				"M1 尚未实现内容帧（当前仅支持连接建立与 Channel 开关）", 0, 0)
 		default:

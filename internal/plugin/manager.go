@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/swiftmq/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/config"
 
-	sdk "github.com/swiftmq/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Manager 负责插件生命周期：Add → Resolve → Init → Start → Stop。
@@ -25,7 +25,7 @@ func NewManager(reg *Registry, cfg *config.Config, log *slog.Logger) *Manager {
 
 // Load 登记并启动插件。
 //
-// 失败隔离（设计文档 10.6）：单个插件 Init / Start 失败只标记该插件为 failed，
+// 失败隔离：单个插件 Init / Start 失败只标记该插件为 failed，
 // 内核与其余插件继续运行；只有"重名 / API 版本不匹配 / 依赖缺失或成环"这类
 // 内核级契约错误才让 Load 直接返回错误。
 func (m *Manager) Load(ctx context.Context, plugins ...sdk.Plugin) error {

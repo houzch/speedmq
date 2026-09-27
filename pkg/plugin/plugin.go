@@ -1,6 +1,6 @@
 // Package plugin 定义 SwiftMQ 对外的稳定插件 API。
 //
-// 约束（设计文档 10.4）：插件只允许 import 本包，内核内部包一律不可见；
+// 约束：插件只允许 import 本包，内核内部包一律不可见；
 // 该约束由 lint 规则（depguard）强制 —— 这样即使不做热加载，也能在编译期守住边界。
 package plugin
 
@@ -13,7 +13,7 @@ import (
 // 发生破坏性变更时并行开 v2，v1 至少在若干 minor 内保持不变。
 const APIVersion = "v1"
 
-// Capability 是插件向内核申请的能力。未声明的能力被调用时一律拒绝（设计文档 10.7）。
+// Capability 是插件向内核申请的能力。未声明的能力被调用时一律拒绝。
 type Capability string
 
 const (
@@ -52,7 +52,7 @@ type Plugin interface {
 }
 
 // Host 是内核交给插件的受控句柄：插件只能通过它访问内核。
-// M1 只实现下列最小集合；Metrics / Events / 其他 Register* 按里程碑补齐（设计文档 10.10）。
+// M1 只实现下列最小集合；Metrics / Events / 其他 Register* 按里程碑补齐。
 type Host interface {
 	// PluginName 返回当前宿主对应的插件名。
 	PluginName() string

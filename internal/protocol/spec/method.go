@@ -3,7 +3,7 @@ package spec
 import (
 	"fmt"
 
-	"github.com/swiftmq/swiftmq/internal/protocol/codec"
+	"github.com/houzch/swiftmq/internal/protocol/codec"
 )
 
 // Method 是方法帧的解码结果。方法帧 payload = class-id(2) + method-id(2) + 参数区。

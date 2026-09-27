@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/swiftmq/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/config"
 
-	sdk "github.com/swiftmq/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // host 是 sdk.Host 的内核侧实现，绑定到单个插件。
 //
 // 它是插件访问内核的唯一边界：插件拿到的一切能力都必须经过这里，
-// 因此"未声明的能力被拒绝"这一约束在这里落地（设计文档 10.7）。
+// 因此"未声明的能力被拒绝"这一约束在这里落地。
 type host struct {
 	reg  *Registry
 	cfg  *config.Config

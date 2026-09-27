@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	sdk "github.com/swiftmq/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // 内核级契约错误。这类错误会让内核直接拒绝启动，而不是隔离单个插件。
@@ -122,7 +122,7 @@ func (r *Registry) Resolve() ([]sdk.Plugin, error) {
 	return order, nil
 }
 
-// Audit 返回能力审计行，供启动时打印（设计文档 10.7：未声明的能力一律拒绝）。
+// Audit 返回能力审计行，供启动时打印，便于确认每个插件实际被授予了哪些能力。
 func (r *Registry) Audit() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

@@ -14,11 +14,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/swiftmq/swiftmq/internal/broker"
-	"github.com/swiftmq/swiftmq/internal/config"
-	pluginkit "github.com/swiftmq/swiftmq/internal/plugin"
-	"github.com/swiftmq/swiftmq/internal/protocol/amqp091"
-	"github.com/swiftmq/swiftmq/internal/transport"
+	"github.com/houzch/swiftmq/internal/broker"
+	"github.com/houzch/swiftmq/internal/config"
+	pluginkit "github.com/houzch/swiftmq/internal/plugin"
+	"github.com/houzch/swiftmq/internal/protocol/amqp091"
+	"github.com/houzch/swiftmq/internal/transport"
 )
 
 func main() {
@@ -50,7 +50,7 @@ func run() error {
 	kernel := broker.New(log, cfg)
 
 	// 内置插件清单：AMQP 0-9-1 从第一天就以"协议插件"的形式接入，
-	// 避免后续新增协议时再回头拆内核（设计文档 10.10）。
+	// 避免后续新增协议时再回头拆内核。
 	registry := pluginkit.NewRegistry(log)
 	manager := pluginkit.NewManager(registry, cfg, log)
 	if err := manager.Load(ctx, amqp091.New()); err != nil {

@@ -1,7 +1,7 @@
 // Package spec 定义 AMQP 0-9-1 的类/方法标识、错误码与方法级编解码。
 //
 // M1 只覆盖连接建立与 Channel 开关所需的方法；其余方法在 M2 补齐
-// （届时改为由规范文件生成方法表，避免手写数百个方法出错，见设计文档 4.4）。
+// （届时改为由规范文件生成方法表，避免手写数百个方法出错）。
 package spec
 
 import "fmt"
@@ -43,7 +43,7 @@ const (
 	MethodChannelCloseOk uint16 = 41
 )
 
-// 错误码（设计文档 4.3）。可用性对齐是兼容性高危区，这些值不可随意改动。
+// 错误码。这些值决定客户端"关 Channel 还是关连接"，属兼容性高危区，不可随意改动。
 const (
 	ReplySuccess       uint16 = 200
 	ContentTooLarge    uint16 = 311

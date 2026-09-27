@@ -2,7 +2,7 @@
 //
 // 它与具体协议插件解耦，以便被内核其他部分复用（例如 AMQPLAIN 认证需要解析 field-table）。
 //
-// 兼容性要点（设计文档 13.2 高危清单第 1、2 条）：
+// 兼容性要点：
 //   - bit 字段按"同一字节内连续打包、跨字段边界另起字节"的规则处理；
 //   - field-table 必须支持嵌套表、数组、Decimal、Timestamp、Void、ByteArray。
 package codec
@@ -21,7 +21,7 @@ var (
 	ErrSyntax = errors.New("codec: 语法错误")
 )
 
-// 帧类型（设计文档 4.1）。
+// 帧类型。
 const (
 	FrameMethod    uint8 = 1
 	FrameHeader    uint8 = 2

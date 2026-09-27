@@ -1,4 +1,4 @@
-module github.com/swiftmq/swiftmq/test/integration/amqp091probe
+module github.com/houzch/swiftmq/test/integration/amqp091probe
 
 go 1.24
 

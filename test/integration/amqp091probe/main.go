@@ -103,7 +103,7 @@ func testBadPassword() error {
 		return fmt.Errorf("期望认证失败，但连接成功了")
 	}
 	// 客户端必须能把它识别为"凭证问题"（403 ACCESS_REFUSED），而不是当成网络故障 ——
-	// 这正是 authentication_failure_close 能力的作用（设计文档 4.2 / 10.1）。
+	// 这正是 authentication_failure_close 能力的作用。
 	var amqpErr *amqp.Error
 	if !errors.As(err, &amqpErr) {
 		return fmt.Errorf("返回的不是 AMQP 协议错误，无法判断失败原因: %v", err)

@@ -1,6 +1,6 @@
 // Package broker 是内核：持有 vhost、用户，并向协议插件暴露协议无关的操作面 plugin.Core。
 //
-// M2 起在这里接入 exchange / queue / binding 与路由（设计文档第 5 章）。
+// M2 起在这里接入 exchange / queue / binding 与路由。
 package broker
 
 import (
@@ -8,9 +8,9 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/swiftmq/swiftmq/internal/auth"
-	"github.com/swiftmq/swiftmq/internal/config"
-	"github.com/swiftmq/swiftmq/pkg/plugin"
+	"github.com/houzch/swiftmq/internal/auth"
+	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Version 是内核版本。
@@ -59,7 +59,7 @@ func (s *session) Logger() *slog.Logger { return s.log }
 
 // ServerProperties 返回 Connection.Start 下发的 server-properties。
 //
-// capabilities 声明即承诺（设计文档 4.2）：客户端会依据它切换代码路径，
+// capabilities 声明即承诺：客户端会依据它切换代码路径，
 // 因此只有真正实现的能力才允许置 true —— 声明了却没实现，比不声明更糟。
 // 每完成一个里程碑，在这里打开对应 capability。
 func (s *session) ServerProperties() map[string]any {
@@ -67,7 +67,7 @@ func (s *session) ServerProperties() map[string]any {
 		"product":     "SwiftMQ",
 		"version":     Version,
 		"platform":    "Go",
-		"information": "https://github.com/swiftmq/swiftmq",
+		"information": "https://github.com/houzch/swiftmq",
 		"capabilities": map[string]any{
 			// M1：认证失败时用 Connection.Close 明确告知原因，而不是直接断开连接
 			"authentication_failure_close": true,

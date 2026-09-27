@@ -20,7 +20,7 @@ type ListenerSpec struct {
 	DetectOnly bool
 }
 
-// Protocol 是协议插件契约（设计文档 10.5）。
+// Protocol 是协议插件契约。
 //
 // 三条硬约束：
 //  1. 协议插件不做存储、不做路由：只负责编解码与会话，所有业务动作通过 Core 完成，
@@ -76,7 +76,7 @@ type Core interface {
 	Logger() *slog.Logger
 	// ServerProperties 返回 Connection.Start 下发的 server-properties（含 capabilities）。
 	//
-	// 注意：capabilities 声明即承诺（设计文档 4.2），只能在对应能力真正实现后打开。
+	// 注意：capabilities 声明即承诺 —— 客户端会依据它切换代码路径，只能在对应能力真正实现后打开。
 	ServerProperties() map[string]any
 	// Mechanisms 返回支持的 SASL 机制名，如 ["PLAIN", "AMQPLAIN"]。
 	Mechanisms() []string

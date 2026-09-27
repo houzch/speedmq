@@ -1,7 +1,7 @@
 // Package amqp091 以"协议插件"的形式实现 AMQP 0-9-1。
 //
 // 它是 v1 内核内置的第一个协议插件：内核本身不认识 AMQP，只认识 plugin.Protocol。
-// 后续新增协议（AMQP 1.0 / MQTT / STOMP）走同一套扩展点，内核零改动（设计文档第 10 章）。
+// 后续新增协议（AMQP 1.0 / MQTT / STOMP）走同一套扩展点，内核零改动。
 //
 // M1 覆盖范围：协议头校验、Connection 的 Start / Tune / Open / Close、心跳、
 // Channel 的 Open / Flow / Close，以及软硬错误的作用域框架。
@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/swiftmq/swiftmq/pkg/plugin"
+	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Version 是本插件版本。

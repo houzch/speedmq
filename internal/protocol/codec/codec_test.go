@@ -10,7 +10,7 @@ import (
 )
 
 // TestFieldTableRoundTrip 覆盖 field-table 的全部常用类型，含嵌套表与数组。
-// 这是兼容性高危区（设计文档 13.2 第 1、2 条），类型标记写错一位客户端就会解析崩溃。
+// 类型标记写错一位客户端就会解析崩溃，是兼容性高危区。
 func TestFieldTableRoundTrip(t *testing.T) {
 	orig := Table{
 		"flag":   true,

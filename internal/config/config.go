@@ -9,7 +9,7 @@ import (
 	"os"
 )
 
-// User 是内置用户表的一条记录（v1 仅内存用户表，见设计文档 1.4 认证决策）。
+// User 是内置用户表的一条记录（v1 仅内存用户表；LDAP / OAuth2 由认证插件提供）。
 type User struct {
 	// Password 明文口令。v1 仅用于内网开发环境，后续由认证插件提供哈希/外部后端。
 	Password string `json:"password"`
@@ -28,7 +28,8 @@ type Listener struct {
 
 // Config 是内核配置。
 type Config struct {
-	// DataDir 节点数据目录（对齐 RABBITMQ_MNESIA_DIR 的定位，见设计文档 16.1）。
+	// DataDir 节点数据目录：消息、日志与元数据都放在其下
+	// （对齐 RabbitMQ 的 RABBITMQ_MNESIA_DIR 定位）。
 	DataDir string `json:"data_dir"`
 	// DefaultVHost 默认 vhost 名。
 	DefaultVHost string `json:"default_vhost"`
