@@ -54,7 +54,10 @@ type connection struct {
 	lastWrite time.Time
 
 	// channels 记录已打开的 channel。
-	channels map[uint16]struct{}
+	channels map[uint16]*channel
+	// session 是打开 vhost 后取得的协议无关操作面。
+	// 它在握手阶段（任何消费者出现之前）写入，之后只读，因此无需加锁。
+	session plugin.Session
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -67,15 +70,19 @@ func newConnection(log *slog.Logger, conn net.Conn, core plugin.Core) *connectio
 		core:     core,
 		r:        bufio.NewReaderSize(conn, readBufferSize),
 		w:        bufio.NewWriterSize(conn, writeBufferSize),
-		channels: map[uint16]struct{}{},
+		channels: map[uint16]*channel{},
 		closed:   make(chan struct{}),
 		lastRead: time.Now(),
 	}
 }
 
+// sessionOrNil 返回当前会话（未打开 vhost 时为 nil）。
+func (c *connection) sessionOrNil() plugin.Session { return c.session }
+
 // run 执行完整连接生命周期：协议头 → Start → Tune → Open → 主循环。
 func (c *connection) run(ctx context.Context) error {
 	defer c.shutdown()
+	defer c.teardown()
 
 	// 认证完成前使用初始 frame-max（对齐 RabbitMQ 4.1+：8192）
 	c.frameMax = codec.FrameMaxAuthInitial
@@ -233,6 +240,12 @@ func (c *connection) handshakeOpen() error {
 		return c.failConnection(spec.InvalidPath,
 			fmt.Sprintf("NOT_ALLOWED - vhost %s not found", vhost), m.ClassID, m.MethodID)
 	}
+	sess, err := c.core.Session(vhost)
+	if err != nil {
+		code, text := replyFor(err)
+		return c.failConnection(code, text, m.ClassID, m.MethodID)
+	}
+	c.session = sess
 	c.identity.VHost = vhost
 	return c.sendMethod(0, spec.ClassConnection, spec.MethodConnectionOpenOk, spec.EncodeConnectionOpenOk())
 }
@@ -265,10 +278,14 @@ func (c *connection) loop(ctx context.Context) error {
 			if err := c.handleMethod(f); err != nil {
 				return err
 			}
-		case codec.FrameHeader, codec.FrameBody:
-			// M1 尚未实现 basic.publish，收到内容帧属于预期外帧，返回 505 UNEXPECTED_FRAME
-			return c.failConnection(spec.UnexpectedFrame,
-				"M1 尚未实现内容帧（当前仅支持连接建立与 Channel 开关）", 0, 0)
+		case codec.FrameHeader:
+			if err := c.handleContentHeader(f); err != nil {
+				return err
+			}
+		case codec.FrameBody:
+			if err := c.handleContentBody(f); err != nil {
+				return err
+			}
 		default:
 			return c.failConnection(spec.FrameError,
 				fmt.Sprintf("未知帧类型 %d", f.Type), 0, 0)
@@ -282,34 +299,38 @@ func (c *connection) handleMethod(f codec.Frame) error {
 		return c.failConnection(spec.SyntaxError, "方法帧解析失败: "+err.Error(), 0, 0)
 	}
 
-	switch m.ClassID {
-	case spec.ClassConnection:
+	// Connection 级方法必须走 channel 0
+	if m.ClassID == spec.ClassConnection {
 		if f.Channel != 0 {
-			// Connection 级方法必须走 channel 0；否则关闭整条连接
 			return c.failConnection(spec.CommandInvalid,
 				fmt.Sprintf("%s 必须使用 channel 0", m.Name()), m.ClassID, m.MethodID)
 		}
 		return c.handleConnectionMethod(m)
+	}
+	if f.Channel == 0 {
+		return c.failConnection(spec.CommandInvalid,
+			fmt.Sprintf("%s 不能使用 channel 0", m.Name()), m.ClassID, m.MethodID)
+	}
 
-	case spec.ClassChannel:
-		if f.Channel == 0 {
-			return c.failConnection(spec.CommandInvalid,
-				fmt.Sprintf("%s 不能使用 channel 0", m.Name()), m.ClassID, m.MethodID)
-		}
-		if m.MethodID != spec.MethodChannelOpen {
-			if _, open := c.channels[f.Channel]; !open {
-				// 在未打开的 channel 上发方法 → 软错误，只关该 channel
-				return c.closeChannel(f.Channel, spec.ChannelError,
-					fmt.Sprintf("channel %d 未打开", f.Channel), m.ClassID, m.MethodID)
-			}
-		}
-		return c.handleChannelMethod(f.Channel, m)
+	if ch, ok := c.channels[f.Channel]; ok {
+		return ch.handle(m)
+	}
 
+	switch {
+	case m.ClassID == spec.ClassChannel && m.MethodID == spec.MethodChannelOpen:
+		return c.openChannel(f.Channel, m)
+	case m.ClassID == spec.ClassChannel && m.MethodID == spec.MethodChannelCloseOk:
+		// 我方发起的 Channel.Close 得到确认；该 channel 在发出关闭时已从集合移除
+		return nil
+	case m.ClassID == spec.ClassChannel && m.MethodID == spec.MethodChannelClose:
+		// 对已关闭的 channel 再发 Channel.Close：宽容地回 Close-Ok。
+		// 客户端清理阶段常会这么做，报错只会让它拿到一个无意义的异常。
+		return c.sendMethod(f.Channel, spec.ClassChannel, spec.MethodChannelCloseOk,
+			spec.EncodeChannelCloseOk())
 	default:
-		// M2 起补齐 Exchange / Queue / Basic / Confirm / Tx
-		return c.failConnection(spec.NotImplemented,
-			fmt.Sprintf("M1 尚未实现 class %d method %d（%s）", m.ClassID, m.MethodID, m.Name()),
-			m.ClassID, m.MethodID)
+		// 在未打开的 channel 上发方法 → 软错误，只关该 channel
+		return c.closeChannelByID(f.Channel, spec.ChannelError,
+			fmt.Sprintf("channel %d 未打开", f.Channel), m.ClassID, m.MethodID)
 	}
 }
 
@@ -342,51 +363,79 @@ func (c *connection) handleConnectionMethod(m spec.Method) error {
 	}
 }
 
-func (c *connection) handleChannelMethod(ch uint16, m spec.Method) error {
-	switch m.MethodID {
-	case spec.MethodChannelOpen:
-		if err := spec.DecodeChannelOpen(m.Args); err != nil {
-			return c.closeChannel(ch, spec.SyntaxError, "Channel.Open 解析失败: "+err.Error(),
-				m.ClassID, m.MethodID)
-		}
-		if _, dup := c.channels[ch]; dup {
-			return c.closeChannel(ch, spec.ChannelError,
-				fmt.Sprintf("channel %d 已打开", ch), m.ClassID, m.MethodID)
-		}
-		if uint16(len(c.channels)) >= c.channelMax {
-			return c.closeChannel(ch, spec.ChannelError,
-				fmt.Sprintf("channel 数量已达到 channel-max=%d", c.channelMax), m.ClassID, m.MethodID)
-		}
-		c.channels[ch] = struct{}{}
-		return c.sendMethod(ch, spec.ClassChannel, spec.MethodChannelOpenOk, spec.EncodeChannelOpenOk())
-
-	case spec.MethodChannelClose:
-		reply, err := spec.DecodeChannelClose(m.Args)
-		if err != nil {
-			return c.failConnection(spec.SyntaxError, "Channel.Close 解析失败: "+err.Error(),
-				m.ClassID, m.MethodID)
-		}
-		delete(c.channels, ch)
-		c.log.Debug("channel 已由客户端关闭", "channel", ch, "code", reply.Code, "text", reply.Text)
-		return c.sendMethod(ch, spec.ClassChannel, spec.MethodChannelCloseOk, spec.EncodeChannelCloseOk())
-
-	case spec.MethodChannelCloseOk:
-		// 我方发起 Channel.Close 后的确认，无需再回应
-		return nil
-
-	case spec.MethodChannelFlow:
-		active, err := spec.DecodeChannelFlow(m.Args)
-		if err != nil {
-			return c.closeChannel(ch, spec.SyntaxError, "Channel.Flow 解析失败: "+err.Error(),
-				m.ClassID, m.MethodID)
-		}
-		// M1 不做服务端限流，但必须回 Flow-Ok，否则客户端会一直等待
-		return c.sendMethod(ch, spec.ClassChannel, spec.MethodChannelFlowOk, spec.EncodeChannelFlowOk(active))
-
-	default:
-		return c.closeChannel(ch, spec.NotImplemented,
-			fmt.Sprintf("M1 尚未实现 %s", m.Name()), m.ClassID, m.MethodID)
+// openChannel 处理 Channel.Open：创建通道状态并回复 Open-Ok。
+func (c *connection) openChannel(id uint16, m spec.Method) error {
+	if err := spec.DecodeChannelOpen(m.Args); err != nil {
+		return c.closeChannelByID(id, spec.SyntaxError, "Channel.Open 解析失败: "+err.Error(),
+			m.ClassID, m.MethodID)
 	}
+	if uint16(len(c.channels)) >= c.channelMax {
+		return c.closeChannelByID(id, spec.ChannelError,
+			fmt.Sprintf("channel 数量已达到 channel-max=%d", c.channelMax), m.ClassID, m.MethodID)
+	}
+	c.channels[id] = newChannel(id, c)
+	c.log.Debug("channel 已打开", "channel", id)
+	return c.sendMethod(id, spec.ClassChannel, spec.MethodChannelOpenOk, spec.EncodeChannelOpenOk())
+}
+
+// closeChannelByID 以软错误关闭一个 channel：释放它的消费者、把未确认消息重新入队，
+// 并通知客户端。连接与其余 channel 不受影响。
+func (c *connection) closeChannelByID(id uint16, code uint16, text string, classID, methodID uint16) error {
+	if ch, ok := c.channels[id]; ok {
+		delete(c.channels, id)
+		ch.release()
+	}
+	args, err := spec.EncodeChannelClose(spec.Reply{Code: code, Text: text, ClassID: classID, MethodID: methodID})
+	if err != nil {
+		return err
+	}
+	c.log.Warn("关闭 channel", "channel", id, "code", code, "text", text)
+	return c.sendMethod(id, spec.ClassChannel, spec.MethodChannelClose, args)
+}
+
+// teardown 释放连接级资源。必须在读循环退出后调用，且在 run 的 defer 中保证执行。
+func (c *connection) teardown() {
+	for id, ch := range c.channels {
+		delete(c.channels, id)
+		ch.release()
+	}
+	if c.session != nil {
+		// 取消本连接的全部消费者、删除它的独占队列
+		c.session.Close()
+	}
+}
+
+// handleContentHeader 处理内容头帧：把属性挂到该 channel 正在组装的内容上。
+func (c *connection) handleContentHeader(f codec.Frame) error {
+	ch, ok := c.channels[f.Channel]
+	if !ok {
+		return c.closeChannelByID(f.Channel, spec.ChannelError,
+			fmt.Sprintf("channel %d 未打开", f.Channel), spec.ClassBasic, spec.MethodBasicPublish)
+	}
+	header, err := spec.DecodeContentHeader(f.Payload)
+	if err != nil {
+		return ch.fail(plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 内容头解析失败: %v", err), spec.ClassBasic, 0)
+	}
+	ch.setContentHeader(header)
+	return ch.maybeFinishContent()
+}
+
+// handleContentBody 处理内容体帧。
+func (c *connection) handleContentBody(f codec.Frame) error {
+	ch, ok := c.channels[f.Channel]
+	if !ok {
+		return c.closeChannelByID(f.Channel, spec.ChannelError,
+			fmt.Sprintf("channel %d 未打开", f.Channel), spec.ClassBasic, 0)
+	}
+	complete, err := ch.appendBody(f.Payload)
+	if err != nil {
+		return ch.fail(err, spec.ClassBasic, 0)
+	}
+	if complete {
+		return ch.maybeFinishContent()
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -420,15 +469,20 @@ func (c *connection) sendMethod(ch uint16, classID, methodID uint16, args []byte
 	})
 }
 
-// write 串行化写出并立即 Flush。
+// write 写出一条帧并立即 Flush。
+func (c *connection) write(f codec.Frame) error { return c.writeFrames(f) }
+
+// writeFrames 原子地写出一组帧并立即 Flush。
 //
-// 握手与错误路径都必须立即落到连接上（否则客户端会卡住等响应），
-// 因此这里不做批量攒帧；M2 起再对高频路径做写合并优化。
-func (c *connection) write(f codec.Frame) error {
+// 一组帧之间不允许插入其他帧：例如 Basic.Deliver + 内容头 + 内容体必须连续到达，
+// 否则客户端会把它们当成两条消息的内容。因此整组必须在同一把锁内写完。
+func (c *connection) writeFrames(frames ...codec.Frame) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.fw.Write(f); err != nil {
-		return err
+	for _, f := range frames {
+		if err := c.fw.Write(f); err != nil {
+			return err
+		}
 	}
 	if err := c.fw.Flush(); err != nil {
 		return err
@@ -455,16 +509,12 @@ func (c *connection) failConnection(code uint16, text string, classID, methodID 
 	return reply
 }
 
-// closeChannel 发送 Channel.Close（软错误）。连接与其余 channel 不受影响。
-func (c *connection) closeChannel(ch uint16, code uint16, text string, classID, methodID uint16) error {
-	reply := spec.Reply{Code: code, Text: text, ClassID: classID, MethodID: methodID}
-	args, err := spec.EncodeChannelClose(reply)
-	if err != nil {
-		return err
+// dropChannel 从已打开集合中移除通道并释放其资源（客户端主动关闭时）。
+func (c *connection) dropChannel(id uint16) {
+	if ch, ok := c.channels[id]; ok {
+		delete(c.channels, id)
+		ch.release()
 	}
-	delete(c.channels, ch)
-	c.log.Warn("关闭 channel", "channel", ch, "code", code, "text", text)
-	return c.sendMethod(ch, spec.ClassChannel, spec.MethodChannelClose, args)
 }
 
 // ---------------------------------------------------------------------------

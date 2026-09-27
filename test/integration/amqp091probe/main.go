@@ -23,18 +23,24 @@ var (
 	expect = flag.String("expect-product", "SwiftMQ", "期望的 server product 名")
 )
 
+// testCase 是一条验证用例。
+type testCase struct {
+	name string
+	run  func() error
+}
+
 func main() {
 	flag.Parse()
 
+	cases := []testCase{
+		{"M1 正常连接 + Channel 开关 + 优雅关闭", testHappyPath},
+		{"M1 错误口令应被拒绝", testBadPassword},
+		{"M1 不存在的 vhost 应被拒绝", testUnknownVHost},
+	}
+	cases = append(cases, m2Cases()...)
+
 	var failed int
-	for _, tc := range []struct {
-		name string
-		run  func() error
-	}{
-		{"正常连接 + Channel 开关 + 优雅关闭", testHappyPath},
-		{"错误口令应被拒绝", testBadPassword},
-		{"不存在的 vhost 应被拒绝", testUnknownVHost},
-	} {
+	for _, tc := range cases {
 		if err := tc.run(); err != nil {
 			failed++
 			fmt.Printf("FAIL  %s\n      %v\n", tc.name, err)
@@ -44,10 +50,11 @@ func main() {
 	}
 
 	if failed > 0 {
-		fmt.Printf("\n%d 项失败\n", failed)
+		fmt.Printf("\n%d/%d 项失败\n", failed, len(cases))
 		os.Exit(1)
 	}
-	fmt.Println("\n全部通过：真实客户端可完成连接、Channel 开关与关闭")
+	fmt.Printf("\n全部通过（%d/%d）：真实客户端可完成连接、拓扑声明、四种路由、发布消费与确认\n",
+		len(cases), len(cases))
 }
 
 func url(vhost string) string {

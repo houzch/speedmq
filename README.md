@@ -6,27 +6,28 @@
 
 ---
 
-## ⚠️ 当前状态：M1（协议底座），**还不能收发消息**
+## ⚠️ 当前状态：M2（基础消息链路），**可以收发消息了**
 
-项目处于早期开发阶段，**目前只完成连接建立相关能力，请勿用于任何实际场景**。
+处于早期开发阶段，**功能尚不完整，请勿用于生产**。M2 已跑通"生产者 → 交换机 → 队列 → 消费者"全链路。
 
 **已实现**
 
-- 协议头协商（版本不匹配时按规范回写支持的版本）
-- `Connection.Start / Start-Ok`（SASL：`PLAIN`、`AMQPLAIN`）、`Tune / Tune-Ok`、`Open / Open-Ok`、`Close / Close-Ok`
-- 心跳：主动发送 + 2 倍间隔超时判定
-- `Channel.Open / Open-Ok`、`Channel.Flow / Flow-Ok`、`Channel.Close / Close-Ok`
-- 完整的软/硬错误作用域框架（`403 / 402 / 530 / 540 / 505 / 501 / 502 / 503 / 504` 与 RabbitMQ 对齐）
-- 插件框架：注册中心、依赖 DAG 排序与环检测、能力审计、失败隔离
-- AMQP 0-9-1 以**第一个协议插件**的形式接入（内核不含任何 AMQP 知识）
+- 连接层：协议头协商、`Connection.Start / Tune / Open / Close`、心跳超时、`Channel.*`
+- **拓扑**：`Exchange / Queue / Binding` 的声明、绑定、解绑、删除；被动声明；`amq.*` 保留名与默认交换机保护
+- **路由**：`direct`、`fanout`、`topic`（`*` 与 `#` 通配）、`headers`；交换机间绑定；默认交换机按队列名隐式路由
+- **消息**：`Basic.Publish / Consume / Deliver / Get / Ack / Nack / Reject / Qos / Recover`，完整内容帧（14 个属性 + 任意长度分片）
+- **语义**：FIFO、多消费者竞争消费、prefetch 额度、未确认跟踪、`requeue` 重投并置 `redelivered`、`mandatory` 回 `Basic.Return`、消费者取消通知
+- **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
+- 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
 
 **尚未实现**
 
-- Exchange / Queue / Binding 声明与路由
-- 消息收发（`Basic.Publish / Consume / Deliver / Ack`）与内容帧
-- 发布确认、TTL、死信、优先级
-- 消息持久化与崩溃恢复
-- 集群、管理 HTTP API、管理 UI
+- 发布确认（`confirm.select`）、TTL、死信队列、优先级、队列长度限制
+- 消息持久化与崩溃恢复（当前消息只在内存，重启即丢）
+- 用户 / vhost / 权限的动态管理与访问控制（当前为配置内置用户）
+- 集群、镜像与仲裁队列、流队列
+- 管理 HTTP API 与管理 UI
+- AMQP 1.0 / MQTT / STOMP（计划以插件形态提供）
 
 完整路线图见下文「路线图」一节。
 
@@ -62,14 +63,14 @@ go build -o bin/swiftmqd ./cmd/swiftmqd
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.1.0 data_dir=data vhost=/
+msg="SwiftMQ 启动中" version=0.2.0 data_dir=data vhost=/
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 ```
 
 ### 验证连接是否可用
 
-仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），会验证连接、Channel 开关与错误路径：
+仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），覆盖连接、拓扑声明、四种路由、发布消费与错误路径：
 
 ```bash
 cd test/integration/amqp091probe
@@ -79,9 +80,22 @@ go run .
 期望输出：
 
 ```
-PASS  正常连接 + Channel 开关 + 优雅关闭
-PASS  错误口令应被拒绝
-PASS  不存在的 vhost 应被拒绝
+PASS  M1 正常连接 + Channel 开关 + 优雅关闭
+PASS  M1 错误口令应被拒绝
+PASS  M1 不存在的 vhost 应被拒绝
+PASS  M2 direct 路由：服务端命名队列 + 发布消费 + 手动 ack + FIFO 顺序
+PASS  M2 topic 路由：通配匹配 + 同队列多绑定去重
+PASS  M2 fanout 路由：一条消息广播到多个队列
+PASS  M2 basic.get：有消息返回 Get-Ok，空队列返回 Get-Empty
+PASS  M2 消息属性往返：content-type / headers / delivery-mode / correlation-id
+PASS  M2 nack(requeue)：重投并置 redelivered=true
+PASS  M2 被动声明不存在的队列：404 且只关 Channel
+PASS  M2 参数不一致重声明：406
+PASS  M2 保留名声明被拒：403
+PASS  M2 发布到不存在的交换机：404
+PASS  M2 队列 purge / delete 返回正确计数
+
+全部通过（14/14）
 ```
 
 也可以直接用任意 RabbitMQ 客户端连接测试：
@@ -200,7 +214,7 @@ gofmt -l .            # 检查格式（应无输出）
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.1.0 .
+docker build -t swiftmq:0.2.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -212,8 +226,8 @@ docker build -t swiftmq:0.1.0 .
 | 阶段 | 里程碑 | 内容 | 状态 |
 |---|---|---|---|
 | 一期 | M1 | 协议底座：连接握手、心跳、Channel 开关、插件框架 | ✅ 已完成 |
-| 一期 | M2 | Exchange / Queue / Binding、三种路由、消息收发 | 规划中 |
-| 一期 | M3 | 发布确认、mandatory/return、TTL、死信、优先级、权限 | 规划中 |
+| 一期 | M2 | Exchange / Queue / Binding、四种路由、消息收发与确认 | ✅ 已完成 |
+| 一期 | M3 | 发布确认、TTL、死信、优先级、权限与 vhost 管理 | 规划中 |
 | 一期 | M4 | 持久化、fsync 档位、崩溃恢复、流控 | 规划中 |
 | 一期 | M5 | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、`swiftmqctl` | 规划中 |
 | 二期 | M6 | 集群、Quorum Queue 复制、分区处理、故障切换 | 规划中 |

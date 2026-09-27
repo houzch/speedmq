@@ -43,6 +43,54 @@ const (
 	MethodChannelCloseOk uint16 = 41
 )
 
+// Exchange (40) 方法标识。注意 Exchange.Unbind-Ok 的编号是 51（规范如此，不是笔误）。
+const (
+	MethodExchangeDeclare   uint16 = 10
+	MethodExchangeDeclareOk uint16 = 11
+	MethodExchangeDelete    uint16 = 20
+	MethodExchangeDeleteOk  uint16 = 21
+	MethodExchangeBind      uint16 = 30
+	MethodExchangeBindOk    uint16 = 31
+	MethodExchangeUnbind    uint16 = 40
+	MethodExchangeUnbindOk  uint16 = 51
+)
+
+// Queue (50) 方法标识。
+const (
+	MethodQueueDeclare   uint16 = 10
+	MethodQueueDeclareOk uint16 = 11
+	MethodQueueBind      uint16 = 20
+	MethodQueueBindOk    uint16 = 21
+	MethodQueuePurge     uint16 = 30
+	MethodQueuePurgeOk   uint16 = 31
+	MethodQueueDelete    uint16 = 40
+	MethodQueueDeleteOk  uint16 = 41
+	MethodQueueUnbind    uint16 = 50
+	MethodQueueUnbindOk  uint16 = 51
+)
+
+// Basic (60) 方法标识。
+const (
+	MethodBasicQos          uint16 = 10
+	MethodBasicQosOk        uint16 = 11
+	MethodBasicConsume      uint16 = 20
+	MethodBasicConsumeOk    uint16 = 21
+	MethodBasicCancel       uint16 = 30
+	MethodBasicCancelOk     uint16 = 31
+	MethodBasicPublish      uint16 = 40
+	MethodBasicReturn       uint16 = 50
+	MethodBasicDeliver      uint16 = 60
+	MethodBasicGet          uint16 = 70
+	MethodBasicGetOk        uint16 = 71
+	MethodBasicGetEmpty     uint16 = 72
+	MethodBasicAck          uint16 = 80
+	MethodBasicReject       uint16 = 90
+	MethodBasicRecoverAsync uint16 = 100
+	MethodBasicRecover      uint16 = 110
+	MethodBasicRecoverOk    uint16 = 111
+	MethodBasicNack         uint16 = 120
+)
+
 // 错误码。这些值决定客户端"关 Channel 还是关连接"，属兼容性高危区，不可随意改动。
 const (
 	ReplySuccess       uint16 = 200

@@ -1,12 +1,15 @@
-// Package broker 是内核：持有 vhost、用户，并向协议插件暴露协议无关的操作面 plugin.Core。
+// Package broker 是内核：持有 vhost、拓扑与队列，并向协议插件暴露协议无关的操作面。
 //
-// M2 起在这里接入 exchange / queue / binding 与路由。
+// 分层：Broker → vhost（拓扑）→ exchange / queue（路由与消息）。
+// 协议插件通过 plugin.Core.Session(vhost) 拿到某个 vhost 的操作面。
 package broker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net"
+	"sync/atomic"
 
 	"github.com/houzch/swiftmq/internal/auth"
 	"github.com/houzch/swiftmq/internal/config"
@@ -14,42 +17,59 @@ import (
 )
 
 // Version 是内核版本。
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // Broker 是内核单例。
 type Broker struct {
 	log    *slog.Logger
 	cfg    *config.Config
 	auth   *auth.Store
-	vhosts map[string]struct{}
+	vhosts map[string]*vhost
+	// sessions 用于生成会话标识（独占队列归属判定用）
+	sessions atomic.Uint64
 }
 
 // New 构造内核。
 func New(log *slog.Logger, cfg *config.Config) *Broker {
-	vhosts := make(map[string]struct{}, len(cfg.VHosts)+1)
-	for _, v := range cfg.VHosts {
-		vhosts[v] = struct{}{}
-	}
-	// 默认 vhost 一定存在，避免配置里漏写导致所有客户端连不上
-	vhosts[cfg.DefaultVHost] = struct{}{}
+	log = log.With("component", "broker")
 
-	return &Broker{
+	names := make([]string, 0, len(cfg.VHosts)+1)
+	names = append(names, cfg.VHosts...)
+	// 默认 vhost 一定存在，避免配置里漏写导致所有客户端连不上
+	names = append(names, cfg.DefaultVHost)
+
+	b := &Broker{
 		log:    log,
 		cfg:    cfg,
 		auth:   auth.NewStore(cfg.Users),
-		vhosts: vhosts,
+		vhosts: map[string]*vhost{},
 	}
+	for _, name := range names {
+		if _, dup := b.vhosts[name]; dup {
+			continue
+		}
+		b.vhosts[name] = newVHost(name, log)
+	}
+	return b
 }
 
 // NewSession 为一条新连接创建协议无关的操作面。
 func (b *Broker) NewSession(remote net.Addr) plugin.Core {
-	return &session{broker: b, log: b.log.With("remote", remote.String())}
+	id := fmt.Sprintf("conn-%d", b.sessions.Add(1))
+	return &session{
+		broker: b,
+		id:     id,
+		log:    b.log.With("remote", remote.String(), "session", id),
+	}
 }
 
 // session 是 plugin.Core 的实现，绑定单条连接。
 type session struct {
 	broker *Broker
+	id     string
 	log    *slog.Logger
+	// vh 在打开 vhost 后创建；缓存以避免重复调用 Session 时丢失独占队列等会话状态
+	vh *vhostSession
 }
 
 var _ plugin.Core = (*session)(nil)
@@ -61,7 +81,6 @@ func (s *session) Logger() *slog.Logger { return s.log }
 //
 // capabilities 声明即承诺：客户端会依据它切换代码路径，
 // 因此只有真正实现的能力才允许置 true —— 声明了却没实现，比不声明更糟。
-// 每完成一个里程碑，在这里打开对应 capability。
 func (s *session) ServerProperties() map[string]any {
 	return map[string]any{
 		"product":     "SwiftMQ",
@@ -69,18 +88,24 @@ func (s *session) ServerProperties() map[string]any {
 		"platform":    "Go",
 		"information": "https://github.com/houzch/swiftmq",
 		"capabilities": map[string]any{
-			// M1：认证失败时用 Connection.Close 明确告知原因，而不是直接断开连接
+			// 认证失败时用 Connection.Close 明确告知原因，而不是直接断开连接
 			"authentication_failure_close": true,
 
-			// 以下能力尚未实现，一律不声明（客户端会自行降级或关闭该特性）：
-			//   exchange_exchange_bindings  → M2
-			//   publisher_confirms          → M3
-			//   basic.nack                  → M3
-			//   consumer_cancel_notify      → M3
-			//   per_consumer_qos            → M3
-			//   consumer_priorities         → M3
-			//   direct_reply_to             → M3
-			//   connection.blocked          → M4
+			// ---- M2 已实现并声明 ----
+			// 交换机间绑定：Exchange.Bind/Unbind 参与真实路由
+			"exchange_exchange_bindings": true,
+			// basic.nack：批量拒绝并可重新入队
+			"basic.nack": true,
+			// 消费者取消通知：队列被删除时服务端主动下发 basic.cancel
+			"consumer_cancel_notify": true,
+			// 每个消费者独立的 prefetch 额度
+			"per_consumer_qos": true,
+
+			// ---- 尚未实现，一律不声明（客户端会自行降级）----
+			//   publisher_confirms      → M3
+			//   consumer_priorities     → M3
+			//   direct_reply_to         → M3
+			//   connection.blocked      → M4
 		},
 	}
 }
@@ -105,3 +130,16 @@ func (s *session) VHostExists(name string) bool {
 
 // DefaultVHost 返回默认 vhost 名。
 func (s *session) DefaultVHost() string { return s.broker.cfg.DefaultVHost }
+
+// Session 返回绑定到指定 vhost 的操作面。
+func (s *session) Session(vhostName string) (plugin.Session, error) {
+	vh, ok := s.broker.vhosts[vhostName]
+	if !ok {
+		return nil, plugin.Errorf(plugin.KindInvalidPath,
+			"NOT_ALLOWED - vhost %s not found", vhostName)
+	}
+	if s.vh == nil {
+		s.vh = newVHostSession(vh, s.id, s.log)
+	}
+	return s.vh, nil
+}

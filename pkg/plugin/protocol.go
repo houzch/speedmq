@@ -69,8 +69,7 @@ func (e *AuthError) Error() string { return e.Text }
 
 // Core 是协议无关的内核操作面：任何协议插件都只能通过这些方法触达内核语义。
 //
-// M1 只实现连接级所需方法；Broker 操作面（DeclareExchange / DeclareQueue /
-// Bind / Publish / Consume / Ack / Nack / Reject）在 M2 接入。
+// 连接级操作用 Core，vhost 作用域内的拓扑与消息操作经 Core.Session 取得 Session。
 type Core interface {
 	// Logger 返回连接级日志器。
 	Logger() *slog.Logger
@@ -80,10 +79,13 @@ type Core interface {
 	ServerProperties() map[string]any
 	// Mechanisms 返回支持的 SASL 机制名，如 ["PLAIN", "AMQPLAIN"]。
 	Mechanisms() []string
-	// Authenticate 校验 SASL 响应；失败返回错误（协议侧对应 530 NOT_ALLOWED）。
+	// Authenticate 校验 SASL 响应；失败返回 *AuthError（协议侧映射 403 / 530）。
 	Authenticate(ctx context.Context, mechanism string, response []byte, remoteAddr net.Addr) (Identity, error)
 	// VHostExists 判断 vhost 是否存在；不存在时协议侧返回 402 INVALID_PATH。
 	VHostExists(name string) bool
 	// DefaultVHost 返回默认 vhost 名。
 	DefaultVHost() string
+	// Session 返回绑定到指定 vhost 的操作面。
+	// vhost 不存在时返回 *Error{Kind: KindInvalidPath}。
+	Session(vhost string) (Session, error)
 }
