@@ -4,34 +4,39 @@
 
 > 兼容基线：**RabbitMQ 4.3 语义**（AMQP 0-9-1 + RabbitMQ 扩展）。不保留 3.x 与 4.0–4.2 中已被移除的能力（瞬时队列、全局 QoS、Classic Queue v1、经典镜像队列）。
 
----
+***
 
-## ⚠️ 当前状态：M2（基础消息链路），**可以收发消息了**
+## ⚠️ 当前状态：M3（可靠性与高级特性），**仍不可用于生产**
 
-处于早期开发阶段，**功能尚不完整，请勿用于生产**。M2 已跑通"生产者 → 交换机 → 队列 → 消费者"全链路。
+处于早期开发阶段。M3 已交付发布确认、TTL、死信、长度限制、优先级与权限校验。
 
 **已实现**
 
 - 连接层：协议头协商、`Connection.Start / Tune / Open / Close`、心跳超时、`Channel.*`
-- **拓扑**：`Exchange / Queue / Binding` 的声明、绑定、解绑、删除；被动声明；`amq.*` 保留名与默认交换机保护
-- **路由**：`direct`、`fanout`、`topic`（`*` 与 `#` 通配）、`headers`；交换机间绑定；默认交换机按队列名隐式路由
+- **拓扑**：`Exchange / Queue / Binding` 的声明、绑定、解绑、删除；被动声明；`amq.*` 保留名与默认交换机保护；交换机间绑定
+- **路由**：`direct`、`fanout`、`topic`（`*` 与 `#` 通配）、`headers`；默认交换机按队列名隐式路由
 - **消息**：`Basic.Publish / Consume / Deliver / Get / Ack / Nack / Reject / Qos / Recover`，完整内容帧（14 个属性 + 任意长度分片）
 - **语义**：FIFO、多消费者竞争消费、prefetch 额度、未确认跟踪、`requeue` 重投并置 `redelivered`、`mandatory` 回 `Basic.Return`、消费者取消通知
+- **发布确认**：`confirm.select`，逐条 `basic.ack`，序号从 1 连续；`Basic.Return` 保证先于 confirm 发出
+- **TTL 与死信**：`x-message-ttl`、消息级 `expiration`、`x-dead-letter-exchange` / `x-dead-letter-routing-key`，死信带 `x-death` 头（`reason` / `queue` / `time` / `count` / 原始路由信息）
+- **长度限制**：`x-max-length` / `x-max-length-bytes`，`x-overflow` 支持 `drop-head` / `reject-publish` / `reject-publish-dlx`
+- **其他队列参数**：`x-max-priority`（优先级队列）、`x-expires`（空闲队列自动删除）
+- **权限**：按 vhost 的 `configure` / `write` / `read` 正则鉴权，越权返回 403
 - **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
 - 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
 
 **尚未实现**
 
-- 发布确认（`confirm.select`）、TTL、死信队列、优先级、队列长度限制
-- 消息持久化与崩溃恢复（当前消息只在内存，重启即丢）
-- 用户 / vhost / 权限的动态管理与访问控制（当前为配置内置用户）
-- 集群、镜像与仲裁队列、流队列
+- 消息持久化与崩溃恢复（当前消息只在内存，重启即丢 —— 因此持久消息的 confirm 语义仍弱于 RabbitMQ）
+- Direct Reply-To（`amq.rabbitmq.reply-to`）、消费者优先级（`x-priority`）
+- 用户 / vhost / 权限的**动态**管理（当前权限表来自配置文件，改配置需重启）
+- 集群、仲裁队列与流队列、Stream 协议
 - 管理 HTTP API 与管理 UI
 - AMQP 1.0 / MQTT / STOMP（计划以插件形态提供）
 
 完整路线图见下文「路线图」一节。
 
----
+***
 
 ## 快速开始
 
@@ -63,21 +68,21 @@ go build -o bin/swiftmqd ./cmd/swiftmqd
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.2.0 data_dir=data vhost=/
+msg="SwiftMQ 启动中" version=0.3.0 data_dir=data vhost=/
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 ```
 
 ### 验证连接是否可用
 
-仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），覆盖连接、拓扑声明、四种路由、发布消费与错误路径：
+仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），覆盖连接、拓扑声明、四种路由、发布消费与确认、TTL/死信、长度限制与错误路径：
 
 ```bash
 cd test/integration/amqp091probe
 go run .
 ```
 
-期望输出：
+期望输出（19 个用例）：
 
 ```
 PASS  M1 正常连接 + Channel 开关 + 优雅关闭
@@ -94,9 +99,27 @@ PASS  M2 参数不一致重声明：406
 PASS  M2 保留名声明被拒：403
 PASS  M2 发布到不存在的交换机：404
 PASS  M2 队列 purge / delete 返回正确计数
+PASS  M3 发布确认：confirm.select + 逐条 ack + 序号从 1 连续
+PASS  M3 TTL 到期进入死信队列（x-death reason=expired）
+PASS  M3 nack(requeue=false) 进入死信队列（x-death reason=rejected）
+PASS  M3 长度限制 reject-publish：第二条被 basic.nack
+PASS  M3 mandatory 未命中：Basic.Return 必须先于 confirm 到达
 
-全部通过（14/14）
+全部通过（19/19）
 ```
+
+### 其他语言的客户端测试
+
+跨语言兼容性测试放在**独立目录** `swiftmq-test/`（与代码仓库平级，不随本仓库发布）：
+
+| 位置                     | 内容                               |
+| ---------------------- | -------------------------------- |
+| `swiftmq/test/`        | 只放 Go 测试（内核单测 + `amqp091-go` 探针） |
+| `swiftmq-test/python/` | Python（`pika`）冒烟测试，7 个用例         |
+| `swiftmq-test/java/`   | Java 用例清单（待补）                    |
+
+这么切分是因为这些测试依赖各语言的运行时与包管理器，与 Go module 的生命周期无关；
+放进本仓库会污染 `docker build` 的上下文与 `go vet ./...` 的扫描范围。详见 `swiftmq-test/README.md`。
 
 也可以直接用任意 RabbitMQ 客户端连接测试：
 
@@ -114,15 +137,15 @@ conn.close()
 
 > 注意：默认用户 `guest/guest` **只允许从本机登录**（对齐 RabbitMQ 行为）。从容器外或远程连接时，需在配置中为该用户开启 `remote_access`。
 
----
+***
 
 ## 配置
 
 命令行参数：
 
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `-config` | 空 | JSON 配置文件路径；不指定则使用内置默认值 |
+| 参数           | 默认值    | 说明                                  |
+| ------------ | ------ | ----------------------------------- |
+| `-config`    | 空      | JSON 配置文件路径；不指定则使用内置默认值             |
 | `-log-level` | `info` | `debug` / `info` / `warn` / `error` |
 
 配置文件示例（见 [configs/swiftmqd.json](configs/swiftmqd.json)）：
@@ -142,17 +165,17 @@ conn.close()
 }
 ```
 
-| 字段 | 说明 |
-|---|---|
-| `data_dir` | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
-| `vhosts` | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上 |
-| `listeners` | 按**插件名**覆盖监听地址 |
-| `users` | 内置用户表，`remote_access: false` 时仅允许本机登录 |
-| `plugins` | 各插件的配置段，插件通过 `Host.Config` 读取自己的段 |
+| 字段          | 说明                                                      |
+| ----------- | ------------------------------------------------------- |
+| `data_dir`  | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
+| `vhosts`    | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上                |
+| `listeners` | 按**插件名**覆盖监听地址                                          |
+| `users`     | 内置用户表，`remote_access: false` 时仅允许本机登录                   |
+| `plugins`   | 各插件的配置段，插件通过 `Host.Config` 读取自己的段                       |
 
 > 环境变量（`SWIFTMQ_*`）与 YAML 配置将在 M5 随管理面一起支持。
 
----
+***
 
 ## 设计要点
 
@@ -175,7 +198,7 @@ conn.close()
 
 消息数据用自研分段追加日志，元数据用内嵌 Raft + KV；**不依赖任何外部数据库或协调服务**。小消息（≤4096 字节）走每队列存储，大消息走 vhost 共享存储 + 引用计数（扇出时只写一份）。fsync 分四档（`none` / `os` / `batch` / `always`）并与 publisher confirm 时机强绑定，因此"经典队列"与"Quorum 队列"的差异是配置档位差异，而非两套语义。
 
----
+***
 
 ## 项目结构
 
@@ -200,7 +223,7 @@ swiftmq/
 └── Dockerfile / docker-compose.yml
 ```
 
----
+***
 
 ## 开发
 
@@ -214,28 +237,28 @@ gofmt -l .            # 检查格式（应无输出）
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.2.0 .
+docker build -t swiftmq:0.3.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
 
----
+***
 
 ## 路线图
 
-| 阶段 | 里程碑 | 内容 | 状态 |
-|---|---|---|---|
-| 一期 | M1 | 协议底座：连接握手、心跳、Channel 开关、插件框架 | ✅ 已完成 |
-| 一期 | M2 | Exchange / Queue / Binding、四种路由、消息收发与确认 | ✅ 已完成 |
-| 一期 | M3 | 发布确认、TTL、死信、优先级、权限与 vhost 管理 | 规划中 |
-| 一期 | M4 | 持久化、fsync 档位、崩溃恢复、流控 | 规划中 |
-| 一期 | M5 | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、`swiftmqctl` | 规划中 |
-| 二期 | M6 | 集群、Quorum Queue 复制、分区处理、故障切换 | 规划中 |
-| 二期 | M7 | 性能打磨、插件化验证（MQTT / AMQP 1.0） | 规划中 |
+| 阶段 | 里程碑 | 内容                                                   | 状态    |
+| -- | --- | ---------------------------------------------------- | ----- |
+| 一期 | M1  | 协议底座：连接握手、心跳、Channel 开关、插件框架                         | ✅ 已完成 |
+| 一期 | M2  | Exchange / Queue / Binding、四种路由、消息收发与确认              | ✅ 已完成 |
+| 一期 | M3  | 发布确认、TTL、死信、长度限制、优先级、权限校验                            | ✅ 已完成 |
+| 一期 | M4  | 持久化、fsync 档位、崩溃恢复、流控                                 | 规划中   |
+| 一期 | M5  | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、`swiftmqctl` | 规划中   |
+| 二期 | M6  | 集群、Quorum Queue 复制、分区处理、故障切换                         | 规划中   |
+| 二期 | M7  | 性能打磨、插件化验证（MQTT / AMQP 1.0）                          | 规划中   |
 
 每个里程碑的完成标准是"**真实客户端跑通 + 与 RabbitMQ 行为一致**"，而非"代码写完"。
 
----
+***
 
 ## 贡献
 
@@ -245,7 +268,7 @@ docker build -t swiftmq:0.2.0 .
 - 涉及协议细节的改动，请附上与 RabbitMQ 的对照结果
 - 提交前请确保 `go build ./...`、`go vet ./...`、`go test ./...`、`gofmt -l .` 均通过
 
----
+***
 
 ## 许可证
 
@@ -255,7 +278,7 @@ docker build -t swiftmq:0.2.0 .
 
 Copyright 2026 houzch（见 [NOTICE](NOTICE)）
 
----
+***
 
 ## 致谢
 

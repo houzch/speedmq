@@ -38,6 +38,7 @@ func main() {
 		{"M1 不存在的 vhost 应被拒绝", testUnknownVHost},
 	}
 	cases = append(cases, m2Cases()...)
+	cases = append(cases, m3Cases()...)
 
 	var failed int
 	for _, tc := range cases {

@@ -35,16 +35,31 @@ type vhost struct {
 	queues    map[string]*queue
 	// consumers 是消费者标签索引：标签 → 队列（basic.cancel 用）。
 	consumers map[string]*queue
+	// sweepSet 是需要定时扫描的队列（配了消息 TTL 或队列过期）。
+	sweepSet map[string]*queue
+	// dlxCh 是死信派发器入口；由内核的单个后台协程消费。
+	dlxCh chan<- deadLetterEntry
+}
+
+// deadLetterEntry 是一条待派发的死信。
+type deadLetterEntry struct {
+	vhost      string
+	msg        *plugin.Message
+	exchange   string
+	routingKey string
+	reason     string
 }
 
 // newVHost 创建 vhost 并预声明内置交换机。
-func newVHost(name string, log *slog.Logger) *vhost {
+func newVHost(name string, log *slog.Logger, dlxCh chan<- deadLetterEntry) *vhost {
 	v := &vhost{
 		name:      name,
 		log:       log.With("vhost", name),
 		exchanges: map[string]*exchange{},
 		queues:    map[string]*queue{},
 		consumers: map[string]*queue{},
+		sweepSet:  map[string]*queue{},
+		dlxCh:     dlxCh,
 	}
 	// 默认交换机：按 routing key（即队列名）直接投递，不可声明、不可删除
 	v.exchanges[defaultExchange] = newExchange(defaultExchange, plugin.ExchangeDirect, true, false, true, nil)
@@ -76,9 +91,11 @@ func (v *vhost) getQueue(name string) (*queue, bool) {
 
 // vhostSession 是 plugin.Session 的实现。
 type vhostSession struct {
-	vh  *vhost
-	id  string // 会话标识，用于独占队列归属判定
-	log *slog.Logger
+	vh   *vhost
+	id   string // 会话标识，用于独占队列归属判定
+	user string // 认证用户（权限错误信息与审计用）
+	perm *permissionSet
+	log  *slog.Logger
 
 	mu        sync.Mutex
 	exclusive map[string]struct{} // 本会话创建的独占队列
@@ -88,19 +105,51 @@ type vhostSession struct {
 
 var _ plugin.Session = (*vhostSession)(nil)
 
-func newVHostSession(vh *vhost, id string, log *slog.Logger) *vhostSession {
+func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.Logger) *vhostSession {
+	if perm != nil {
+		perm.user = user
+	}
 	return &vhostSession{
 		vh:        vh,
 		id:        id,
-		log:       log.With("vhost", vh.name),
+		user:      user,
+		perm:      perm,
+		log:       log.With("vhost", vh.name, "user", user),
 		exclusive: map[string]struct{}{},
 		tags:      map[string]string{},
 	}
 }
 
+// newQueueIn 创建队列并接线死信派发。
+//
+// 死信走"异步入队 + 内核后台派发"，而不是在队列持锁时同步路由 ——
+// 后者在"死信目标恰好是本队列"时会自锁死。
+func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args queueArgs) *queue {
+	q := newQueue(name, req.Durable, req.Exclusive, req.AutoDelete,
+		s.ownerOf(req.Exclusive), map[string]any(req.Arguments), args)
+
+	dlx, dlxKey, vhostName := args.deadLetterEx, args.deadLetterKey, s.vh.name
+	ch := s.vh.dlxCh
+	q.deadLetter = func(msg *plugin.Message, reason string) {
+		if ch == nil {
+			return
+		}
+		select {
+		case ch <- deadLetterEntry{vhost: vhostName, msg: msg, exchange: dlx, routingKey: dlxKey, reason: reason}:
+		default:
+			// 派发器积压：明确记录并丢弃，而不是无限堆积拖垮内核
+			s.log.Warn("死信派发队列已满，丢弃死信", "queue", name, "reason", reason)
+		}
+	}
+	return q
+}
+
 // ---------- 交换机 ----------
 
 func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
+	if err := s.perm.allowConfigure(req.Name); err != nil {
+		return err
+	}
 	if req.Name == defaultExchange {
 		if req.Passive {
 			// 被动声明默认交换机：确认存在即可
@@ -147,6 +196,9 @@ func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
 }
 
 func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
+	if err := s.perm.allowConfigure(name); err != nil {
+		return err
+	}
 	if name == defaultExchange {
 		return plugin.Errorf(plugin.KindAccessRefused,
 			"ACCESS_REFUSED - operation not permitted on the default exchange")
@@ -178,6 +230,9 @@ func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
 }
 
 func (s *vhostSession) BindExchange(destination, source, routingKey string, arguments map[string]any) error {
+	if err := s.perm.allowWrite(source); err != nil {
+		return err
+	}
 	src, ok := s.vh.getExchange(source)
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -192,6 +247,9 @@ func (s *vhostSession) BindExchange(destination, source, routingKey string, argu
 }
 
 func (s *vhostSession) UnbindExchange(destination, source, routingKey string, arguments map[string]any) error {
+	if err := s.perm.allowWrite(source); err != nil {
+		return err
+	}
 	src, ok := s.vh.getExchange(source)
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -208,6 +266,12 @@ func (s *vhostSession) UnbindExchange(destination, source, routingKey string, ar
 // ---------- 队列 ----------
 
 func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, error) {
+	// 参数先解析：非法参数必须在创建任何东西之前就报 406
+	args, err := parseQueueArgs(req.Arguments)
+	if err != nil {
+		return plugin.QueueInfo{}, err
+	}
+
 	if req.Name == "" {
 		if req.Passive {
 			return plugin.QueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
@@ -215,14 +279,12 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		}
 		// 服务端生成队列名
 		name := generatedQueueName()
-		q := newQueue(name, req.Durable, req.Exclusive, req.AutoDelete, s.ownerOf(req.Exclusive), req.Arguments)
-		s.vh.mu.Lock()
-		s.vh.queues[name] = q
-		s.vh.mu.Unlock()
-		if req.Exclusive {
-			s.trackExclusive(name)
+		if err := s.perm.allowConfigure(name); err != nil {
+			return plugin.QueueInfo{}, err
 		}
-		s.log.Debug("队列已声明（服务端命名）", "queue", name)
+		s.addQueue(s.newQueueIn(name, req, args), args)
+		s.log.Debug("队列已声明（服务端命名）", "queue", name,
+			"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
 		return plugin.QueueInfo{Name: name}, nil
 	}
 
@@ -246,24 +308,42 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindAccessRefused,
 			"ACCESS_REFUSED - cannot declare queue name '%s' (reserved)", req.Name)
 	}
+	if err := s.perm.allowConfigure(req.Name); err != nil {
+		return plugin.QueueInfo{}, err
+	}
 
-	q := newQueue(req.Name, req.Durable, req.Exclusive, req.AutoDelete, s.ownerOf(req.Exclusive), req.Arguments)
-	s.vh.mu.Lock()
-	if _, dup := s.vh.queues[req.Name]; dup {
-		s.vh.mu.Unlock()
+	if !s.addQueue(s.newQueueIn(req.Name, req, args), args) {
+		// 并发声明竞争：另一个会话已抢先创建
 		return plugin.QueueInfo{Name: req.Name}, nil
 	}
-	s.vh.queues[req.Name] = q
-	s.vh.mu.Unlock()
-
-	if req.Exclusive {
-		s.trackExclusive(req.Name)
-	}
-	s.log.Debug("队列已声明", "queue", req.Name)
+	s.log.Debug("队列已声明", "queue", req.Name,
+		"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
 	return plugin.QueueInfo{Name: req.Name}, nil
 }
 
+// addQueue 把队列加入 vhost，并按需要登记到定时扫描集合。返回 false 表示同名队列已存在。
+func (s *vhostSession) addQueue(q *queue, args queueArgs) bool {
+	s.vh.mu.Lock()
+	if _, dup := s.vh.queues[q.name]; dup {
+		s.vh.mu.Unlock()
+		return false
+	}
+	s.vh.queues[q.name] = q
+	if args.messageTTL > 0 || args.expires > 0 {
+		s.vh.sweepSet[q.name] = q
+	}
+	s.vh.mu.Unlock()
+
+	if q.exclusive {
+		s.trackExclusive(q.name)
+	}
+	return true
+}
+
 func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.QueueInfo, error) {
+	if err := s.perm.allowConfigure(name); err != nil {
+		return plugin.QueueInfo{}, err
+	}
 	q, ok := s.vh.getQueue(name)
 	if !ok {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindNotFound,
@@ -289,6 +369,9 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 }
 
 func (s *vhostSession) BindQueue(queueName, exchangeName, routingKey string, arguments map[string]any) error {
+	if err := s.perm.allowWrite(exchangeName); err != nil {
+		return err
+	}
 	ex, ok := s.vh.getExchange(exchangeName)
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -303,6 +386,9 @@ func (s *vhostSession) BindQueue(queueName, exchangeName, routingKey string, arg
 }
 
 func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, arguments map[string]any) error {
+	if err := s.perm.allowWrite(exchangeName); err != nil {
+		return err
+	}
 	ex, ok := s.vh.getExchange(exchangeName)
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -317,6 +403,9 @@ func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, a
 }
 
 func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
+	if err := s.perm.allowConfigure(name); err != nil {
+		return 0, err
+	}
 	q, ok := s.vh.getQueue(name)
 	if !ok {
 		return 0, plugin.Errorf(plugin.KindNotFound,
@@ -327,16 +416,22 @@ func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
 
 // ---------- 发布 ----------
 
-func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey string, mandatory bool) (bool, error) {
+func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey string, mandatory bool) (plugin.PublishResult, error) {
+	var res plugin.PublishResult
+
 	ex, ok := s.vh.getExchange(exchangeName)
 	if !ok {
-		return false, plugin.Errorf(plugin.KindNotFound,
+		return res, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", exchangeName, s.vh.name)
+	}
+	// 写权限按交换机名判定（默认交换机的名字是空串，与 RabbitMQ 一致）
+	if err := s.perm.allowWrite(exchangeName); err != nil {
+		return res, err
 	}
 	if ex.internal && exchangeName != defaultExchange {
 		// 默认交换机在元数据上也是 internal，但客户端按队列名发布到它是标准用法，
 		// 因此这里只拦住"其他内部交换机"——与 RabbitMQ 的可观察行为一致。
-		return false, plugin.Errorf(plugin.KindAccessRefused,
+		return res, plugin.Errorf(plugin.KindAccessRefused,
 			"ACCESS_REFUSED - cannot publish to internal exchange '%s' in vhost '%s'",
 			exchangeName, s.vh.name)
 	}
@@ -346,35 +441,40 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 	if exchangeName == defaultExchange {
 		q, ok := s.vh.getQueue(routingKey)
 		if !ok {
-			return false, nil
+			return res, nil
 		}
-		clone := *msg
-		clone.Redelivered = false
-		q.publish(&clone)
-		return true, nil
+		res.Routed = true
+		res.Rejected = !q.publish(cloneForQueue(msg))
+		return res, nil
 	}
 
-	targets := s.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{})
-	s.log.Debug("发布消息", "exchange", exchangeName, "routing_key", routingKey,
-		"targets", len(targets))
+	targets := s.vh.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{})
+	s.log.Debug("发布消息", "exchange", exchangeName, "routing_key", routingKey, "targets", len(targets))
 
-	routed := false
 	for _, name := range targets {
 		q, ok := s.vh.getQueue(name)
 		if !ok {
 			continue
 		}
-		// 每个队列一份消息副本：Redelivered 等状态是队列级的，不能跨队列共享
-		clone := *msg
-		clone.Redelivered = false
-		q.publish(&clone)
-		routed = true
+		res.Routed = true
+		if !q.publish(cloneForQueue(msg)) {
+			res.Rejected = true
+		}
 	}
-	return routed, nil
+	return res, nil
+}
+
+// cloneForQueue 为每个目标队列复制一份消息。
+//
+// Redelivered 等状态是队列级的，不能跨队列共享；消息体与属性是只读的，可以共享。
+func cloneForQueue(msg *plugin.Message) *plugin.Message {
+	clone := *msg
+	clone.Redelivered = false
+	return &clone
 }
 
 // resolveQueues 展开交换机路由，递归处理交换机到交换机的绑定。
-func (s *vhostSession) resolveQueues(ex *exchange, routingKey string, props plugin.Properties, visited map[string]struct{}) []string {
+func (v *vhost) resolveQueues(ex *exchange, routingKey string, props plugin.Properties, visited map[string]struct{}) []string {
 	if _, seen := visited[ex.name]; seen {
 		return nil // 防止交换机绑定成环导致无限递归
 	}
@@ -383,11 +483,11 @@ func (s *vhostSession) resolveQueues(ex *exchange, routingKey string, props plug
 	queues, exchanges := ex.routeAll(routingKey, props)
 	out := queues
 	for _, name := range exchanges {
-		next, ok := s.vh.getExchange(name)
+		next, ok := v.getExchange(name)
 		if !ok {
 			continue
 		}
-		out = append(out, s.resolveQueues(next, routingKey, props, visited)...)
+		out = append(out, v.resolveQueues(next, routingKey, props, visited)...)
 	}
 	// 去重：不同路径可能汇聚到同一队列
 	if len(out) < 2 {
@@ -405,9 +505,103 @@ func (s *vhostSession) resolveQueues(ex *exchange, routingKey string, props plug
 	return uniq
 }
 
+// ---------------------------------------------------------------------------
+// vhost 级维护：定时扫描与内部路由（死信）
+// ---------------------------------------------------------------------------
+
+// sweep 扫描需要计时的队列：过期消息转死信，空闲队列按 x-expires 删除。
+func (v *vhost) sweep(now time.Time) {
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.sweepSet))
+	for _, q := range v.sweepSet {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	for _, q := range queues {
+		if q.sweep(now) {
+			v.log.Debug("队列已过期，已删除", "queue", q.name)
+			v.removeQueue(q)
+		}
+	}
+}
+
+// removeQueue 从 vhost 中移除队列，清理绑定与消费者索引，并通知消费者被取消。
+func (v *vhost) removeQueue(q *queue) {
+	v.mu.Lock()
+	delete(v.queues, q.name)
+	delete(v.sweepSet, q.name)
+	for _, ex := range v.exchanges {
+		ex.removeQueueBindings(q.name)
+	}
+	for tag, cq := range v.consumers {
+		if cq == q {
+			delete(v.consumers, tag)
+		}
+	}
+	v.mu.Unlock()
+
+	// 对齐 RabbitMQ 的 consumer cancel notify：队列被删时服务端主动下发 basic.cancel
+	for _, tag := range q.cancelAllConsumers() {
+		v.log.Debug("队列被删除，消费者被取消", "queue", q.name, "consumer_tag", tag)
+	}
+	q.close()
+}
+
+// routeInternal 按 exchange / routingKey 投递消息，不做权限检查。
+//
+// 用于内核自身的内部路由（死信）：死信不是"某个用户在发布"，
+// 因此不该受发布者写权限的约束 —— 否则一个受限用户拒绝消息就会导致死信路由失败。
+func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey string) (routed, rejected bool) {
+	if exchangeName == defaultExchange {
+		q, ok := v.getQueue(routingKey)
+		if !ok {
+			return false, false
+		}
+		return true, !q.publish(cloneForQueue(msg))
+	}
+
+	ex, ok := v.getExchange(exchangeName)
+	if !ok {
+		return false, false
+	}
+	for _, name := range v.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{}) {
+		q, ok := v.getQueue(name)
+		if !ok {
+			continue
+		}
+		routed = true
+		if !q.publish(cloneForQueue(msg)) {
+			rejected = true
+		}
+	}
+	return routed, rejected
+}
+
+// dispatchDeadLetter 把一条死信投递到配置的死信交换机。
+func (v *vhost) dispatchDeadLetter(e deadLetterEntry) {
+	key := e.routingKey
+	if key == "" {
+		// 未配置 x-dead-letter-routing-key 时沿用原 routing key（对齐 RabbitMQ）
+		key = e.msg.RoutingKey
+	}
+	// 死信的报文头里改成"当前"的路由信息，原始信息已保留在 x-death 中
+	e.msg.Exchange = e.exchange
+	e.msg.RoutingKey = key
+
+	routed, _ := v.routeInternal(e.msg, e.exchange, key)
+	if !routed {
+		v.log.Debug("死信未命中任何队列，已丢弃",
+			"exchange", e.exchange, "routing_key", key, "reason", e.reason)
+	}
+}
+
 // ---------- 消费 ----------
 
 func (s *vhostSession) Consume(sub plugin.Subscription) (string, error) {
+	if err := s.perm.allowRead(sub.Queue); err != nil {
+		return "", err
+	}
 	q, ok := s.vh.getQueue(sub.Queue)
 	if !ok {
 		return "", plugin.Errorf(plugin.KindNotFound,
@@ -452,6 +646,9 @@ func (s *vhostSession) Cancel(consumerTag string) error {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no consumer with tag '%s' in vhost '%s'", consumerTag, s.vh.name)
 	}
+	if err := s.perm.allowRead(q.name); err != nil {
+		return err
+	}
 	s.forgetConsumer(consumerTag)
 	if q.cancel(consumerTag) {
 		s.deleteQueueIfAuto(q.name)
@@ -460,6 +657,9 @@ func (s *vhostSession) Cancel(consumerTag string) error {
 }
 
 func (s *vhostSession) Get(queueName string, noAck bool) (*plugin.Delivery, bool, error) {
+	if err := s.perm.allowRead(queueName); err != nil {
+		return nil, false, err
+	}
 	q, ok := s.vh.getQueue(queueName)
 	if !ok {
 		return nil, false, plugin.Errorf(plugin.KindNotFound,
@@ -539,29 +739,18 @@ func (s *vhostSession) forgetConsumer(tag string) {
 	s.vh.mu.Unlock()
 }
 
-// removeQueue 从 vhost 中移除队列，并清理指向它的绑定与消费者索引。
+// removeQueue 从 vhost 中移除队列并清理本会话的相关状态。
 func (s *vhostSession) removeQueue(name string, q *queue) {
-	s.vh.mu.Lock()
-	delete(s.vh.queues, name)
-	for _, ex := range s.vh.exchanges {
-		ex.removeQueueBindings(name)
-	}
-	for tag, cq := range s.vh.consumers {
-		if cq == q {
-			delete(s.vh.consumers, tag)
-		}
-	}
-	s.vh.mu.Unlock()
+	s.vh.removeQueue(q)
 
 	s.mu.Lock()
 	delete(s.exclusive, name)
-	s.mu.Unlock()
-
-	// 通知消费者被取消了（对齐 RabbitMQ 的 consumer cancel：队列被删时服务端主动 basic.cancel）
-	for _, tag := range q.cancelAllConsumers() {
-		s.log.Debug("队列被删除，消费者被取消", "queue", name, "consumer_tag", tag)
+	for tag, queueName := range s.tags {
+		if queueName == name {
+			delete(s.tags, tag)
+		}
 	}
-	q.close()
+	s.mu.Unlock()
 }
 
 // deleteQueueIfAuto 在自动删除队列的最后一名消费者离开后删除队列。

@@ -9,15 +9,28 @@ import (
 	"os"
 )
 
+// Permission 是用户在某个 vhost 上的操作权限。
+//
+// 三分类与语义对齐 RabbitMQ：configure 管拓扑声明与删除，write 管发布与绑定，
+// read 管消费与拉取。值为正则字符串，匹配对应的资源名（交换机名 / 队列名）。
+type Permission struct {
+	Configure string `json:"configure"`
+	Write     string `json:"write"`
+	Read      string `json:"read"`
+}
+
 // User 是内置用户表的一条记录（v1 仅内存用户表；LDAP / OAuth2 由认证插件提供）。
 type User struct {
 	// Password 明文口令。v1 仅用于内网开发环境，后续由认证插件提供哈希/外部后端。
 	Password string `json:"password"`
-	// Tags 用户标签（administrator / management / monitoring），M3 起生效。
+	// Tags 用户标签（administrator / management / monitoring），M5 管理面起生效。
 	Tags []string `json:"tags,omitempty"`
 	// RemoteAccess 为 true 时允许从非本机地址登录。
 	// 对齐 RabbitMQ：内置 guest 用户默认仅允许本机登录。
 	RemoteAccess bool `json:"remote_access,omitempty"`
+	// Permissions 按 vhost 名索引的权限。未列出的 vhost 一律拒绝。
+	// 权限检查在 M3 生效：越权操作返回 403 ACCESS_REFUSED。
+	Permissions map[string]Permission `json:"permissions,omitempty"`
 }
 
 // Listener 是监听配置。
@@ -60,18 +73,20 @@ func Default() *Config {
 	}
 }
 
+// fullPermission 表示不受限的权限。
+var fullPermission = Permission{Configure: ".*", Write: ".*", Read: ".*"}
+
 // Load 读取配置文件；path 为空时直接返回默认配置。
 func Load(path string) (*Config, error) {
 	cfg := Default()
-	if path == "" {
-		return cfg, nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取配置文件失败: %w", err)
-	}
-	if err := json.Unmarshal(raw, cfg); err != nil {
-		return nil, fmt.Errorf("解析配置文件失败: %w", err)
+	if path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("读取配置文件失败: %w", err)
+		}
+		if err := json.Unmarshal(raw, cfg); err != nil {
+			return nil, fmt.Errorf("解析配置文件失败: %w", err)
+		}
 	}
 	if cfg.DefaultVHost == "" {
 		cfg.DefaultVHost = "/"
@@ -79,7 +94,41 @@ func Load(path string) (*Config, error) {
 	if cfg.Plugins == nil {
 		cfg.Plugins = map[string]json.RawMessage{}
 	}
+	backfillPermissions(cfg)
 	return cfg, nil
+}
+
+// backfillPermissions 为未显式声明权限的内置用户补上全部 vhost 的完全权限。
+//
+// 理由：v1 的内置用户表就是"节点管理员"（与 administrator 标签一致），
+// 让配置文件里没写权限的既有部署保持可用。想限制某个用户时显式声明 permissions 即可 ——
+// 一旦声明，未列出的 vhost 一律拒绝（与 RabbitMQ 语义一致）。
+// M5 管理面引入动态权限表后，这里会改为不再兜底。
+func backfillPermissions(cfg *Config) {
+	vhosts := append([]string{}, cfg.VHosts...)
+	if !containsString(vhosts, cfg.DefaultVHost) {
+		vhosts = append(vhosts, cfg.DefaultVHost)
+	}
+	for name, u := range cfg.Users {
+		if len(u.Permissions) > 0 {
+			continue
+		}
+		perms := make(map[string]Permission, len(vhosts))
+		for _, vh := range vhosts {
+			perms[vh] = fullPermission
+		}
+		u.Permissions = perms
+		cfg.Users[name] = u
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 // PluginConfig 返回某个插件的配置段；不存在时返回空对象。

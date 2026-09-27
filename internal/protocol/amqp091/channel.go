@@ -29,6 +29,10 @@ type channel struct {
 	nextTag uint64
 	// prefetch 来自 basic.qos，作为新建消费者的默认额度
 	prefetch uint16
+	// confirm 为 true 时进入发布确认模式；publishSeq 是发布序号计数器
+	// （与 delivery-tag 是两套独立的编号空间）。
+	confirm    bool
+	publishSeq uint64
 	// pending 是正在组装的内容（basic.publish 之后等 header 与 body 帧）
 	pending *pendingContent
 	// closing 表示已因软错误关闭，等待客户端的 Channel.Close-Ok
@@ -129,17 +133,64 @@ func (ch *channel) finishPublish() error {
 	if sess == nil {
 		return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - vhost 会话未打开")
 	}
-	routed, err := sess.Publish(msg, p.pub.Exchange, p.pub.RoutingKey, p.pub.Mandatory)
+
+	// confirm 模式下先取号：无论结果如何，每次发布都占用一个连续序号，
+	// 否则客户端会看到序号跳跃而对不上自己的未确认记录。
+	seq, confirmed := ch.nextPublishSeq()
+
+	res, err := sess.Publish(msg, p.pub.Exchange, p.pub.RoutingKey, p.pub.Mandatory)
 	if err != nil {
 		return err
 	}
-	if !routed && p.pub.Mandatory {
-		// mandatory 未命中任何队列：按规范把消息退回给生产者
+	if !res.Routed && p.pub.Mandatory {
+		// mandatory 未命中任何队列：按规范把消息退回给生产者。
+		// 顺序很关键 —— Basic.Return 必须先于 confirm 发出，客户端才能把它与这条发布关联起来。
 		if err := ch.sendReturn(uint16(spec.NoRoute), "NO_ROUTE", msg); err != nil {
 			return err
 		}
 	}
-	return nil
+	if !confirmed {
+		return nil
+	}
+	if res.Rejected {
+		// 被队列因长度限制拒绝：否定确认，让生产者知道这条没进队列
+		return ch.sendConfirmNack(seq, false)
+	}
+	return ch.sendConfirmAck(seq, false)
+}
+
+// enableConfirm 打开本通道的发布确认模式。
+func (ch *channel) enableConfirm() {
+	ch.mu.Lock()
+	ch.confirm = true
+	ch.publishSeq = 0
+	ch.mu.Unlock()
+}
+
+// nextPublishSeq 在 confirm 模式下分配发布序号；未开启时第二个返回值为 false。
+func (ch *channel) nextPublishSeq() (uint64, bool) {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if !ch.confirm {
+		return 0, false
+	}
+	ch.publishSeq++
+	return ch.publishSeq, true
+}
+
+// sendConfirmAck 向生产者确认一条消息已被接收。
+//
+// 当前语义是"已入队（内存）"，与 RabbitMQ 对瞬时消息的处理一致。
+// 持久化在 M4 落地后，持久消息的确认必须改为落盘之后 —— 那时这里要接存储层。
+func (ch *channel) sendConfirmAck(seq uint64, multiple bool) error {
+	return ch.con.sendMethod(ch.id, spec.ClassBasic, spec.MethodBasicAck,
+		spec.EncodeBasicAck(seq, multiple))
+}
+
+// sendConfirmNack 向生产者否定确认。
+func (ch *channel) sendConfirmNack(seq uint64, multiple bool) error {
+	return ch.con.sendMethod(ch.id, spec.ClassBasic, spec.MethodBasicNack,
+		spec.EncodeBasicNack(seq, multiple, false))
 }
 
 // sendReturn 回送 Basic.Return + 内容。
@@ -302,7 +353,7 @@ func (ch *channel) requeueAll() {
 
 	for _, d := range items {
 		// 未确认消息必须回到队列，否则连接断开就会丢消息
-		d.Settle(true)
+		d.Settle(plugin.SettleRequeue)
 	}
 }
 
@@ -313,7 +364,7 @@ func (ch *channel) discardUnacked(tag uint64) {
 	delete(ch.unacked, tag)
 	ch.mu.Unlock()
 	if ok {
-		d.Settle(true)
+		d.Settle(plugin.SettleRequeue)
 	}
 }
 
@@ -321,14 +372,14 @@ func (ch *channel) discardUnacked(tag uint64) {
 // 确认
 // ---------------------------------------------------------------------------
 
-// ack 处理 basic.ack。
+// ack 处理 basic.ack（正常消费完成）。
 func (ch *channel) ack(tag uint64, multiple bool) error {
 	targets, err := ch.takeUnacked(tag, multiple)
 	if err != nil {
 		return err
 	}
 	for _, d := range targets {
-		d.Settle(false)
+		d.Settle(plugin.SettleAck)
 	}
 	return nil
 }
@@ -339,8 +390,12 @@ func (ch *channel) nack(tag uint64, multiple, requeue bool) error {
 	if err != nil {
 		return err
 	}
+	action := plugin.SettleReject
+	if requeue {
+		action = plugin.SettleRequeue
+	}
 	for _, d := range targets {
-		d.Settle(requeue)
+		d.Settle(action)
 	}
 	return nil
 }
@@ -375,6 +430,9 @@ func (ch *channel) takeUnacked(tag uint64, multiple bool) ([]*plugin.Delivery, e
 }
 
 // recover 处理 basic.recover：把本通道未确认的投递全部重新入队。
+//
+// Requueue=false 的原始语义（"重新投递给同一个消费者"）在规范里含糊，
+// RabbitMQ 对两种取值都做重新入队，这里保持一致。
 func (ch *channel) recover(requeue bool) {
 	ch.mu.Lock()
 	items := make([]*plugin.Delivery, 0, len(ch.unacked))
@@ -385,7 +443,7 @@ func (ch *channel) recover(requeue bool) {
 	ch.mu.Unlock()
 
 	for _, d := range items {
-		d.Settle(requeue)
+		d.Settle(plugin.SettleRequeue)
 	}
 }
 

@@ -1,20 +1,57 @@
 package broker
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"net"
 	"testing"
 
+	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
-// 本文件是 M2 内核语义的回归测试：路由、默认交换机、队列 FIFO 与确认。
+// 本文件是内核语义的回归测试：路由、默认交换机、队列 FIFO 与确认。
+
+func fullPermSet(t *testing.T) *permissionSet {
+	t.Helper()
+	set, err := newPermissionSet(config.Permission{Configure: ".*", Write: ".*", Read: ".*"})
+	if err != nil {
+		t.Fatalf("构造权限失败: %v", err)
+	}
+	return set
+}
 
 func newTestSession(t *testing.T, id string) (*vhost, plugin.Session) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	vh := newVHost("/", log)
-	return vh, newVHostSession(vh, id, log)
+	// dlxCh 传 nil：这些用例不涉及死信派发
+	vh := newVHost("/", log, nil)
+	return vh, newVHostSession(vh, id, "guest", fullPermSet(t), log)
+}
+
+// newTestBroker 返回带后台协程的内核（TTL 扫描与死信派发依赖它）。
+func newTestBroker(t *testing.T) *Broker {
+	t.Helper()
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("加载默认配置失败: %v", err)
+	}
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+	t.Cleanup(b.Close)
+	return b
+}
+
+// testSessionOf 走完整的"认证 → 打开 vhost"路径取会话，以便覆盖权限逻辑。
+func testSessionOf(t *testing.T, b *Broker, user, pass string) (plugin.Session, error) {
+	t.Helper()
+	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
+	core := b.NewSession(remote)
+	resp := append([]byte("\x00"+user+"\x00"), []byte(pass)...)
+	if _, err := core.Authenticate(context.Background(), "PLAIN", resp, remote); err != nil {
+		t.Fatalf("认证失败: %v", err)
+	}
+	return core.Session("/")
 }
 
 func mustDeclareQueue(t *testing.T, sess plugin.Session, req plugin.QueueDeclare) plugin.QueueInfo {
@@ -32,11 +69,11 @@ func TestDefaultExchangeRoutesByQueueName(t *testing.T) {
 	_, sess := newTestSession(t, "conn-1")
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
 
-	routed, err := sess.Publish(&plugin.Message{Body: []byte("hi")}, "", q.Name, false)
+	res, err := sess.Publish(&plugin.Message{Body: []byte("hi")}, "", q.Name, false)
 	if err != nil {
 		t.Fatalf("发布失败: %v", err)
 	}
-	if !routed {
+	if !res.Routed {
 		t.Fatalf("默认交换机未按队列名 %q 路由", q.Name)
 	}
 
@@ -55,11 +92,11 @@ func TestDefaultExchangeRoutesByQueueName(t *testing.T) {
 // TestDefaultExchangeUnknownQueue 未命中时不应报错，只是没路由出去。
 func TestDefaultExchangeUnknownQueue(t *testing.T) {
 	_, sess := newTestSession(t, "conn-1")
-	routed, err := sess.Publish(&plugin.Message{Body: []byte("x")}, "", "no.such.queue", false)
+	res, err := sess.Publish(&plugin.Message{Body: []byte("x")}, "", "no.such.queue", false)
 	if err != nil {
 		t.Fatalf("发布不应报错: %v", err)
 	}
-	if routed {
+	if res.Routed {
 		t.Fatalf("发布到不存在的队列名竟然被路由了")
 	}
 }
@@ -80,11 +117,11 @@ func TestFanoutRoutingToMultipleQueues(t *testing.T) {
 		}
 	}
 
-	routed, err := sess.Publish(&plugin.Message{Body: []byte("broadcast")}, "test.fanout", "", false)
+	res, err := sess.Publish(&plugin.Message{Body: []byte("broadcast")}, "test.fanout", "", false)
 	if err != nil {
 		t.Fatalf("发布失败: %v", err)
 	}
-	if !routed {
+	if !res.Routed {
 		t.Fatalf("fanout 未路由到任何队列")
 	}
 	for i, q := range []string{q1.Name, q2.Name} {
@@ -173,7 +210,7 @@ func TestQueueFIFOWithPrefetch(t *testing.T) {
 			t.Fatalf("第 %d 次 get 失败: ok=%v err=%v", i, ok, err)
 		}
 		got = append(got, string(d.Message.Body))
-		d.Settle(false) // 确认
+		d.Settle(plugin.SettleAck) // 确认
 	}
 	want := []string{"0", "1", "2"}
 	for i := range want {
@@ -198,7 +235,7 @@ func TestRequeueMarksRedelivered(t *testing.T) {
 	if d.Redelivered {
 		t.Fatalf("首次投递不应是 redelivered")
 	}
-	d.Settle(true) // 重新入队
+	d.Settle(plugin.SettleRequeue) // 重新入队
 
 	d2, ok, err := sess.Get(q.Name, false)
 	if err != nil || !ok {
@@ -240,7 +277,7 @@ func TestConsumeDispatchAndAck(t *testing.T) {
 			if string(d.Message.Body) != string([]byte{byte('a' + i)}) {
 				t.Fatalf("第 %d 条内容错误: %q", i, d.Message.Body)
 			}
-			d.Settle(false)
+			d.Settle(plugin.SettleAck)
 		default:
 			t.Fatalf("第 %d 条未被投递（prefetch 闸门或投递循环有问题）", i)
 		}
@@ -273,7 +310,7 @@ func TestExclusiveQueueOwnership(t *testing.T) {
 	q := mustDeclareQueue(t, owner, plugin.QueueDeclare{Name: "excl.q", Exclusive: true})
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	other := newVHostSession(vh, "conn-2", log)
+	other := newVHostSession(vh, "conn-2", "guest", fullPermSet(t), log)
 	if _, err := other.DeclareQueue(plugin.QueueDeclare{Name: q.Name, Exclusive: true}); err == nil {
 		t.Fatalf("其他会话声明同一独占队列应被拒绝")
 	} else if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindResourceLocked {

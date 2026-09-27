@@ -25,6 +25,16 @@ func NewStore(users map[string]config.User) *Store { return &Store{users: users}
 // Mechanisms 返回支持的 SASL 机制名（顺序即 Connection.Start 中下发的顺序）。
 func (s *Store) Mechanisms() []string { return []string{"PLAIN", "AMQPLAIN"} }
 
+// Permissions 返回用户在指定 vhost 上的权限；第二个返回值为 false 表示无权访问该 vhost。
+func (s *Store) Permissions(user, vhost string) (config.Permission, bool) {
+	rec, ok := s.users[user]
+	if !ok {
+		return config.Permission{}, false
+	}
+	p, ok := rec.Permissions[vhost]
+	return p, ok
+}
+
 // Authenticate 校验 SASL 响应并返回用户名。
 //
 // 失败时返回 *plugin.AuthError，由协议插件映射为对应的协议错误码（不在此处耦合协议细节）。

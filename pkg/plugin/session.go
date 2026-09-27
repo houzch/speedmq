@@ -62,10 +62,25 @@ type Message struct {
 	Redelivered bool
 }
 
+// SettleAction 是投递的结算方式。
+type SettleAction int
+
+const (
+	// SettleAck 确认消费完成：消息被移除，不进死信。
+	SettleAck SettleAction = iota
+	// SettleRequeue 重新入队（会被标记 redelivered）。
+	SettleRequeue
+	// SettleReject 拒绝消费：消息被丢弃；若队列配置了死信，则转入死信。
+	//
+	// 与 SettleAck 的区别只在死信路径上 —— 二者都丢弃消息，但只有 reject 才该死信，
+	// 因此这里必须是两个不同的取值，不能用一个 bool 表示。
+	SettleReject
+)
+
 // Delivery 是内核交给协议层的一条投递。
 //
-// 生命周期约定：协议层收到 Delivery 后必须恰好调用一次 Settle，
-// 或在连接/通道断开时由内核自动重新入队。
+// 生命周期约定：协议层收到 Delivery 后必须恰好结算一次
+// （SettleAck / SettleRequeue / SettleReject），或在连接断开时由内核自动重新入队。
 type Delivery struct {
 	// Message 是消息本体。
 	Message *Message
@@ -76,9 +91,8 @@ type Delivery struct {
 	// Redelivered 与 Message.Redelivered 一致，单独暴露便于协议层直接写入帧。
 	Redelivered bool
 
-	// Settle 由内核注入：requeue=false 表示确认并丢弃，true 表示重新入队。
-	// 协议层不要自行构造 Delivery —— 该字段为空时调用会被忽略。
-	Settle func(requeue bool)
+	// Settle 由内核注入，完成结算。协议层不要自行构造 Delivery —— 该字段为空时调用会被忽略。
+	Settle func(action SettleAction)
 }
 
 // Subscription 是内核与协议层之间的消费者契约。
@@ -170,6 +184,15 @@ func Errorf(kind ErrorKind, format string, args ...any) *Error {
 	return &Error{Kind: kind, Text: fmt.Sprintf(format, args...)}
 }
 
+// PublishResult 是发布的结果。
+type PublishResult struct {
+	// Routed 表示至少命中一个队列。未命中时协议层按 mandatory 决定是否 Basic.Return。
+	Routed bool
+	// Rejected 表示被某个队列因长度限制拒绝（overflow 为 reject-publish / reject-publish-dlx）。
+	// 协议层在 confirm 模式下应据此回 basic.nack；未开 confirm 时消息只能被丢弃（与 RabbitMQ 一致）。
+	Rejected bool
+}
+
 // Session 是绑定到某个 vhost 的协议无关操作面。
 //
 // 返回错误时一律是 *Error；协议层据 Kind 映射错误码与作用域（软错误关 Channel，硬错误关连接）。
@@ -200,9 +223,8 @@ type Session interface {
 
 	// ---------- 发布 ----------
 
-	// Publish 把消息投递到交换机；返回是否至少命中一个队列。
-	// 未命中时由协议层按 mandatory 标志决定是否回 Basic.Return。
-	Publish(msg *Message, exchange, routingKey string, mandatory bool) (routed bool, err error)
+	// Publish 把消息投递到交换机。
+	Publish(msg *Message, exchange, routingKey string, mandatory bool) (PublishResult, error)
 
 	// ---------- 消费 ----------
 

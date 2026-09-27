@@ -48,6 +48,8 @@ func run() error {
 	log.Info("SwiftMQ 启动中", "version", broker.Version, "data_dir", cfg.DataDir, "vhost", cfg.DefaultVHost)
 
 	kernel := broker.New(log, cfg)
+	// 停止 TTL 扫描与死信派发协程
+	defer kernel.Close()
 
 	// 内置插件清单：AMQP 0-9-1 从第一天就以"协议插件"的形式接入，
 	// 避免后续新增协议时再回头拆内核。

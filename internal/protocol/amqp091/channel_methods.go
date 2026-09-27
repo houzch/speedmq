@@ -22,8 +22,30 @@ func (ch *channel) handle(m spec.Method) error {
 		return ch.handleQueue(m)
 	case spec.ClassBasic:
 		return ch.handleBasic(m)
+	case spec.ClassConfirm:
+		return ch.handleConfirm(m)
 	default:
-		// Confirm / Tx 等尚未实现：按规范返回硬错误 540
+		// Tx 等尚未实现：按规范返回硬错误 540
+		return ch.con.failConnection(spec.NotImplemented,
+			fmt.Sprintf("NOT_IMPLEMENTED - 尚未支持 %s", m.Name()), m.ClassID, m.MethodID)
+	}
+}
+
+// handleConfirm 处理发布确认（class 85）。
+func (ch *channel) handleConfirm(m spec.Method) error {
+	switch m.MethodID {
+	case spec.MethodConfirmSelect:
+		noWait, err := spec.DecodeConfirmSelect(m.Args)
+		if err != nil {
+			return ch.fail(syntaxErr("Confirm.Select", err), m.ClassID, m.MethodID)
+		}
+		ch.enableConfirm()
+		if noWait {
+			return nil
+		}
+		return ch.con.sendMethod(ch.id, spec.ClassConfirm, spec.MethodConfirmSelectOk,
+			spec.EncodeConfirmSelectOk())
+	default:
 		return ch.con.failConnection(spec.NotImplemented,
 			fmt.Sprintf("NOT_IMPLEMENTED - 尚未支持 %s", m.Name()), m.ClassID, m.MethodID)
 	}
@@ -567,7 +589,7 @@ func (ch *channel) drainPending() {
 		e.pending = nil
 		e.mu.Unlock()
 		for _, d := range buffered {
-			d.Settle(true)
+			d.Settle(plugin.SettleRequeue)
 		}
 	}
 }

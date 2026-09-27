@@ -91,6 +91,12 @@ const (
 	MethodBasicNack         uint16 = 120
 )
 
+// Confirm (85) 方法标识。
+const (
+	MethodConfirmSelect   uint16 = 10
+	MethodConfirmSelectOk uint16 = 11
+)
+
 // 错误码。这些值决定客户端"关 Channel 还是关连接"，属兼容性高危区，不可随意改动。
 const (
 	ReplySuccess       uint16 = 200

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/houzch/swiftmq/internal/auth"
 	"github.com/houzch/swiftmq/internal/config"
@@ -17,7 +18,14 @@ import (
 )
 
 // Version 是内核版本。
-const Version = "0.2.0"
+const Version = "0.3.0"
+
+const (
+	// deadLetterBuffer 是死信派发队列的缓冲长度。
+	deadLetterBuffer = 4096
+	// backgroundInterval 是 TTL / 队列过期的扫描周期。
+	backgroundInterval = 100 * time.Millisecond
+)
 
 // Broker 是内核单例。
 type Broker struct {
@@ -27,6 +35,11 @@ type Broker struct {
 	vhosts map[string]*vhost
 	// sessions 用于生成会话标识（独占队列归属判定用）
 	sessions atomic.Uint64
+
+	// dlxCh 是死信派发入口：队列只做非阻塞入队，由单个后台协程实际路由。
+	dlxCh  chan deadLetterEntry
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // New 构造内核。
@@ -43,14 +56,64 @@ func New(log *slog.Logger, cfg *config.Config) *Broker {
 		cfg:    cfg,
 		auth:   auth.NewStore(cfg.Users),
 		vhosts: map[string]*vhost{},
+		dlxCh:  make(chan deadLetterEntry, deadLetterBuffer),
+		done:   make(chan struct{}),
 	}
 	for _, name := range names {
 		if _, dup := b.vhosts[name]; dup {
 			continue
 		}
-		b.vhosts[name] = newVHost(name, log)
+		b.vhosts[name] = newVHost(name, log, b.dlxCh)
 	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	b.cancel = cancel
+	go b.background(ctx)
 	return b
+}
+
+// Close 停止后台协程（TTL 扫描与死信派发）。可重复调用。
+func (b *Broker) Close() {
+	if b.cancel == nil {
+		return
+	}
+	b.cancel()
+	b.cancel = nil
+	<-b.done
+}
+
+// background 是内核唯一的维护协程：周期性扫描过期消息，并派发死信。
+//
+// 用"单协程集中扫描"而不是"每队列一个定时器"：TTL 与死信的时效性是秒级概念，
+// 100ms 的粒度足够，同时避免了每队列一个定时器的资源开销。
+// 若将来需要更高精度或队列规模极大，再替换为按到期时间排序的时间轮。
+func (b *Broker) background(ctx context.Context) {
+	defer close(b.done)
+	ticker := time.NewTicker(backgroundInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e := <-b.dlxCh:
+			b.dispatchDeadLetter(e)
+		case <-ticker.C:
+			now := time.Now()
+			for _, v := range b.vhosts {
+				v.sweep(now)
+			}
+		}
+	}
+}
+
+// dispatchDeadLetter 把一条死信交给所属 vhost 路由。
+func (b *Broker) dispatchDeadLetter(e deadLetterEntry) {
+	v, ok := b.vhosts[e.vhost]
+	if !ok {
+		return
+	}
+	v.dispatchDeadLetter(e)
 }
 
 // NewSession 为一条新连接创建协议无关的操作面。
@@ -68,6 +131,9 @@ type session struct {
 	broker *Broker
 	id     string
 	log    *slog.Logger
+	// user 是认证通过的用户名（权限校验用）。
+	// 它在握手阶段写入、之后只读，因此无需加锁。
+	user string
 	// vh 在打开 vhost 后创建；缓存以避免重复调用 Session 时丢失独占队列等会话状态
 	vh *vhostSession
 }
@@ -101,10 +167,13 @@ func (s *session) ServerProperties() map[string]any {
 			// 每个消费者独立的 prefetch 额度
 			"per_consumer_qos": true,
 
+			// ---- M3 已实现并声明 ----
+			// 发布者确认：confirm.select 后每条发布都回 basic.ack / basic.nack
+			"publisher_confirms": true,
+
 			// ---- 尚未实现，一律不声明（客户端会自行降级）----
-			//   publisher_confirms      → M3
-			//   consumer_priorities     → M3
-			//   direct_reply_to         → M3
+			//   consumer_priorities     → 消费者优先级（x-priority）尚未实现
+			//   direct_reply_to         → amq.rabbitmq.reply-to 伪队列尚未实现
 			//   connection.blocked      → M4
 		},
 	}
@@ -119,6 +188,7 @@ func (s *session) Authenticate(_ context.Context, mechanism string, response []b
 	if err != nil {
 		return plugin.Identity{}, err
 	}
+	s.user = user
 	return plugin.Identity{User: user}, nil
 }
 
@@ -139,7 +209,29 @@ func (s *session) Session(vhostName string) (plugin.Session, error) {
 			"NOT_ALLOWED - vhost %s not found", vhostName)
 	}
 	if s.vh == nil {
-		s.vh = newVHostSession(vh, s.id, s.log)
+		perm, err := compilePermission(s.broker.auth, s.user, vhostName)
+		if err != nil {
+			return nil, err
+		}
+		s.vh = newVHostSession(vh, s.id, s.user, perm, s.log)
 	}
 	return s.vh, nil
+}
+
+// compilePermission 取出用户在该 vhost 上的权限并预编译正则。
+//
+// 无权限记录即拒绝（与 RabbitMQ 一致）：vhost 的访问权与 vhost 内的操作权都由此表决定。
+func compilePermission(store *auth.Store, user, vhost string) (*permissionSet, error) {
+	p, ok := store.Permissions(user, vhost)
+	if !ok {
+		return nil, plugin.Errorf(plugin.KindAccessRefused,
+			"ACCESS_REFUSED - access to vhost '%s' refused for user '%s'", vhost, user)
+	}
+	set, err := newPermissionSet(p)
+	if err != nil {
+		// 配置里的正则写错属于部署错误，直接拒绝而不是放行
+		return nil, plugin.Errorf(plugin.KindAccessRefused,
+			"ACCESS_REFUSED - invalid permission pattern for user '%s' on vhost '%s': %v", user, vhost, err)
+	}
+	return set, nil
 }
