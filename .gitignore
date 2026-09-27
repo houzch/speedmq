@@ -1,0 +1,43 @@
+# ---- Go 构建产物 ----
+# 本地构建的二进制（swiftmqd、amqp091probe、测试二进制等）
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# go test -c 产出的测试二进制
+*.test
+# 覆盖率与 profile
+*.out
+coverage.*
+# Delve 等调试器输出
+__debug_bin*
+
+# ---- Go 本地临时目录 ----
+# 部分环境把 GOTMPDIR 指到工作区内（绕开系统临时目录的执行限制）
+/.gotmp/
+
+# ---- 本地运行时数据与日志 ----
+# 默认 data_dir（M4 起落盘消息与元数据）
+/data/
+*.log
+logs/
+
+# ---- 本地私有配置 ----
+# 示例配置 configs/ 需要提交；本地覆盖请用 *.local.json / *.local.yaml
+*.local.json
+*.local.yaml
+*.local.yml
+
+# ---- 编辑器 / IDE ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---- 操作系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini

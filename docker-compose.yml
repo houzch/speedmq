@@ -1,0 +1,57 @@
+# SwiftMQ 本地编排
+#
+#   docker compose up -d --build      # 构建并启动
+#   docker compose ps                 # 查看状态（含健康检查）
+#   docker compose logs -f            # 跟随日志
+#   docker compose down               # 停止并删除容器（保留数据卷）
+#   docker compose down -v            # 连数据卷一起删除
+#
+# 设计要点：
+#   - 配置以只读方式挂载，改配置后 `docker compose restart` 即可生效，无需重建镜像
+#   - 数据目录使用命名卷，容器重建不丢数据（M4 起真正落盘消息与元数据）
+#   - 健康检查暂用 TCP 探测：M1 还没有 HTTP 管理端点，等 M5 的 /api/overview 落地后改为 HTTP 探测
+#   - 容器内的 guest 需要 remote_access=true（配置里已开，仅供本地开发）：
+#     容器收到的连接源是 Docker 网关地址而非 127.0.0.1，不放开会被 403 拒绝
+
+name: swiftmq
+
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: swiftmq:0.1.0
+    container_name: swiftmq
+
+    # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动
+    restart: unless-stopped
+
+    ports:
+      - "5672:5672"
+
+    volumes:
+      # 配置文件（只读挂载，便于本地修改调试）
+      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      # 数据目录（命名卷，避免污染工作区）
+      - swiftmq-data:/var/lib/swiftmq
+
+    # CMD 覆盖：把日志级别调到 debug，便于观察握手与错误路径
+    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "debug"]
+
+    healthcheck:
+      # 用 busybox nc 做 TCP 连通性探测（alpine 自带，无需额外安装）
+      test: ["CMD", "nc", "-z", "127.0.0.1", "5672"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+
+    # 单机开发场景下的日志轮转，避免长期运行撑爆磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  swiftmq-data:

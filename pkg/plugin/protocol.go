@@ -1,0 +1,89 @@
+package plugin
+
+import (
+	"context"
+	"crypto/tls"
+	"log/slog"
+	"net"
+)
+
+// ListenerSpec 描述协议插件希望内核为其创建的监听。
+type ListenerSpec struct {
+	// Name 监听名，同一插件内唯一，用于日志与指标区分。
+	Name string
+	// Addr 形如 ":5672"。
+	Addr string
+	// TLS 非空时使用 TLS 监听。
+	TLS *tls.Config
+	// DetectOnly 为 true 时不创建监听，只参与协议嗅探。
+	// 用于"复用其他插件监听端口"的场景，例如 AMQP 1.0 与 0-9-1 同端口共存。
+	DetectOnly bool
+}
+
+// Protocol 是协议插件契约（设计文档 10.5）。
+//
+// 三条硬约束：
+//  1. 协议插件不做存储、不做路由：只负责编解码与会话，所有业务动作通过 Core 完成，
+//     以此保证 vhost / 权限 / 路由 / 队列语义 / 确认 / DLX / TTL 在所有协议上完全一致；
+//  2. 同端口多协议由 Sniff 决定；
+//  3. 协议间消息格式转换不由协议插件承担（交给消息处理插件）。
+type Protocol interface {
+	// Name 协议名，如 "amqp091"。
+	Name() string
+	// DefaultListeners 返回默认监听，可被配置覆盖。
+	DefaultListeners() []ListenerSpec
+	// Sniff 判断连接首部是否属于本协议；按注册顺序调用，先匹配者生效。
+	Sniff(peek []byte) bool
+	// Serve 处理一条已建立（必要时已完成 TLS 握手）的连接，返回即代表连接结束。
+	Serve(ctx context.Context, conn net.Conn, core Core) error
+}
+
+// Identity 表示认证通过后的调用方身份。
+type Identity struct {
+	// User 登录用户名。
+	User string
+	// VHost 该连接最终打开的 vhost（在 Connection.Open 阶段填充）。
+	VHost string
+}
+
+// AuthFailureKind 是认证失败的语义分类。具体错误码由各协议自行映射，
+// 这样内核的认证逻辑不必知道 AMQP 的 403 / 530 等协议细节。
+type AuthFailureKind int
+
+const (
+	// AuthFailureAccessRefused 凭证不可接受（AMQP 0-9-1 映射为 403 ACCESS_REFUSED）。
+	AuthFailureAccessRefused AuthFailureKind = iota
+	// AuthFailureMechanismUnsupported 认证机制不支持（AMQP 0-9-1 映射为 530 NOT_ALLOWED）。
+	AuthFailureMechanismUnsupported
+)
+
+// AuthError 是 Core.Authenticate 失败时返回的错误。
+type AuthError struct {
+	// Kind 失败分类。
+	Kind AuthFailureKind
+	// Text 供协议层写入 reply-text 的描述。
+	Text string
+}
+
+func (e *AuthError) Error() string { return e.Text }
+
+// Core 是协议无关的内核操作面：任何协议插件都只能通过这些方法触达内核语义。
+//
+// M1 只实现连接级所需方法；Broker 操作面（DeclareExchange / DeclareQueue /
+// Bind / Publish / Consume / Ack / Nack / Reject）在 M2 接入。
+type Core interface {
+	// Logger 返回连接级日志器。
+	Logger() *slog.Logger
+	// ServerProperties 返回 Connection.Start 下发的 server-properties（含 capabilities）。
+	//
+	// 注意：capabilities 声明即承诺（设计文档 4.2），只能在对应能力真正实现后打开。
+	ServerProperties() map[string]any
+	// Mechanisms 返回支持的 SASL 机制名，如 ["PLAIN", "AMQPLAIN"]。
+	Mechanisms() []string
+	// Authenticate 校验 SASL 响应；失败返回错误（协议侧对应 530 NOT_ALLOWED）。
+	Authenticate(ctx context.Context, mechanism string, response []byte, remoteAddr net.Addr) (Identity, error)
+	// VHostExists 判断 vhost 是否存在；不存在时协议侧返回 402 INVALID_PATH。
+	VHostExists(name string) bool
+	// DefaultVHost 返回默认 vhost 名。
+	DefaultVHost() string
+}

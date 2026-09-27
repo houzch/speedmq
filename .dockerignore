@@ -1,0 +1,22 @@
+# 构建上下文裁剪：只保留编译内核所需的源码
+
+# 本地构建产物
+bin/
+*.exe
+*.test
+
+# Go 临时目录（本机 go test 的临时编译目录）
+.gotmp/
+
+# 集成测试是独立 module（含第三方客户端依赖），不参与镜像构建
+test/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# 本地配置与日志
+*.log
+data/

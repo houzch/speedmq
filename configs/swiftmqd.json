@@ -1,0 +1,16 @@
+{
+  "data_dir": "/var/lib/swiftmq",
+  "default_vhost": "/",
+  "vhosts": ["/"],
+  "listeners": {
+    "amqp091": [{ "addr": ":5672" }]
+  },
+  "users": {
+    "guest": {
+      "password": "guest",
+      "tags": ["administrator"],
+      "remote_access": true
+    }
+  },
+  "plugins": {}
+}
