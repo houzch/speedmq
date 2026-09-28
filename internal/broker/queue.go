@@ -1,11 +1,14 @@
 package broker
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
@@ -15,6 +18,11 @@ const (
 	deathReasonExpired  = "expired"
 	deathReasonMaxLen   = "maxlen"
 )
+
+// messageOverhead 是每条消息在内存中的近似固定开销（结构体、切片头、属性表指针等），
+// 用于管理面的"队列内存占用"估算。它是估算而非精确值，因此对齐 RabbitMQ 的做法：
+// 只承诺"同量级、可比较"，不承诺与 RSS 逐字节吻合。
+const messageOverhead = 64
 
 // queuedMsg 是队列中的一条消息及其队列内状态。
 type queuedMsg struct {
@@ -27,6 +35,9 @@ type queuedMsg struct {
 	expireAt time.Time
 	// priority 是消息优先级（仅优先级队列有意义）。
 	priority uint8
+	// storeSeq 是持久化日志中的序号；persisted 表示该消息已写入磁盘、需要按序号回收。
+	storeSeq  uint64
+	persisted bool
 }
 
 // consumer 是队列上的一个消费者。
@@ -58,9 +69,15 @@ type queue struct {
 	owner      string // 独占队列归属的会话标识；空表示非独占
 	arguments  map[string]any
 	args       queueArgs
+	log        *slog.Logger
 
 	// deadLetter 把消息交给 vhost 投递到死信交换机；由 vhost 在创建队列时注入。
 	deadLetter func(msg *plugin.Message, reason string)
+
+	// store 是持久化存储；非 durable 队列或未开启落盘时为 nil。
+	// storeSeq 是持久化序号分配器（只在 store 非 nil 时使用）。
+	store    *store.QueueStore
+	storeSeq uint64
 
 	mu          sync.Mutex
 	ready       []*queuedMsg
@@ -73,10 +90,16 @@ type queue struct {
 	closed      bool
 	dispatching bool
 	lastUsed    time.Time
+
+	// 累计计数器：管理面与 Prometheus 指标用（只增不减）。
+	published atomic.Uint64
+	delivered atomic.Uint64
+	gotten    atomic.Uint64
+	acked     atomic.Uint64
 }
 
 func newQueue(name string, durable, exclusive, autoDelete bool, owner string,
-	arguments map[string]any, args queueArgs) *queue {
+	arguments map[string]any, args queueArgs, log *slog.Logger) *queue {
 	return &queue{
 		name:       name,
 		durable:    durable,
@@ -85,6 +108,7 @@ func newQueue(name string, durable, exclusive, autoDelete bool, owner string,
 		owner:      owner,
 		arguments:  arguments,
 		args:       args,
+		log:        log.With("queue", name),
 		unacked:    map[uint64]*queuedMsg{},
 		lastUsed:   time.Now(),
 	}
@@ -105,6 +129,95 @@ func (q *queue) stats() (ready, consumers uint32) {
 	return uint32(len(q.ready)), uint32(len(q.consumers))
 }
 
+// QueueSnapshot 是队列的只读视图（管理面与指标用）。
+//
+// 字段刻意与 RabbitMQ Management API 的队列对象同名，让"复用现有运维工具"
+// 这件事停留在字段映射，而不是语义翻译。
+type QueueSnapshot struct {
+	VHost                string
+	Name                 string
+	Durable              bool
+	AutoDelete           bool
+	Exclusive            bool
+	Arguments            map[string]any
+	Ready                int
+	Unacked              int
+	ConsumerCount        int
+	ConsumerTags         []string
+	ExclusiveConsumerTag string
+	// MemoryBytes 是内存占用的估算值（就绪消息体 + 每消息固定开销）。
+	MemoryBytes int64
+	// IdleSince 是该队列最近一次被访问（发布/投递/声明）的时刻。
+	IdleSince time.Time
+	// 累计计数。
+	Published uint64
+	Delivered uint64
+	Gotten    uint64
+	Acked     uint64
+}
+
+// snapshot 返回队列的只读快照。vhostName 由调用方提供（队列自身不持有 vhost 名）。
+func (q *queue) snapshot(vhostName string) QueueSnapshot {
+	s := QueueSnapshot{
+		VHost:      vhostName,
+		Name:       q.name,
+		Durable:    q.durable,
+		AutoDelete: q.autoDelete,
+		Exclusive:  q.exclusive,
+		Arguments:  q.arguments,
+		Published:  q.published.Load(),
+		Delivered:  q.delivered.Load(),
+		Gotten:     q.gotten.Load(),
+		Acked:      q.acked.Load(),
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	s.Ready = len(q.ready)
+	s.Unacked = len(q.unacked)
+	s.ConsumerCount = len(q.consumers)
+	s.MemoryBytes = q.readyBytes + int64(len(q.ready))*messageOverhead
+	s.IdleSince = q.lastUsed
+	for _, c := range q.consumers {
+		s.ConsumerTags = append(s.ConsumerTags, c.sub.Tag)
+		if c.sub.Exclusive {
+			s.ExclusiveConsumerTag = c.sub.Tag
+		}
+	}
+	return s
+}
+
+// ConsumerSnapshot 是消费者的只读视图。
+type ConsumerSnapshot struct {
+	VHost       string
+	Queue       string
+	Tag         string
+	AckRequired bool
+	Prefetch    uint16
+	Exclusive   bool
+	Arguments   map[string]any
+}
+
+// consumerSnapshots 返回本队列消费者快照。
+func (q *queue) consumerSnapshots(vhostName string) []ConsumerSnapshot {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]ConsumerSnapshot, 0, len(q.consumers))
+	for _, c := range q.consumers {
+		out = append(out, ConsumerSnapshot{
+			VHost:       vhostName,
+			Queue:       q.name,
+			Tag:         c.sub.Tag,
+			AckRequired: !c.sub.NoAck,
+			Prefetch:    c.sub.Prefetch,
+			Exclusive:   c.sub.Exclusive,
+			// 消费者参数（如 x-priority）当前未在内核侧保留，统一给空表，
+			// 避免管理面出现 null（客户端会当成"字段缺失"）。
+			Arguments: map[string]any{},
+		})
+	}
+	return out
+}
+
 // touchLocked 记录队列被访问的时刻（x-expires 用）。
 func (q *queue) touchLocked() { q.lastUsed = time.Now() }
 
@@ -112,12 +225,15 @@ func (q *queue) touchLocked() { q.lastUsed = time.Now() }
 // 发布
 // ---------------------------------------------------------------------------
 
-// publish 把消息入队并触发一次投递。返回 false 表示被长度限制拒绝。
-func (q *queue) publish(msg *plugin.Message) bool {
+// publish 把消息入队并触发一次投递。
+//
+// 返回值 accepted 为 false 表示被长度限制拒绝或持久化失败；
+// commit 非 nil 表示该消息需要落盘，调用方（协议层）应等待它后再回 confirm。
+func (q *queue) publish(msg *plugin.Message) (accepted bool, commit *store.Commit) {
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
-		return true // 队列已删：投递失败由上层忽略，不算"被拒绝"
+		return true, nil // 队列已删：投递失败由上层忽略，不算"被拒绝"
 	}
 	q.touchLocked()
 
@@ -130,24 +246,40 @@ func (q *queue) publish(msg *plugin.Message) bool {
 		switch q.args.overflow {
 		case overflowRejectPublish:
 			q.mu.Unlock()
-			return false
+			return false, nil
 		case overflowRejectPublishDLX:
 			q.mu.Unlock()
 			if q.args.hasDeadLetter() {
 				// reject-publish-dlx：把被拒的消息直接送去死信
 				q.deadLetterLocked(item, deathReasonMaxLen)
 			}
-			return false
+			return false, nil
 		default:
 			// drop-head：先挤出队首腾出空间
 			q.dropHeadForRoomLocked(item)
 		}
 	}
 
+	// 持久化：只有 durable 队列 + 持久消息（delivery-mode=2）才写盘，与 RabbitMQ 一致。
+	// 写入失败时拒绝发布而不是静默入内存 —— 否则客户端会收到 confirm 却拿不到持久性。
+	if q.store != nil && msg.Properties.Persistent() {
+		q.storeSeq++
+		item.storeSeq = q.storeSeq
+		c, err := q.store.Append(item.storeSeq, msg)
+		if err != nil {
+			q.mu.Unlock()
+			q.log.Error("消息落盘失败，已拒绝本次发布", "queue", q.name, "err", err)
+			return false, nil
+		}
+		item.persisted = true
+		commit = c
+	}
+
 	q.insertLocked(item)
+	q.published.Add(1)
 	q.mu.Unlock()
 	q.dispatch()
-	return true
+	return true, commit
 }
 
 // wouldExceedLocked 判断加入该消息是否会超过长度限制。
@@ -305,20 +437,73 @@ func (q *queue) purge() uint32 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	n := uint32(len(q.ready))
+	for _, item := range q.ready {
+		// 被清掉的消息同样要在索引里标记删除，否则重启后会全部复活
+		q.storeAckLocked(item)
+	}
 	q.ready = nil
 	q.readyBytes = 0
 	return n
 }
 
-// close 关闭队列并丢弃消息。
+// close 关闭队列、丢弃内存中的消息并删除其磁盘数据。
 func (q *queue) close() {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	q.closed = true
 	q.ready = nil
 	q.readyBytes = 0
 	q.unacked = map[uint64]*queuedMsg{}
 	q.consumers = nil
+	st := q.store
+	q.store = nil
+	q.mu.Unlock()
+
+	if st != nil {
+		if err := st.Remove(); err != nil {
+			q.log.Warn("删除队列存储失败", "queue", q.name, "err", err)
+		}
+	}
+}
+
+// discardStore 关闭存储但保留磁盘数据。
+//
+// 只用于"并发声明同一 durable 队列时落败"的场景：刚打开的存储句柄要关掉，
+// 但磁盘上的数据属于那个已存在的队列，不能删。
+func (q *queue) discardStore() {
+	if q.store != nil {
+		_ = q.store.Close()
+	}
+}
+
+// restore 把从磁盘恢复出来的消息放回队首。
+//
+// 恢复出来的消息统一标记 redelivered=true：软状态（谁投递过、是否已投递）不落盘，
+// 无法区分"曾投递未确认"与"从未投递"，而漏标 redelivered 会让客户端把重复投递
+// 当成首次投递，是更危险的错误方向（设计 5.3.8）。
+func (q *queue) restore(recovered []store.Recovered) {
+	if len(recovered) == 0 {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, r := range recovered {
+		msg := r.Message
+		msg.Redelivered = true
+		item := &queuedMsg{
+			msg:       msg,
+			priority:  msg.Properties.Priority,
+			storeSeq:  r.Seq,
+			persisted: true,
+		}
+		if ttl := q.args.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
+			item.expireAt = time.Now().Add(ttl)
+		}
+		q.insertLocked(item)
+		if r.Seq > q.storeSeq {
+			q.storeSeq = r.Seq
+		}
+	}
+	q.log.Info("队列已恢复持久化消息", "queue", q.name, "messages", len(recovered))
 }
 
 // settle 结算一条投递。
@@ -346,7 +531,9 @@ func (q *queue) settle(item *queuedMsg, action plugin.SettleAction) {
 	case plugin.SettleReject:
 		q.deadLetterLocked(item, deathReasonRejected)
 	default:
-		// SettleAck：正常消费完成，直接丢弃
+		// SettleAck：正常消费完成，直接丢弃（并在索引中标记，避免重启后复活）
+		q.acked.Add(1)
+		q.storeAckLocked(item)
 	}
 	q.mu.Unlock()
 }
@@ -361,7 +548,10 @@ func (q *queue) get(noAck bool) (*plugin.Delivery, bool) {
 	if item == nil {
 		return nil, false
 	}
+	q.gotten.Add(1)
 	if noAck {
+		// no-ack 投递即结算：消息已归消费者，索引要同步标记，否则重启后会重复投递
+		q.storeAckLocked(item)
 		return &plugin.Delivery{
 			Message:     item.msg,
 			Queue:       q.name,
@@ -489,8 +679,11 @@ func (q *queue) selectBatchLocked() []batchItem {
 		if item == nil {
 			break
 		}
+		q.delivered.Add(1)
 
 		if c.sub.NoAck {
+			// no-ack 投递即结算：索引同步标记，避免重启后重复投递
+			q.storeAckLocked(item)
 			d := &plugin.Delivery{
 				Message:     item.msg,
 				Queue:       q.name,
@@ -563,6 +756,8 @@ func (q *queue) decInFlightLocked(tag string) {
 // 这里可以在持锁状态下调用回调：内核的 deadLetter 实现只做"入队到派发器"，
 // 不会回调本队列，因此不存在自锁（死信目标恰好是本队列）的风险。
 func (q *queue) deadLetterLocked(item *queuedMsg, reason string) {
+	// 消息离开本队列（无论是否真的进了 DLQ）：索引里要记一笔，否则重启后它会"复活"
+	q.storeAckLocked(item)
 	if q.deadLetter == nil || q.args.deadLetterEx == "" {
 		return
 	}
@@ -570,6 +765,20 @@ func (q *queue) deadLetterLocked(item *queuedMsg, reason string) {
 	clone := *item.msg
 	addDeathHeader(&clone, reason, q.name, time.Now())
 	q.deadLetter(&clone, reason)
+}
+
+// storeAckLocked 在队列索引中把该消息标记为已离开队列。调用方需持有 q.mu。
+//
+// 用 persisted 标志保证只写一次：同一消息可能经过 requeue → 再投递 → 再结算，
+// 重复写 ack 记录只会让索引无谓膨胀。
+func (q *queue) storeAckLocked(item *queuedMsg) {
+	if q.store == nil || !item.persisted {
+		return
+	}
+	item.persisted = false
+	if err := q.store.Ack(item.storeSeq); err != nil {
+		q.log.Error("写入索引删除标记失败", "queue", q.name, "seq", item.storeSeq, "err", err)
+	}
 }
 
 // addDeathHeader 在消息头里追加 x-death 记录（简化版：reason / queue / time / count）。

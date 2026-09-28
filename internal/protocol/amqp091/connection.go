@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -49,11 +50,20 @@ type connection struct {
 
 	identity plugin.Identity
 
+	// 握手结果：只写一次、之后只读（管理面的连接快照会读它们）。
+	clientProps   map[string]any
+	authMechanism string
+
 	mu        sync.Mutex
 	lastRead  time.Time
 	lastWrite time.Time
 
 	// channels 记录已打开的 channel。
+	//
+	// 读循环是唯一的写者，但**管理面会在另一个协程读取通道表**（连接/通道列表），
+	// 因此这里必须有一把独立的锁：它与 mu（写帧串行化）分开，避免"读通道表"与
+	// "写帧"互相阻塞，也避免在持锁状态下写帧造成自锁。
+	chMu     sync.RWMutex
 	channels map[uint16]*channel
 	// session 是打开 vhost 后取得的协议无关操作面。
 	// 它在握手阶段（任何消费者出现之前）写入，之后只读，因此无需加锁。
@@ -109,11 +119,18 @@ func (c *connection) run(ctx context.Context) error {
 		"frame_max", c.frameMax,
 		"heartbeat", c.heartbeat.String())
 
+	// 把"连接/通道快照"与"强制断开"两个回调交给内核：管理面据此列出连接、
+	// 以及在运维点"强制关闭"时优雅断开（reply-code 320）。
+	c.core.SetConnectionProbe(c.snapshot)
+	c.core.SetDisconnectFunc(c.forceClose)
+
 	hbCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	if c.heartbeat > 0 {
 		go c.heartbeatLoop(hbCtx)
 	}
+	// 资源水位通知：内存/磁盘水位变化时向客户端下发 Connection.Blocked / Unblocked
+	go c.notifyLoop(hbCtx)
 
 	err := c.loop(hbCtx)
 	if errors.Is(err, errClientClosed) {
@@ -189,6 +206,9 @@ func (c *connection) handshakeStart(ctx context.Context) error {
 		return c.failConnection(code, text, spec.ClassConnection, spec.MethodConnectionStartOk)
 	}
 	c.identity = ident
+	// 记录客户端属性与机制名：管理面的连接列表要展示它们（对齐 RabbitMQ 的 client_properties）
+	c.clientProps = map[string]any(ok.ClientProperties)
+	c.authMechanism = ok.Mechanism
 	return nil
 }
 
@@ -312,7 +332,7 @@ func (c *connection) handleMethod(f codec.Frame) error {
 			fmt.Sprintf("%s 不能使用 channel 0", m.Name()), m.ClassID, m.MethodID)
 	}
 
-	if ch, ok := c.channels[f.Channel]; ok {
+	if ch, ok := c.getChannel(f.Channel); ok {
 		return ch.handle(m)
 	}
 
@@ -332,6 +352,112 @@ func (c *connection) handleMethod(f codec.Frame) error {
 		return c.closeChannelByID(f.Channel, spec.ChannelError,
 			fmt.Sprintf("channel %d 未打开", f.Channel), m.ClassID, m.MethodID)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 通道表访问（并发安全：读循环写、管理面读）
+// ---------------------------------------------------------------------------
+
+func (c *connection) getChannel(id uint16) (*channel, bool) {
+	c.chMu.RLock()
+	defer c.chMu.RUnlock()
+	ch, ok := c.channels[id]
+	return ch, ok
+}
+
+func (c *connection) channelCount() int {
+	c.chMu.RLock()
+	defer c.chMu.RUnlock()
+	return len(c.channels)
+}
+
+func (c *connection) addChannel(id uint16, ch *channel) {
+	c.chMu.Lock()
+	c.channels[id] = ch
+	c.chMu.Unlock()
+}
+
+// removeChannel 取出并移除通道。
+func (c *connection) removeChannel(id uint16) (*channel, bool) {
+	c.chMu.Lock()
+	defer c.chMu.Unlock()
+	ch, ok := c.channels[id]
+	if ok {
+		delete(c.channels, id)
+	}
+	return ch, ok
+}
+
+// drainChannels 取出全部通道并清空（连接结束时调用）。
+func (c *connection) drainChannels() []*channel {
+	c.chMu.Lock()
+	defer c.chMu.Unlock()
+	out := make([]*channel, 0, len(c.channels))
+	for id, ch := range c.channels {
+		out = append(out, ch)
+		delete(c.channels, id)
+	}
+	return out
+}
+
+// snapshot 返回本连接的实时快照（管理面按需拉取）。
+func (c *connection) snapshot() plugin.ConnectionInfo {
+	info := plugin.ConnectionInfo{
+		Protocol:         "AMQP 0-9-1",
+		ClientProperties: c.clientProps,
+		AuthMechanism:    c.authMechanism,
+		FrameMax:         c.frameMax,
+		ChannelMax:       c.channelMax,
+	}
+	if c.heartbeat > 0 {
+		info.HeartbeatSeconds = uint16(c.heartbeat / time.Second)
+	}
+
+	c.chMu.RLock()
+	type chInfo struct {
+		num uint16
+		ch  *channel
+	}
+	list := make([]chInfo, 0, len(c.channels))
+	for id, ch := range c.channels {
+		list = append(list, chInfo{num: id, ch: ch})
+	}
+	c.chMu.RUnlock()
+
+	// 通道号排序：管理 UI 与 CLI 的输出顺序必须稳定，否则每次刷新都在跳
+	sort.Slice(list, func(i, j int) bool { return list[i].num < list[j].num })
+	for _, item := range list {
+		ch := item.ch
+		ch.mu.Lock()
+		info.Channels = append(info.Channels, plugin.ChannelInfo{
+			Number:        item.num,
+			ConsumerCount: len(ch.consumers),
+			PrefetchCount: ch.prefetch,
+			Confirm:       ch.confirm,
+			Unacked:       len(ch.unacked),
+		})
+		ch.mu.Unlock()
+	}
+	return info
+}
+
+// forceClose 响应管理面的强制关闭：先发 Connection.Close（320 CONNECTION_FORCED），
+// 再关闭底层连接唤醒读循环。
+//
+// 这里**不等待**对端回 Close-Ok：该回调由管理面的 HTTP 协程调用，
+// 而读循环也在同一连接上读，两个协程同时读会破坏帧解析。发完就断开是安全且足够的 ——
+// 客户端已经能从 320 错误码分辨"被运维关闭"与"网络抖动"。
+func (c *connection) forceClose(reason string) {
+	args, err := spec.EncodeConnectionClose(spec.Reply{
+		Code: spec.ConnectionForced,
+		Text: reason,
+	})
+	if err != nil {
+		c.log.Warn("构造 Connection.Close 失败，直接断开连接", "err", err)
+	} else if err := c.sendMethod(0, spec.ClassConnection, spec.MethodConnectionClose, args); err != nil {
+		c.log.Debug("发送 Connection.Close 失败（对端可能已断开）", "err", err)
+	}
+	c.shutdown()
 }
 
 func (c *connection) handleConnectionMethod(m spec.Method) error {
@@ -369,11 +495,11 @@ func (c *connection) openChannel(id uint16, m spec.Method) error {
 		return c.closeChannelByID(id, spec.SyntaxError, "Channel.Open 解析失败: "+err.Error(),
 			m.ClassID, m.MethodID)
 	}
-	if uint16(len(c.channels)) >= c.channelMax {
+	if c.channelCount() >= int(c.channelMax) {
 		return c.closeChannelByID(id, spec.ChannelError,
 			fmt.Sprintf("channel 数量已达到 channel-max=%d", c.channelMax), m.ClassID, m.MethodID)
 	}
-	c.channels[id] = newChannel(id, c)
+	c.addChannel(id, newChannel(id, c))
 	c.log.Debug("channel 已打开", "channel", id)
 	return c.sendMethod(id, spec.ClassChannel, spec.MethodChannelOpenOk, spec.EncodeChannelOpenOk())
 }
@@ -381,8 +507,7 @@ func (c *connection) openChannel(id uint16, m spec.Method) error {
 // closeChannelByID 以软错误关闭一个 channel：释放它的消费者、把未确认消息重新入队，
 // 并通知客户端。连接与其余 channel 不受影响。
 func (c *connection) closeChannelByID(id uint16, code uint16, text string, classID, methodID uint16) error {
-	if ch, ok := c.channels[id]; ok {
-		delete(c.channels, id)
+	if ch, ok := c.removeChannel(id); ok {
 		ch.release()
 	}
 	args, err := spec.EncodeChannelClose(spec.Reply{Code: code, Text: text, ClassID: classID, MethodID: methodID})
@@ -395,19 +520,20 @@ func (c *connection) closeChannelByID(id uint16, code uint16, text string, class
 
 // teardown 释放连接级资源。必须在读循环退出后调用，且在 run 的 defer 中保证执行。
 func (c *connection) teardown() {
-	for id, ch := range c.channels {
-		delete(c.channels, id)
+	for _, ch := range c.drainChannels() {
 		ch.release()
 	}
 	if c.session != nil {
 		// 取消本连接的全部消费者、删除它的独占队列
 		c.session.Close()
 	}
+	// 注销连接级通知订阅，避免连接结束后仍被内核引用
+	c.core.Close()
 }
 
 // handleContentHeader 处理内容头帧：把属性挂到该 channel 正在组装的内容上。
 func (c *connection) handleContentHeader(f codec.Frame) error {
-	ch, ok := c.channels[f.Channel]
+	ch, ok := c.getChannel(f.Channel)
 	if !ok {
 		return c.closeChannelByID(f.Channel, spec.ChannelError,
 			fmt.Sprintf("channel %d 未打开", f.Channel), spec.ClassBasic, spec.MethodBasicPublish)
@@ -423,7 +549,7 @@ func (c *connection) handleContentHeader(f codec.Frame) error {
 
 // handleContentBody 处理内容体帧。
 func (c *connection) handleContentBody(f codec.Frame) error {
-	ch, ok := c.channels[f.Channel]
+	ch, ok := c.getChannel(f.Channel)
 	if !ok {
 		return c.closeChannelByID(f.Channel, spec.ChannelError,
 			fmt.Sprintf("channel %d 未打开", f.Channel), spec.ClassBasic, 0)
@@ -511,10 +637,54 @@ func (c *connection) failConnection(code uint16, text string, classID, methodID 
 
 // dropChannel 从已打开集合中移除通道并释放其资源（客户端主动关闭时）。
 func (c *connection) dropChannel(id uint16) {
-	if ch, ok := c.channels[id]; ok {
-		delete(c.channels, id)
+	if ch, ok := c.removeChannel(id); ok {
 		ch.release()
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 资源水位通知
+// ---------------------------------------------------------------------------
+
+// notifyLoop 把内核的资源水位事件转成 Connection.Blocked / Unblocked 帧。
+//
+// 这两个方法只有服务端会发，且必须走 channel 0 —— 客户端据此暂停发布或告警。
+func (c *connection) notifyLoop(ctx context.Context) {
+	notify := c.core.Notifications()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-c.closed:
+			return
+		case n, ok := <-notify:
+			if !ok {
+				return
+			}
+			if err := c.sendFlowNotification(n); err != nil {
+				c.log.Debug("下发资源水位通知失败", "blocked", n.Blocked, "err", err)
+				return
+			}
+		}
+	}
+}
+
+func (c *connection) sendFlowNotification(n plugin.Notification) error {
+	if !n.Blocked {
+		return c.sendMethod(0, spec.ClassConnection, spec.MethodConnectionUnblocked,
+			spec.EncodeConnectionUnblocked())
+	}
+	// reason 是 shortstr：超长时截断，否则整个通知会因编码失败而发不出去
+	reason := n.Reason
+	if len(reason) > 255 {
+		reason = reason[:255]
+	}
+	args, err := spec.EncodeConnectionBlocked(reason)
+	if err != nil {
+		return err
+	}
+	c.log.Warn("已向客户端下发 Connection.Blocked", "reason", reason)
+	return c.sendMethod(0, spec.ClassConnection, spec.MethodConnectionBlocked, args)
 }
 
 // ---------------------------------------------------------------------------

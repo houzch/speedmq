@@ -181,3 +181,18 @@ func (r *Registry) ProtocolOwner(name string) string {
 	}
 	return ""
 }
+
+// ProtocolsOf 返回某个插件注册的全部协议（按注册顺序）。
+//
+// 用于"热停用某个插件的监听"：接入层按插件名找到它名下的监听集合。
+func (r *Registry) ProtocolsOf(owner string) []sdk.Protocol {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []sdk.Protocol
+	for _, e := range r.protocols {
+		if e.owner == owner {
+			out = append(out, e.proto)
+		}
+	}
+	return out
+}

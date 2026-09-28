@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
@@ -37,6 +39,8 @@ type vhost struct {
 	consumers map[string]*queue
 	// sweepSet 是需要定时扫描的队列（配了消息 TTL 或队列过期）。
 	sweepSet map[string]*queue
+	// stores 是消息持久化层的入口，durable 队列据此打开自己的存储。
+	stores *store.Manager
 	// dlxCh 是死信派发器入口；由内核的单个后台协程消费。
 	dlxCh chan<- deadLetterEntry
 }
@@ -51,7 +55,7 @@ type deadLetterEntry struct {
 }
 
 // newVHost 创建 vhost 并预声明内置交换机。
-func newVHost(name string, log *slog.Logger, dlxCh chan<- deadLetterEntry) *vhost {
+func newVHost(name string, log *slog.Logger, stores *store.Manager, dlxCh chan<- deadLetterEntry) *vhost {
 	v := &vhost{
 		name:      name,
 		log:       log.With("vhost", name),
@@ -59,6 +63,7 @@ func newVHost(name string, log *slog.Logger, dlxCh chan<- deadLetterEntry) *vhos
 		queues:    map[string]*queue{},
 		consumers: map[string]*queue{},
 		sweepSet:  map[string]*queue{},
+		stores:    stores,
 		dlxCh:     dlxCh,
 	}
 	// 默认交换机：按 routing key（即队列名）直接投递，不可声明、不可删除
@@ -96,6 +101,9 @@ type vhostSession struct {
 	user string // 认证用户（权限错误信息与审计用）
 	perm *permissionSet
 	log  *slog.Logger
+	// gate 是生产端水位闸门：内存/磁盘水位触发时挂起发布（而不是丢弃消息）。
+	// 为 nil 表示不做流控（内核单测直接构造会话的场景）。
+	gate func() error
 
 	mu        sync.Mutex
 	exclusive map[string]struct{} // 本会话创建的独占队列
@@ -105,7 +113,7 @@ type vhostSession struct {
 
 var _ plugin.Session = (*vhostSession)(nil)
 
-func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.Logger) *vhostSession {
+func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.Logger, gate func() error) *vhostSession {
 	if perm != nil {
 		perm.user = user
 	}
@@ -115,18 +123,19 @@ func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.
 		user:      user,
 		perm:      perm,
 		log:       log.With("vhost", vh.name, "user", user),
+		gate:      gate,
 		exclusive: map[string]struct{}{},
 		tags:      map[string]string{},
 	}
 }
 
-// newQueueIn 创建队列并接线死信派发。
+// newQueueIn 创建队列：接线死信派发，并为 durable 队列打开持久化存储。
 //
 // 死信走"异步入队 + 内核后台派发"，而不是在队列持锁时同步路由 ——
 // 后者在"死信目标恰好是本队列"时会自锁死。
-func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args queueArgs) *queue {
+func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args queueArgs) (*queue, error) {
 	q := newQueue(name, req.Durable, req.Exclusive, req.AutoDelete,
-		s.ownerOf(req.Exclusive), map[string]any(req.Arguments), args)
+		s.ownerOf(req.Exclusive), map[string]any(req.Arguments), args, s.vh.log)
 
 	dlx, dlxKey, vhostName := args.deadLetterEx, args.deadLetterKey, s.vh.name
 	ch := s.vh.dlxCh
@@ -141,7 +150,17 @@ func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args que
 			s.log.Warn("死信派发队列已满，丢弃死信", "queue", name, "reason", reason)
 		}
 	}
-	return q
+
+	if s.vh.stores != nil {
+		st, recovered, err := s.vh.stores.Open(s.vh.name, name, req.Durable)
+		if err != nil {
+			return nil, plugin.Errorf(plugin.KindInternal,
+				"INTERNAL_ERROR - 打开队列 '%s' 的存储失败: %v", name, err)
+		}
+		q.store = st
+		q.restore(recovered)
+	}
+	return q, nil
 }
 
 // ---------- 交换机 ----------
@@ -282,10 +301,15 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		if err := s.perm.allowConfigure(name); err != nil {
 			return plugin.QueueInfo{}, err
 		}
-		s.addQueue(s.newQueueIn(name, req, args), args)
+		q, err := s.newQueueIn(name, req, args)
+		if err != nil {
+			return plugin.QueueInfo{}, err
+		}
+		s.addQueue(q, args)
 		s.log.Debug("队列已声明（服务端命名）", "queue", name,
 			"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
-		return plugin.QueueInfo{Name: name}, nil
+		ready, consumers := q.stats()
+		return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
 	}
 
 	if q, ok := s.vh.getQueue(req.Name); ok {
@@ -312,13 +336,25 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		return plugin.QueueInfo{}, err
 	}
 
-	if !s.addQueue(s.newQueueIn(req.Name, req, args), args) {
-		// 并发声明竞争：另一个会话已抢先创建
+	q, err := s.newQueueIn(req.Name, req, args)
+	if err != nil {
+		return plugin.QueueInfo{}, err
+	}
+	if !s.addQueue(q, args) {
+		// 并发声明竞争：另一个会话已抢先创建。
+		// 这里只能关掉自己刚打开的存储，绝不能删磁盘数据 —— 那份数据属于已存在的队列。
+		q.discardStore()
+		if existing, ok := s.vh.getQueue(req.Name); ok {
+			ready, consumers := existing.stats()
+			return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
+		}
 		return plugin.QueueInfo{Name: req.Name}, nil
 	}
 	s.log.Debug("队列已声明", "queue", req.Name,
 		"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
-	return plugin.QueueInfo{Name: req.Name}, nil
+	// 恢复出来的持久消息也要体现在声明响应里：客户端常据此判断"队列里是否还有存量"
+	ready, consumers := q.stats()
+	return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
 }
 
 // addQueue 把队列加入 vhost，并按需要登记到定时扫描集合。返回 false 表示同名队列已存在。
@@ -419,6 +455,14 @@ func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
 func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey string, mandatory bool) (plugin.PublishResult, error) {
 	var res plugin.PublishResult
 
+	// 资源水位触发时在这里挂起：读循环停读 → TCP 背压，客户端自然被限速。
+	// 阻塞生产者而不是丢弃消息，是水位流控的核心语义。
+	if s.gate != nil {
+		if err := s.gate(); err != nil {
+			return res, plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - %v", err)
+		}
+	}
+
 	ex, ok := s.vh.getExchange(exchangeName)
 	if !ok {
 		return res, plugin.Errorf(plugin.KindNotFound,
@@ -443,25 +487,59 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		if !ok {
 			return res, nil
 		}
+		accepted, commit := q.publish(cloneForQueue(msg))
 		res.Routed = true
-		res.Rejected = !q.publish(cloneForQueue(msg))
+		res.Rejected = !accepted
+		res.Durable = waitForDurable([]*store.Commit{commit})
 		return res, nil
 	}
 
 	targets := s.vh.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{})
 	s.log.Debug("发布消息", "exchange", exchangeName, "routing_key", routingKey, "targets", len(targets))
 
+	var commits []*store.Commit
 	for _, name := range targets {
 		q, ok := s.vh.getQueue(name)
 		if !ok {
 			continue
 		}
 		res.Routed = true
-		if !q.publish(cloneForQueue(msg)) {
+		accepted, commit := q.publish(cloneForQueue(msg))
+		if !accepted {
 			res.Rejected = true
 		}
+		if commit != nil {
+			commits = append(commits, commit)
+		}
 	}
+	// 扇出到 N 个队列时必须等**全部**队列落盘：只等一个会让确认语义形同虚设
+	res.Durable = waitForDurable(commits)
 	return res, nil
+}
+
+// waitForDurable 把多个队列的落盘凭据合成一个等待函数；没有任何持久化时为 nil。
+//
+// 必须过滤 nil 凭据：非持久消息不会产生 Commit，若把它当成"有持久化"，
+// 协议层就会等一个不存在的落盘，甚至误判为需要等待。
+func waitForDurable(commits []*store.Commit) func() error {
+	var real []*store.Commit
+	for _, c := range commits {
+		if c != nil {
+			real = append(real, c)
+		}
+	}
+	if len(real) == 0 {
+		return nil
+	}
+	return func() error {
+		var firstErr error
+		for _, c := range real {
+			if err := c.Wait(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 }
 
 // cloneForQueue 为每个目标队列复制一份消息。
@@ -503,6 +581,149 @@ func (v *vhost) resolveQueues(ex *exchange, routingKey string, props plugin.Prop
 		uniq = append(uniq, name)
 	}
 	return uniq
+}
+
+// ---------------------------------------------------------------------------
+// vhost 级只读视图（管理面用）
+// ---------------------------------------------------------------------------
+
+// VHostSnapshot 是 vhost 的只读视图。
+type VHostSnapshot struct {
+	Name            string
+	Messages        int
+	MessagesReady   int
+	MessagesUnacked int
+	QueueCount      int
+	ExchangeCount   int
+	ConsumerCount   int
+	Published       uint64
+	Delivered       uint64
+	Acked           uint64
+}
+
+// snapshot 汇总 vhost 内的消息与对象计数。
+func (v *vhost) snapshot() VHostSnapshot {
+	s := VHostSnapshot{Name: v.name}
+
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	s.ExchangeCount = len(v.exchanges)
+	v.mu.RUnlock()
+
+	s.QueueCount = len(queues)
+	for _, q := range queues {
+		qs := q.snapshot(v.name)
+		s.MessagesReady += qs.Ready
+		s.MessagesUnacked += qs.Unacked
+		s.ConsumerCount += qs.ConsumerCount
+		s.Published += qs.Published
+		s.Delivered += qs.Delivered
+		s.Acked += qs.Acked
+	}
+	s.Messages = s.MessagesReady + s.MessagesUnacked
+	return s
+}
+
+// queueSnapshots 返回本 vhost 全部队列的快照（按名字排序，保证输出稳定）。
+func (v *vhost) queueSnapshots() []QueueSnapshot {
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	out := make([]QueueSnapshot, 0, len(queues))
+	for _, q := range queues {
+		out = append(out, q.snapshot(v.name))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// exchangeSnapshots 返回本 vhost 全部交换机的快照（按名字排序）。
+func (v *vhost) exchangeSnapshots() []ExchangeSnapshot {
+	v.mu.RLock()
+	exs := make([]*exchange, 0, len(v.exchanges))
+	for _, e := range v.exchanges {
+		exs = append(exs, e)
+	}
+	v.mu.RUnlock()
+
+	out := make([]ExchangeSnapshot, 0, len(exs))
+	for _, e := range exs {
+		out = append(out, e.snapshot(v.name))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// bindingSnapshots 返回本 vhost 全部绑定。
+//
+// 包含"默认交换机的隐式绑定"：每个队列都以自己的名字绑定在默认交换机上。
+// 不列出来的话，管理 UI 的交换机列表会漏掉使用最频繁的那个交换机。
+func (v *vhost) bindingSnapshots() []BindingSnapshot {
+	v.mu.RLock()
+	exs := make([]*exchange, 0, len(v.exchanges))
+	for _, e := range v.exchanges {
+		exs = append(exs, e)
+	}
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	var out []BindingSnapshot
+	for _, e := range exs {
+		out = append(out, e.bindingSnapshots(v.name)...)
+	}
+	for _, q := range queues {
+		out = append(out, BindingSnapshot{
+			VHost:           v.name,
+			Source:          defaultExchange,
+			Destination:     q.name,
+			DestinationType: "queue",
+			RoutingKey:      q.name,
+			Arguments:       map[string]any{},
+			PropertiesKey:   q.name,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		if out[i].Destination != out[j].Destination {
+			return out[i].Destination < out[j].Destination
+		}
+		return out[i].RoutingKey < out[j].RoutingKey
+	})
+	return out
+}
+
+// consumerSnapshots 返回本 vhost 全部消费者（按队列、标签排序）。
+func (v *vhost) consumerSnapshots() []ConsumerSnapshot {
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	var out []ConsumerSnapshot
+	for _, q := range queues {
+		out = append(out, q.consumerSnapshots(v.name)...)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Queue != out[j].Queue {
+			return out[i].Queue < out[j].Queue
+		}
+		return out[i].Tag < out[j].Tag
+	})
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +779,8 @@ func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey stri
 		if !ok {
 			return false, false
 		}
-		return true, !q.publish(cloneForQueue(msg))
+		accepted, _ := q.publish(cloneForQueue(msg))
+		return true, !accepted
 	}
 
 	ex, ok := v.getExchange(exchangeName)
@@ -571,7 +793,8 @@ func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey stri
 			continue
 		}
 		routed = true
-		if !q.publish(cloneForQueue(msg)) {
+		// 死信是异步派发，没有生产者在前台等待；落盘凭据无人等待也无妨（刷盘照常发生）
+		if accepted, _ := q.publish(cloneForQueue(msg)); !accepted {
 			rejected = true
 		}
 	}

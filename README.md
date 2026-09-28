@@ -6,9 +6,9 @@
 
 ***
 
-## ⚠️ 当前状态：M3（可靠性与高级特性），**仍不可用于生产**
+## ⚠️ 当前状态：M5（管理与观测），**仍不可用于生产**
 
-处于早期开发阶段。M3 已交付发布确认、TTL、死信、长度限制、优先级与权限校验。
+处于早期开发阶段。M5 已交付管理 HTTP API、内嵌管理 UI、Prometheus 指标、`swiftmqctl` 与插件热启停。
 
 **已实现**
 
@@ -22,17 +22,29 @@
 - **长度限制**：`x-max-length` / `x-max-length-bytes`，`x-overflow` 支持 `drop-head` / `reject-publish` / `reject-publish-dlx`
 - **其他队列参数**：`x-max-priority`（优先级队列）、`x-expires`（空闲队列自动删除）
 - **权限**：按 vhost 的 `configure` / `write` / `read` 正则鉴权，越权返回 403
+- **持久化（M4）**：durable 队列 + `delivery-mode=2` 的消息落盘，自研**分段追加日志 + 队列索引**（`msg_stores/vhosts/<vhost>/queues/<queue>/`），每条记录带长度前缀与 CRC32，恢复时丢弃尾部半写记录
+- **fsync 档位（M4）**：`none` / `os` / `batch` / `always`，且 **publisher confirm 时机与档位强绑定** —— 持久消息只有按档位落盘后才回 `basic.ack`
+- **崩溃恢复（M4）**：重启后重新声明 durable 队列即恢复磁盘上的消息；未确认的消息回到队头并置 `redelivered=true`
+- **资源水位流控（M4）**：内存水位（进程占用 vs 物理内存比例）与磁盘剩余空间下限触发时**阻塞生产者**（读循环停读 → TCP 背压），并向连接下发 `Connection.Blocked` / `Unblocked`
+- **管理 HTTP API（M5）**：RabbitMQ Management API 兼容子集（`/api/overview`、`queues`、`exchanges`、`bindings`、`connections`、`channels`、`consumers`、`users`、`permissions`、`vhosts`、`plugins`、`whoami`），Basic Auth + 标签与 vhost 权限双重校验
+- **管理 UI（M5）**：Vue 3 + Vite + TypeScript + Element Plus，四个页面（Overview / Queues / Exchanges / Connections）+ 队列详情，产物经 `go:embed` 打进二进制，**单个二进制即可访问**，无额外静态服务
+- **可观测性（M5）**：Prometheus 文本格式 `/metrics`（队列深度、未确认、投递/确认计数、磁盘/内存水位、插件状态）；`-log-format json` 结构化日志
+- **运维 CLI（M5）**：`swiftmqctl`（`status` / `list_queues` / `list_connections` / `list_exchanges` / `list_bindings` / `add_user` / `set_permissions` / `close_connection` / `plugins list|show|enable|disable`）
+- **插件治理（M5）**：`swiftmqctl plugins` 与管理 API 均可**不重启内核**热启用/停用插件（落到实处是关闭/恢复它的 listener），配置可声明 `enabled` / `required` / `builtin`
+- **动态用户与权限（M5）**：通过管理 API / CLI 增删用户与权限（内存生效，不落盘 —— 元数据持久化属 M6 的内嵌 Raft）
 - **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
 - 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
 
 **尚未实现**
 
-- 消息持久化与崩溃恢复（当前消息只在内存，重启即丢 —— 因此持久消息的 confirm 语义仍弱于 RabbitMQ）
 - Direct Reply-To（`amq.rabbitmq.reply-to`）、消费者优先级（`x-priority`）
-- 用户 / vhost / 权限的**动态**管理（当前权限表来自配置文件，改配置需重启）
+- 用户 / vhost / 权限的**持久化**（重启后回到配置文件的内容）；vhost 的动态增删
+- 策略（policies）接口：`/api/policies` 返回空数组，功能未实现
+- 拓扑元数据的持久化（交换机与绑定重启后需客户端重新声明；M4/M5 只持久化队列消息）
+- 段文件的轮转与磁盘回收（当前每队列单段，删除仅标记）
 - 集群、仲裁队列与流队列、Stream 协议
-- 管理 HTTP API 与管理 UI
 - AMQP 1.0 / MQTT / STOMP（计划以插件形态提供）
+- YAML 配置（当前支持 JSON 文件 + `SWIFTMQ_*` 环境变量；YAML 需要引入解析依赖，暂缓）
 
 完整路线图见下文「路线图」一节。
 
@@ -51,7 +63,7 @@ docker compose ps          # 状态应显示 Up (healthy)
 docker compose logs -f     # 跟随日志
 ```
 
-默认监听 `5672`（AMQP 0-9-1）。
+默认监听 `5672`（AMQP 0-9-1）与 `15672`（管理 UI / HTTP API / 指标）。
 
 ### 方式二：本地构建
 
@@ -62,27 +74,55 @@ git clone https://github.com/houzch/swiftmq.git
 cd swiftmq
 
 go build -o bin/swiftmqd ./cmd/swiftmqd
+go build -o bin/swiftmqctl ./cmd/swiftmqctl
 ./bin/swiftmqd -log-level debug
 ```
 
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.3.0 data_dir=data vhost=/
+msg="SwiftMQ 启动中" version=0.5.0 data_dir=data vhost=/ fsync=os
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
+msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview ui=/
 ```
+
+### 管理与观测（M5）
+
+启动后有两个入口（默认端口与 RabbitMQ 一致）：
+
+| 入口 | 地址 | 说明 |
+| --- | --- | --- |
+| 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections + 队列详情（发布测试消息 / 取消息 / purge / delete） |
+| 管理 HTTP API | <http://localhost:15672/api/overview> | RabbitMQ Management API 兼容子集，Basic Auth（账号口令同 AMQP） |
+| Prometheus 指标 | <http://localhost:15672/metrics> | 文本暴露格式，同样需要 Basic Auth |
+
+```bash
+# 命令行查看状态（swiftmqctl 走管理 API，因此 CLI 与内核版本解耦）
+./bin/swiftmqctl status
+./bin/swiftmqctl list_queues
+./bin/swiftmqctl plugins list
+./bin/swiftmqctl plugins disable amqp091   # 热停用：AMQP 端口立即关闭，管理面仍在服务
+./bin/swiftmqctl plugins enable amqp091    # 热启用：端口恢复，无需重启进程
+
+# 直接调 API
+curl -u guest:guest http://127.0.0.1:15672/api/overview
+```
+
+> 管理 UI 的前端源码在 `web/`，构建产物 `web/dist` 随仓库提交并经 `go:embed` 打进二进制，
+> 因此**部署只需一个二进制**、不装 Node，也没有额外的 Nginx。
+> 改前端后必须重新 `npm run build` 并提交产物，否则二进制里跑的仍是旧页面。
 
 ### 验证连接是否可用
 
-仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），覆盖连接、拓扑声明、四种路由、发布消费与确认、TTL/死信、长度限制与错误路径：
+仓库自带一个真实客户端探针（基于 `rabbitmq/amqp091-go`），覆盖连接、拓扑声明、四种路由、发布消费与确认、TTL/死信、长度限制、持久消息与能力声明：
 
 ```bash
 cd test/integration/amqp091probe
 go run .
 ```
 
-期望输出（19 个用例）：
+期望输出（21 个用例）：
 
 ```
 PASS  M1 正常连接 + Channel 开关 + 优雅关闭
@@ -104,9 +144,14 @@ PASS  M3 TTL 到期进入死信队列（x-death reason=expired）
 PASS  M3 nack(requeue=false) 进入死信队列（x-death reason=rejected）
 PASS  M3 长度限制 reject-publish：第二条被 basic.nack
 PASS  M3 mandatory 未命中：Basic.Return 必须先于 confirm 到达
+PASS  M4 durable 队列 + 持久消息：confirm 逐条 ack 且消息可正常消费
+PASS  M4 服务端如实声明 connection.blocked 能力
 
-全部通过（19/19）
+全部通过（21/21）
 ```
+
+> 崩溃恢复需要重启 broker，无法在探针里覆盖；它由内核单测（`internal/broker/m4_test.go`）
+> 与 `internal/store` 的恢复用例验证，含"强杀进程后重启仍能取回已确认消息"的手工验证。
 
 ### 其他语言的客户端测试
 
@@ -143,10 +188,13 @@ conn.close()
 
 命令行参数：
 
-| 参数           | 默认值    | 说明                                  |
-| ------------ | ------ | ----------------------------------- |
-| `-config`    | 空      | JSON 配置文件路径；不指定则使用内置默认值             |
-| `-log-level` | `info` | `debug` / `info` / `warn` / `error` |
+| 参数           | 默认值      | 说明                                       |
+| ------------ | -------- | ---------------------------------------- |
+| `-config`    | 空        | JSON 配置文件路径；不指定则使用内置默认值                  |
+| `-log-level` | `info`   | `debug` / `info` / `warn` / `error`      |
+| `-log-format`| `text`   | `text`（人读）/ `json`（日志系统采集）               |
+
+`-log-level` / `-log-format` 也可用环境变量 `SWIFTMQ_LOG_LEVEL` / `SWIFTMQ_LOG_FORMAT` 提供（命令行优先）。
 
 配置文件示例（见 [configs/swiftmqd.json](configs/swiftmqd.json)）：
 
@@ -161,7 +209,19 @@ conn.close()
   "users": {
     "guest": { "password": "guest", "tags": ["administrator"], "remote_access": true }
   },
-  "plugins": {}
+  "storage": {
+    "fsync": "os",
+    "flush_interval_ms": 200,
+    "memory_high_watermark": 0.4,
+    "disk_free_limit": 52428800
+  },
+  "management": {
+    "enabled": true,
+    "addr": ":15672"
+  },
+  "plugins": {
+    "amqp091": { "builtin": true, "enabled": true }
+  }
 }
 ```
 
@@ -170,10 +230,48 @@ conn.close()
 | `data_dir`  | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
 | `vhosts`    | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上                |
 | `listeners` | 按**插件名**覆盖监听地址                                          |
-| `users`     | 内置用户表，`remote_access: false` 时仅允许本机登录                   |
-| `plugins`   | 各插件的配置段，插件通过 `Host.Config` 读取自己的段                       |
+| `users`     | 内置用户表，`remote_access: false` 时仅允许本机登录（管理面同样受限）           |
+| `plugins`   | 各插件的配置段；内核只读其中的治理开关（`enabled` / `required` / `builtin`），其余原样交给插件 |
+| `storage`   | 存储与流控配置段（M4 起生效）                                        |
+| `management`| 管理面配置段（M5 起生效）：`enabled` 关闭后不监听任何管理端口                   |
 
-> 环境变量（`SWIFTMQ_*`）与 YAML 配置将在 M5 随管理面一起支持。
+`storage` 字段：
+
+| 字段                      | 默认值       | 说明                                                                                                          |
+| ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
+| `fsync`                 | `os`      | 落盘档位：`none` / `os` / `batch` / `always`。它同时决定 publisher confirm 的时机：`os` 对齐 RabbitMQ 经典队列"confirm 前不 fsync"，`batch` / `always` 才承诺"收到 confirm 即已落盘" |
+| `flush_interval_ms`     | `200`     | 兜底刷盘间隔：消息在内存里最多待多久的上界                                                                                       |
+| `memory_high_watermark` | `0.4`     | 内存水位：本进程占用超过"该比例 × 物理内存"即阻塞生产者；`0` 关闭                                                         |
+| `disk_free_limit`       | `52428800` | 数据目录剩余空间下限（字节，默认 50 MiB），低于它即阻塞生产者；`0` 关闭                                                  |
+
+`management` 字段：
+
+| 字段        | 默认值       | 说明                              |
+| --------- | --------- | ------------------------------- |
+| `enabled` | `true`    | 是否启用管理面（HTTP API + 内嵌 UI + 指标） |
+| `addr`    | `:15672`  | 管理面监听地址                         |
+
+`plugins` 治理开关：
+
+| 字段         | 默认值    | 说明                                              |
+| ---------- | ------ | ----------------------------------------------- |
+| `enabled`  | `true` | 为 `false` 时启动阶段不注册扩展点、不建监听；之后仍可用管理 API 热启用      |
+| `required` | `false`| 为 `true` 时该插件启动失败会**阻塞内核启动**（仅限官方核心插件）            |
+| `builtin`  | `true` | 表示随内核编译进来（外部进程插件形态落地后由部署方声明为 `false`）            |
+
+支持的 `SWIFTMQ_*` 环境变量（优先于配置文件，便于容器化覆盖）：
+
+`SWIFTMQ_DATA_DIR`、`SWIFTMQ_DEFAULT_VHOST`、`SWIFTMQ_AMQP_ADDR`、`SWIFTMQ_FSYNC`、
+`SWIFTMQ_FLUSH_INTERVAL_MS`、`SWIFTMQ_MEMORY_HIGH_WATERMARK`、`SWIFTMQ_DISK_FREE_LIMIT`、
+`SWIFTMQ_MANAGEMENT_ENABLED`、`SWIFTMQ_MANAGEMENT_ADDR`、`SWIFTMQ_LOG_LEVEL`、`SWIFTMQ_LOG_FORMAT`
+
+> 持久化范围（M4）：只针对 **durable 队列**中的 **`delivery-mode=2`** 消息，与 RabbitMQ 一致。
+> 非 durable 队列、瞬时消息与 `fsync: none` 档位都不落盘。
+>
+> 拓扑元数据（交换机、绑定、队列声明）尚不持久化：重启后需要客户端重新声明队列，
+> 重新声明时会自动从磁盘恢复该队列的持久消息。用户与权限的动态变更同样只在内存生效。
+>
+> YAML 配置暂不支持（需引入解析依赖）；当前用 JSON + `SWIFTMQ_*` 覆盖。
 
 ***
 
@@ -196,7 +294,20 @@ conn.close()
 
 ### 存储设计
 
-消息数据用自研分段追加日志，元数据用内嵌 Raft + KV；**不依赖任何外部数据库或协调服务**。小消息（≤4096 字节）走每队列存储，大消息走 vhost 共享存储 + 引用计数（扇出时只写一份）。fsync 分四档（`none` / `os` / `batch` / `always`）并与 publisher confirm 时机强绑定，因此"经典队列"与"Quorum 队列"的差异是配置档位差异，而非两套语义。
+消息数据用自研分段追加日志 + 队列索引，**不依赖任何外部数据库或协调服务**：每条记录带长度前缀与 CRC32，恢复时丢弃尾部半写记录；索引只记 `seq-id → 位置 / 长度 / 状态`，`ack` 以追加一条删除标记表达（不做原地删除与随机写）。fsync 分四档（`none` / `os` / `batch` / `always`）并与 publisher confirm 时机强绑定：**持久消息只有按档位落盘后才回 `basic.ack`**。
+
+M4 已落地"每队列段 + 队列索引 + 组提交 + 崩溃恢复 + 水位流控"。仍待补齐的是：小消息/大消息分流的 **vhost 共享存储 + 引用计数**、段文件轮转与磁盘回收，以及元数据的内嵌 Raft。
+
+### 管理与观测
+
+管理面属于**兼容性契约**，因此内建而不插件化：运维工具链（`rabbitmqadmin`、监控脚本、管理 UI）都直接指向它，一旦可插拔，"能不能管"就成了可配置项。
+
+- **管理 API 对齐 RabbitMQ 的形状**：字段名、错误体（`{error, reason}`）、`amq.default` 指代默认交换机、`%2F` 指代默认 vhost 等约定都照搬，让现有工具不用改。
+- **UI 只消费 `/api/*`**，不引入任何私有接口 —— UI 因此成了 API 兼容性的持续验证者，与 `rabbitmqadmin` 指向同一套接口。
+- **UI 产物内嵌**：`web/dist` 经 `go:embed` 打进二进制，部署只有一个文件；CI 会重新构建并校验产物与源码一致，防止"改了前端忘记构建"。
+- **可观测**：`/metrics` 用手写的 Prometheus 文本暴露格式（保持内核零第三方依赖、可离线构建），指标覆盖队列深度、未确认数、投递/确认累计、磁盘与内存水位、插件状态。
+- **插件治理是能力级的**：热停用一个插件落到实处是**关掉它的 listener 并从协议嗅探候选里摘掉**，而不是只改一个状态位；管理面与内核其它部分不受影响。
+- **`swiftmqctl` 走 HTTP API**：CLI 因此不依赖内核内部包、不与内核版本耦合；代价是管理面被停用时 CLI 也不可用（已在文档中说明）。
 
 ***
 
@@ -206,18 +317,21 @@ conn.close()
 swiftmq/
 ├── cmd/
 │   ├── swiftmqd/            # broker 进程入口
-│   └── swiftmqctl/          # 运维 CLI（规划中）
+│   └── swiftmqctl/          # 运维 CLI（走管理 HTTP API）
 ├── internal/
 │   ├── protocol/
 │   │   ├── codec/           # 基础类型、field-table、帧编解码
 │   │   ├── spec/            # 类/方法标识、错误码、软硬错误作用域
 │   │   └── amqp091/         # AMQP 0-9-1 协议插件
-│   ├── transport/           # 监听、TLS、协议嗅探与连接分发
-│   ├── plugin/              # 插件注册中心、生命周期、Host 句柄
-│   ├── broker/              # 内核：vhost、用户与（后续）路由模型
-│   ├── auth/                # SASL：PLAIN / AMQPLAIN
-│   └── config/              # 配置加载与默认值
+│   ├── transport/           # 监听、TLS、协议嗅探、按插件热启停监听
+│   ├── plugin/              # 插件注册中心、生命周期与治理、Host 句柄
+│   ├── broker/              # 内核：vhost、路由模型、队列、死信、水位流控、管理面视图
+│   ├── store/               # 持久化：段日志、队列索引、组提交、崩溃恢复
+│   ├── management/          # Management HTTP API + Prometheus 指标 + UI 静态服务
+│   ├── auth/                # SASL：PLAIN / AMQPLAIN；用户与权限表
+│   └── config/              # 配置加载（JSON + SWIFTMQ_*）与默认值
 ├── pkg/plugin/              # 对外稳定插件 API
+├── web/                     # 管理 UI 前端工程（Vue 3 + Vite）；dist 经 go:embed 嵌入
 ├── test/integration/        # 各语言客户端集成验证（独立 module）
 ├── configs/                 # 示例配置
 └── Dockerfile / docker-compose.yml
@@ -234,10 +348,20 @@ go test ./...         # 单元测试
 gofmt -l .            # 检查格式（应无输出）
 ```
 
+管理 UI（改前端时）：
+
+```bash
+cd web
+npm install
+npm run dev           # 开发态：HMR + /api 代理到 127.0.0.1:15672
+npm run build         # 产出 web/dist（需连同产物一起提交）
+npm run type-check    # TypeScript 严格模式检查
+```
+
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.3.0 .
+docker build -t swiftmq:0.5.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -251,8 +375,8 @@ docker build -t swiftmq:0.3.0 .
 | 一期 | M1  | 协议底座：连接握手、心跳、Channel 开关、插件框架                         | ✅ 已完成 |
 | 一期 | M2  | Exchange / Queue / Binding、四种路由、消息收发与确认              | ✅ 已完成 |
 | 一期 | M3  | 发布确认、TTL、死信、长度限制、优先级、权限校验                            | ✅ 已完成 |
-| 一期 | M4  | 持久化、fsync 档位、崩溃恢复、流控                                 | 规划中   |
-| 一期 | M5  | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、`swiftmqctl` | 规划中   |
+| 一期 | M4  | 持久化（段日志 + 队列索引）、fsync 档位、崩溃恢复、资源水位流控                      | ✅ 已完成 |
+| 一期 | M5  | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、Prometheus、`swiftmqctl`、插件热启停 | ✅ 已完成 |
 | 二期 | M6  | 集群、Quorum Queue 复制、分区处理、故障切换                         | 规划中   |
 | 二期 | M7  | 性能打磨、插件化验证（MQTT / AMQP 1.0）                          | 规划中   |
 

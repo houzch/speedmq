@@ -51,6 +51,11 @@ func (p *Plugin) Capabilities() []plugin.Capability {
 	return []plugin.Capability{plugin.CapNetListen}
 }
 
+// Description 实现 plugin.Describer：给管理面一句话说明。
+func (p *Plugin) Description() string {
+	return "AMQP 0-9-1 协议插件（RabbitMQ 客户端兼容基线）"
+}
+
 // Init 实现 plugin.Plugin：只注册扩展点，不做耗时动作。
 func (p *Plugin) Init(h plugin.Host) error {
 	p.log = h.Logger()

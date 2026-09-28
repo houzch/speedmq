@@ -262,6 +262,20 @@ func DecodeConnectionClose(args []byte) (Reply, error) {
 // EncodeConnectionCloseOk 构造 Connection.Close-Ok 的参数区（无字段）。
 func EncodeConnectionCloseOk() []byte { return nil }
 
+// EncodeConnectionBlocked 构造 Connection.Blocked 的参数区（reason 为 shortstr）。
+//
+// 这是 RabbitMQ 扩展：资源水位触发时服务端主动下发，客户端据此暂停投递/告警。
+func EncodeConnectionBlocked(reason string) ([]byte, error) {
+	e := codec.NewEncoder()
+	if err := e.ShortStr(reason); err != nil {
+		return nil, err
+	}
+	return e.Bytes(), nil
+}
+
+// EncodeConnectionUnblocked 构造 Connection.Unblocked 的参数区（无字段）。
+func EncodeConnectionUnblocked() []byte { return nil }
+
 // ---------------------------------------------------------------------------
 // Channel (20)
 // ---------------------------------------------------------------------------

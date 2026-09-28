@@ -25,18 +25,21 @@ func fullPermSet(t *testing.T) *permissionSet {
 func newTestSession(t *testing.T, id string) (*vhost, plugin.Session) {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// dlxCh 传 nil：这些用例不涉及死信派发
-	vh := newVHost("/", log, nil)
-	return vh, newVHostSession(vh, id, "guest", fullPermSet(t), log)
+	// dlxCh 传 nil：这些用例不涉及死信派发；stores 传 nil：这些用例的队列都不是 durable
+	vh := newVHost("/", log, nil, nil)
+	return vh, newVHostSession(vh, id, "guest", fullPermSet(t), log, nil)
 }
 
-// newTestBroker 返回带后台协程的内核（TTL 扫描与死信派发依赖它）。
+// newTestBroker 返回带后台协程的内核（TTL 扫描、死信派发与水位检查依赖它）。
+//
+// 数据目录指向测试专属临时目录：durable 队列会真的落盘，绝不能写进仓库工作区。
 func newTestBroker(t *testing.T) *Broker {
 	t.Helper()
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("加载默认配置失败: %v", err)
 	}
+	cfg.DataDir = t.TempDir()
 	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
 	t.Cleanup(b.Close)
 	return b
@@ -46,7 +49,8 @@ func newTestBroker(t *testing.T) *Broker {
 func testSessionOf(t *testing.T, b *Broker, user, pass string) (plugin.Session, error) {
 	t.Helper()
 	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
-	core := b.NewSession(remote)
+	local := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5672}
+	core := b.NewSession(remote, local)
 	resp := append([]byte("\x00"+user+"\x00"), []byte(pass)...)
 	if _, err := core.Authenticate(context.Background(), "PLAIN", resp, remote); err != nil {
 		t.Fatalf("认证失败: %v", err)
@@ -310,7 +314,7 @@ func TestExclusiveQueueOwnership(t *testing.T) {
 	q := mustDeclareQueue(t, owner, plugin.QueueDeclare{Name: "excl.q", Exclusive: true})
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	other := newVHostSession(vh, "conn-2", "guest", fullPermSet(t), log)
+	other := newVHostSession(vh, "conn-2", "guest", fullPermSet(t), log, nil)
 	if _, err := other.DeclareQueue(plugin.QueueDeclare{Name: q.Name, Exclusive: true}); err == nil {
 		t.Fatalf("其他会话声明同一独占队列应被拒绝")
 	} else if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindResourceLocked {

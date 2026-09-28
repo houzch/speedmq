@@ -2,6 +2,7 @@ package broker
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -92,6 +93,99 @@ func (e *exchange) bindingCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return len(e.bindings) + len(e.exchBindings)
+}
+
+// ExchangeSnapshot 是交换机的只读视图（管理面用）。
+type ExchangeSnapshot struct {
+	VHost            string
+	Name             string
+	Type             plugin.ExchangeType
+	Durable          bool
+	AutoDelete       bool
+	Internal         bool
+	Arguments        map[string]any
+	QueueBindings    int
+	ExchangeBindings int
+}
+
+// snapshot 返回交换机的只读快照。
+func (e *exchange) snapshot(vhostName string) ExchangeSnapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return ExchangeSnapshot{
+		VHost:            vhostName,
+		Name:             e.name,
+		Type:             e.typ,
+		Durable:          e.durable,
+		AutoDelete:       e.autoDelete,
+		Internal:         e.internal,
+		Arguments:        e.arguments,
+		QueueBindings:    len(e.bindings),
+		ExchangeBindings: len(e.exchBindings),
+	}
+}
+
+// BindingSnapshot 是绑定的只读视图（管理面用）。
+type BindingSnapshot struct {
+	VHost           string
+	Source          string
+	Destination     string
+	DestinationType string // "queue" / "exchange"
+	RoutingKey      string
+	Arguments       map[string]any
+	// PropertiesKey 是 RabbitMQ Management API 里绑定的稳定标识：
+	// 无参数时就是 routing key，有参数时附加参数哈希（避免同名绑定互相覆盖）。
+	PropertiesKey string
+}
+
+// bindingSnapshots 返回本交换机作为 source 的全部绑定。
+func (e *exchange) bindingSnapshots(vhostName string) []BindingSnapshot {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make([]BindingSnapshot, 0, len(e.bindings)+len(e.exchBindings))
+	for _, b := range e.bindings {
+		out = append(out, BindingSnapshot{
+			VHost:           vhostName,
+			Source:          e.name,
+			Destination:     b.queue,
+			DestinationType: "queue",
+			RoutingKey:      b.routingKey,
+			Arguments:       b.arguments,
+			PropertiesKey:   propertiesKey(b.routingKey, b.arguments),
+		})
+	}
+	for _, b := range e.exchBindings {
+		out = append(out, BindingSnapshot{
+			VHost:           vhostName,
+			Source:          e.name,
+			Destination:     b.queue,
+			DestinationType: "exchange",
+			RoutingKey:      b.routingKey,
+			Arguments:       b.arguments,
+			PropertiesKey:   propertiesKey(b.routingKey, b.arguments),
+		})
+	}
+	return out
+}
+
+// propertiesKey 生成绑定的稳定标识（对齐 RabbitMQ 的 properties_key 语义）。
+func propertiesKey(routingKey string, args map[string]any) string {
+	if len(args) == 0 {
+		return routingKey
+	}
+	// 键排序后拼接，保证同一组参数总是得到同一个 key
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(routingKey)
+	b.WriteByte('-')
+	for _, k := range keys {
+		fmt.Fprintf(&b, "%s:%v;", k, args[k])
+	}
+	return b.String()
 }
 
 // addExchangeBinding 添加一条交换机到交换机的绑定；已存在则幂等忽略。

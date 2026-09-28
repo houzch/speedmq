@@ -67,12 +67,34 @@ type AuthError struct {
 
 func (e *AuthError) Error() string { return e.Text }
 
+// Notification 是内核下发给连接的事件。
+//
+// 目前只有资源水位导致的阻塞与解除（对应 Connection.Blocked / Unblocked）。
+type Notification struct {
+	// Blocked 为 true 表示连接因内存/磁盘水位被阻塞，false 表示解除阻塞。
+	Blocked bool
+	// Reason 是给运维看的原因描述。
+	Reason string
+}
+
 // Core 是协议无关的内核操作面：任何协议插件都只能通过这些方法触达内核语义。
 //
 // 连接级操作用 Core，vhost 作用域内的拓扑与消息操作经 Core.Session 取得 Session。
 type Core interface {
 	// Logger 返回连接级日志器。
 	Logger() *slog.Logger
+	// Notifications 返回连接级事件通道。内核在资源水位触发/解除时向连接广播事件，
+	// 协议层据此下发 Connection.Blocked / Connection.Unblocked。
+	// 通道由内核持有，调用 Close 后不再投递。
+	Notifications() <-chan Notification
+	// Close 释放连接级资源（通知订阅等）。协议插件在连接结束时必须调用，且必须可重复调用。
+	Close()
+	// SetConnectionProbe 由协议层注入"连接与通道实时快照"回调，管理面按需拉取。
+	// 应在握手完成后尽早调用；可重复调用以替换。
+	SetConnectionProbe(probe func() ConnectionInfo)
+	// SetDisconnectFunc 由协议层注册"内核要求断开本连接"的回调（管理面强制关闭连接用）。
+	// 回调应尽力发出 Connection.Close（reply-code 320 CONNECTION_FORCED）后关闭底层连接。
+	SetDisconnectFunc(fn func(reason string))
 	// ServerProperties 返回 Connection.Start 下发的 server-properties（含 capabilities）。
 	//
 	// 注意：capabilities 声明即承诺 —— 客户端会依据它切换代码路径，只能在对应能力真正实现后打开。

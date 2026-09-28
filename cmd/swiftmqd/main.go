@@ -1,7 +1,6 @@
 // Command swiftmqd 是 SwiftMQ 的 broker 进程入口。
 //
-// M1 职责：加载内置插件（AMQP 0-9-1 是第一个协议插件）、按插件声明的监听启动接入层、
-// 处理优雅退出。
+// 职责：加载配置 → 装配内核与插件运行时 → 起监听（按插件）→ 起管理面 → 优雅退出。
 package main
 
 import (
@@ -13,12 +12,15 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/management"
 	pluginkit "github.com/houzch/swiftmq/internal/plugin"
 	"github.com/houzch/swiftmq/internal/protocol/amqp091"
 	"github.com/houzch/swiftmq/internal/transport"
+	"github.com/houzch/swiftmq/web"
 )
 
 func main() {
@@ -31,11 +33,12 @@ func main() {
 func run() error {
 	var (
 		configPath = flag.String("config", "", "配置文件路径（JSON，可选）")
-		logLevel   = flag.String("log-level", "info", "日志级别：debug/info/warn/error")
+		logLevel   = flag.String("log-level", "", "日志级别：debug/info/warn/error（默认 info，可被 SWIFTMQ_LOG_LEVEL 覆盖）")
+		logFormat  = flag.String("log-format", "", "日志格式：text/json（默认 text，可被 SWIFTMQ_LOG_FORMAT 覆盖）")
 	)
 	flag.Parse()
 
-	log := newLogger(*logLevel)
+	log := newLogger(pick(*logLevel, "SWIFTMQ_LOG_LEVEL", "info"), pick(*logFormat, "SWIFTMQ_LOG_FORMAT", "text"))
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -45,28 +48,64 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	log.Info("SwiftMQ 启动中", "version", broker.Version, "data_dir", cfg.DataDir, "vhost", cfg.DefaultVHost)
+	startedAt := time.Now()
+	nodeName := nodeName()
+	log.Info("SwiftMQ 启动中",
+		"version", broker.Version,
+		"node", nodeName,
+		"data_dir", cfg.DataDir,
+		"vhost", cfg.DefaultVHost,
+		"fsync", cfg.Storage.Fsync)
 
 	kernel := broker.New(log, cfg)
-	// 停止 TTL 扫描与死信派发协程
+	// 停止 TTL 扫描、死信派发、水位检查，并收尾刷盘
 	defer kernel.Close()
 
 	// 内置插件清单：AMQP 0-9-1 从第一天就以"协议插件"的形式接入，
 	// 避免后续新增协议时再回头拆内核。
 	registry := pluginkit.NewRegistry(log)
 	manager := pluginkit.NewManager(registry, cfg, log)
+	// 接入层的嗅探候选集来自"当前已启用的插件"，因此先建服务再 Load 也必须正确：
+	// 这里传的是函数而不是快照，热启用/停用会立刻反映到嗅探上。
+	server := transport.New(log, manager.EnabledProtocols, kernel.NewSession)
+	// 监听器控制器：让"插件热启用/停用"落到真实的端口起停上（见设计 10.10）。
+	manager.SetListenerController(pluginkit.NewListenerController(ctx, server, registry, cfg))
 	if err := manager.Load(ctx, amqp091.New()); err != nil {
 		return err
 	}
 
-	server := transport.New(log, registry.Protocols(), kernel.NewSession)
-	if err := server.Start(ctx, bindings(registry, cfg)); err != nil {
-		return err
+	// 管理面（Management HTTP API + 内嵌 UI + Prometheus 指标）。
+	// 它属于兼容性契约的一部分，因此是内建的，不做成插件（见设计 10.1）。
+	var mgmt *management.Server
+	if cfg.Management.Enabled {
+		mgmt, err = management.New(log, management.Deps{
+			Addr:      cfg.Management.Addr,
+			Broker:    kernel,
+			Plugins:   manager,
+			Listeners: server.Listeners,
+			Version:   broker.Version,
+			NodeName:  nodeName,
+			StartedAt: startedAt,
+			UI:        web.Dist,
+		})
+		if err != nil {
+			return err
+		}
+		if err := mgmt.Start(); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("管理面已在配置中停用（management.enabled=false）")
 	}
 
 	<-ctx.Done()
 	log.Info("收到停止信号，开始优雅退出")
 
+	if mgmt != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		mgmt.Shutdown(shutdownCtx)
+		cancel()
+	}
 	server.Shutdown(context.Background())
 	manager.Stop(context.Background())
 
@@ -79,26 +118,27 @@ func run() error {
 	return nil
 }
 
-// bindings 计算最终监听清单：协议插件的默认监听 + 配置按插件名的覆盖。
-func bindings(registry *pluginkit.Registry, cfg *config.Config) []transport.Binding {
-	var out []transport.Binding
-	for _, p := range registry.Protocols() {
-		specs := p.DefaultListeners()
-		if overrides, ok := cfg.Listeners[p.Name()]; ok {
-			for i := range specs {
-				if i < len(overrides) && overrides[i].Addr != "" {
-					specs[i].Addr = overrides[i].Addr
-				}
-			}
-		}
-		for _, spec := range specs {
-			out = append(out, transport.Binding{Protocol: p, Spec: spec})
-		}
+// nodeName 生成节点名，形如 swiftmq@<hostname>（对齐 RabbitMQ 的 name@host）。
+func nodeName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "localhost"
 	}
-	return out
+	return "swiftmq@" + host
 }
 
-func newLogger(level string) *slog.Logger {
+// pick 返回优先级最高的取值：命令行 > 环境变量 > 默认值。
+func pick(flagValue, envKey, fallback string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func newLogger(level, format string) *slog.Logger {
 	var lv slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
@@ -110,5 +150,10 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lv = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: lv}))
+	opts := &slog.HandlerOptions{Level: lv}
+	// JSON 输出便于日志系统采集（设计 9.2）；text 更适合人肉看本地调试
+	if strings.EqualFold(format, "json") {
+		return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, opts))
 }

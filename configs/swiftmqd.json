@@ -12,5 +12,21 @@
       "remote_access": true
     }
   },
-  "plugins": {}
+  "storage": {
+    "fsync": "os",
+    "flush_interval_ms": 200,
+    "memory_high_watermark": 0.4,
+    "disk_free_limit": 52428800
+  },
+  "management": {
+    "enabled": true,
+    "addr": ":15672"
+  },
+  "plugins": {
+    "amqp091": {
+      "builtin": true,
+      "enabled": true,
+      "required": true
+    }
+  }
 }

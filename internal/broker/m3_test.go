@@ -319,6 +319,7 @@ func TestPermissionEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载配置失败: %v", err)
 	}
+	cfg.DataDir = t.TempDir()
 	// 受限用户：只能操作 app. 前缀的资源
 	cfg.Users["limited"] = config.User{
 		Password: "secret",

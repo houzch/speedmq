@@ -9,9 +9,11 @@
 # 设计要点：
 #   - 配置以只读方式挂载，改配置后 `docker compose restart` 即可生效，无需重建镜像
 #   - 数据目录使用命名卷，容器重建不丢数据（M4 起真正落盘消息与元数据）
-#   - 健康检查暂用 TCP 探测：M1 还没有 HTTP 管理端点，等 M5 的 /api/overview 落地后改为 HTTP 探测
+#   - 健康检查用管理面端口的 TCP 探测（M5 起有 15672；不用 HTTP 是因为管理 API 需要认证）
 #   - 容器内的 guest 需要 remote_access=true（配置里已开，仅供本地开发）：
 #     容器收到的连接源是 Docker 网关地址而非 127.0.0.1，不放开会被 403 拒绝
+#   - 管理 UI 已内嵌在二进制里（无额外静态服务）：浏览器打开 http://localhost:15672/
+#     账号口令同 AMQP（默认 guest/guest）
 
 name: swiftmq
 
@@ -20,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: swiftmq:0.3.0
+    image: swiftmq:0.5.0
     container_name: swiftmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动
@@ -28,6 +30,8 @@ services:
 
     ports:
       - "5672:5672"
+      # 管理面：Management HTTP API + 内嵌管理 UI + /metrics
+      - "15672:15672"
 
     volumes:
       # 配置文件（只读挂载，便于本地修改调试）
@@ -39,8 +43,8 @@ services:
     command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "debug"]
 
     healthcheck:
-      # 用 busybox nc 做 TCP 连通性探测（alpine 自带，无需额外安装）
-      test: ["CMD", "nc", "-z", "127.0.0.1", "5672"]
+      # 用 busybox nc 探测管理端口：能连上说明内核与监听都就绪
+      test: ["CMD", "nc", "-z", "127.0.0.1", "15672"]
       interval: 10s
       timeout: 3s
       retries: 3

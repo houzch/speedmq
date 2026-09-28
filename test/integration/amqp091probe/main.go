@@ -39,6 +39,7 @@ func main() {
 	}
 	cases = append(cases, m2Cases()...)
 	cases = append(cases, m3Cases()...)
+	cases = append(cases, m4Cases()...)
 
 	var failed int
 	for _, tc := range cases {
@@ -54,7 +55,7 @@ func main() {
 		fmt.Printf("\n%d/%d 项失败\n", failed, len(cases))
 		os.Exit(1)
 	}
-	fmt.Printf("\n全部通过（%d/%d）：真实客户端可完成连接、拓扑声明、四种路由、发布消费与确认\n",
+	fmt.Printf("\n全部通过（%d/%d）：真实客户端可完成连接、拓扑声明、四种路由、发布消费与确认、持久消息与能力声明\n",
 		len(cases), len(cases))
 }
 

@@ -13,10 +13,14 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 COPY pkg/ ./pkg/
+# 管理 UI 的构建产物（web/dist）被 go:embed 打进二进制，因此必须拷进来。
+# 这里**不需要 Node**：dist 随仓库提交，CI 负责校验"源码与产物一致"（见 web/embed.go）。
+COPY web/ ./web/
 
 # CGO_ENABLED=0 产出静态链接二进制，运行阶段不依赖 glibc
 # -trimpath 去掉本机路径，-s -w 去掉符号表与调试信息（二进制更小）
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/swiftmqd ./cmd/swiftmqd
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/swiftmqd ./cmd/swiftmqd \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/swiftmqctl ./cmd/swiftmqctl
 
 # ---------- 运行阶段 ----------
 FROM alpine:3.21
@@ -28,6 +32,7 @@ RUN addgroup -g 10001 -S swiftmq \
     && chown -R 10001:10001 /var/lib/swiftmq /etc/swiftmq
 
 COPY --from=build /out/swiftmqd /usr/local/bin/swiftmqd
+COPY --from=build /out/swiftmqctl /usr/local/bin/swiftmqctl
 
 # 容器内配置：把数据目录放到挂载卷，并放开 guest 的远端登录（容器里的连接来源
 # 是 Docker 网关地址而非 127.0.0.1，不放开会被 403 拒绝）。仅用于本地开发。
@@ -41,6 +46,8 @@ VOLUME ["/var/lib/swiftmq"]
 
 # AMQP 0-9-1
 EXPOSE 5672
+# 管理面（Management HTTP API + 内嵌管理 UI + Prometheus 指标）
+EXPOSE 15672
 
 # 以非 root 运行；配置由 CMD 显式传入，便于运行时覆盖
 ENTRYPOINT ["/usr/local/bin/swiftmqd"]

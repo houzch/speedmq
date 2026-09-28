@@ -191,6 +191,10 @@ type PublishResult struct {
 	// Rejected 表示被某个队列因长度限制拒绝（overflow 为 reject-publish / reject-publish-dlx）。
 	// 协议层在 confirm 模式下应据此回 basic.nack；未开 confirm 时消息只能被丢弃（与 RabbitMQ 一致）。
 	Rejected bool
+	// Durable 非 nil 时表示本次发布进入了持久化路径：协议层必须在回 basic.ack 之前
+	// 调用并等待它返回，才能兑现"收到 confirm = 已按 fsync 档位落盘"的语义。
+	// 非持久消息、非持久队列或未开启持久化时为 nil。
+	Durable func() error
 }
 
 // Session 是绑定到某个 vhost 的协议无关操作面。

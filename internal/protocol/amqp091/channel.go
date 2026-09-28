@@ -152,6 +152,15 @@ func (ch *channel) finishPublish() error {
 	if !confirmed {
 		return nil
 	}
+	// 持久消息：必须等到按 fsync 档位真正落盘后再确认。
+	// 否则客户端把 confirm 当成"不会丢"的依据，而消息其实只在内存里 ——
+	// 这是 M3 遗留下来、必须由 M4 修正的语义弱点。
+	if res.Durable != nil {
+		if err := res.Durable(); err != nil {
+			ch.log.Error("持久化失败，已对发布者否定确认", "err", err)
+			return ch.sendConfirmNack(seq, false)
+		}
+	}
 	if res.Rejected {
 		// 被队列因长度限制拒绝：否定确认，让生产者知道这条没进队列
 		return ch.sendConfirmNack(seq, false)
@@ -180,8 +189,9 @@ func (ch *channel) nextPublishSeq() (uint64, bool) {
 
 // sendConfirmAck 向生产者确认一条消息已被接收。
 //
-// 当前语义是"已入队（内存）"，与 RabbitMQ 对瞬时消息的处理一致。
-// 持久化在 M4 落地后，持久消息的确认必须改为落盘之后 —— 那时这里要接存储层。
+// 调用时机已由 finishPublish 保证：持久消息会先等到落盘（见 PublishResult.Durable），
+// 因此"收到 confirm = 已按当前 fsync 档位持久化"这一语义成立；
+// 瞬时消息或 os 档位下则是"已入队（内存 / 已 write）"，与 RabbitMQ 经典队列一致。
 func (ch *channel) sendConfirmAck(seq uint64, multiple bool) error {
 	return ch.con.sendMethod(ch.id, spec.ClassBasic, spec.MethodBasicAck,
 		spec.EncodeBasicAck(seq, multiple))
