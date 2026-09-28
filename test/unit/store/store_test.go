@@ -1,14 +1,16 @@
-package store
+package store_test
 
 import (
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
@@ -19,9 +21,9 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-func newTestManager(t *testing.T, level FsyncLevel) *Manager {
+func newTestManager(t *testing.T, level store.FsyncLevel) *store.Manager {
 	t.Helper()
-	return NewManager(t.TempDir(), Options{Fsync: level, FlushInterval: 20 * time.Millisecond}, testLogger())
+	return store.NewManager(t.TempDir(), store.Options{Fsync: level, FlushInterval: 20 * time.Millisecond}, testLogger())
 }
 
 func persistMessage() *plugin.Message {
@@ -47,7 +49,7 @@ func persistMessage() *plugin.Message {
 // TestAppendAckRecover 覆盖最基本的持久化语义：
 // 已 ack 的消息不应恢复，未 ack 的消息必须恢复，且属性类型保持不变。
 func TestAppendAckRecover(t *testing.T) {
-	m := newTestManager(t, FsyncAlways)
+	m := newTestManager(t, store.FsyncAlways)
 
 	st, recovered, err := m.Open("/", "dur.q", true)
 	if err != nil {
@@ -102,7 +104,7 @@ func TestAppendAckRecover(t *testing.T) {
 // TestPropertyFidelity 覆盖属性类型保真：
 // 字节数组、时间戳、嵌套表与数组必须原样回来，不能被降级成字符串。
 func TestPropertyFidelity(t *testing.T) {
-	m := newTestManager(t, FsyncBatch)
+	m := newTestManager(t, store.FsyncBatch)
 	st, _, err := m.Open("/", "fid.q", true)
 	if err != nil {
 		t.Fatalf("打开存储失败: %v", err)
@@ -164,7 +166,7 @@ func TestPropertyFidelity(t *testing.T) {
 // TestCorruptTailIsDiscarded 覆盖崩溃恢复：尾部半写记录必须被丢弃，
 // 且不影响前面完整记录的恢复。
 func TestCorruptTailIsDiscarded(t *testing.T) {
-	m := newTestManager(t, FsyncAlways)
+	m := newTestManager(t, store.FsyncAlways)
 	st, _, err := m.Open("/", "tail.q", true)
 	if err != nil {
 		t.Fatalf("打开存储失败: %v", err)
@@ -176,11 +178,13 @@ func TestCorruptTailIsDiscarded(t *testing.T) {
 	if err := c.Wait(); err != nil {
 		t.Fatalf("等待落盘失败: %v", err)
 	}
+	// 段文件路径经导出 API 取得（不再依赖 Manager 的私有 root 字段）。
+	dir := st.Dir()
 	if err := st.Close(); err != nil {
 		t.Fatalf("关闭存储失败: %v", err)
 	}
 
-	segPath := filepath.Join(m.root, "vhosts", safeDirName("/"), "queues", safeDirName("tail.q"), "000001.seg")
+	segPath := filepath.Join(dir, "000001.seg")
 	before, err := os.Stat(segPath)
 	if err != nil {
 		t.Fatalf("读取段文件状态失败: %v", err)
@@ -222,7 +226,7 @@ func TestCorruptTailIsDiscarded(t *testing.T) {
 
 // TestFsyncNoneDisablesStore 覆盖 none 档位：完全不创建存储，消息不做任何持久化。
 func TestFsyncNoneDisablesStore(t *testing.T) {
-	m := newTestManager(t, FsyncNone)
+	m := newTestManager(t, store.FsyncNone)
 	st, recovered, err := m.Open("/", "q", true)
 	if err != nil {
 		t.Fatalf("打开存储不应报错: %v", err)
@@ -233,15 +237,15 @@ func TestFsyncNoneDisablesStore(t *testing.T) {
 }
 
 func TestParseFsync(t *testing.T) {
-	cases := map[string]FsyncLevel{
-		"":       FsyncOS,
-		"none":   FsyncNone,
-		"os":     FsyncOS,
-		"batch":  FsyncBatch,
-		"always": FsyncAlways,
+	cases := map[string]store.FsyncLevel{
+		"":       store.FsyncOS,
+		"none":   store.FsyncNone,
+		"os":     store.FsyncOS,
+		"batch":  store.FsyncBatch,
+		"always": store.FsyncAlways,
 	}
 	for in, want := range cases {
-		got, err := ParseFsync(in)
+		got, err := store.ParseFsync(in)
 		if err != nil {
 			t.Fatalf("ParseFsync(%q) 报错: %v", in, err)
 		}
@@ -249,20 +253,60 @@ func TestParseFsync(t *testing.T) {
 			t.Fatalf("ParseFsync(%q) = %v, want %v", in, got, want)
 		}
 	}
-	if _, err := ParseFsync("whatever"); err == nil {
+	if _, err := store.ParseFsync("whatever"); err == nil {
 		t.Fatalf("非法档位应报错")
 	}
 }
 
-// TestSafeDirName 覆盖目录名编码：vhost 的 "/" 与带特殊字符的队列名都不能直接落到文件系统上。
+// TestSafeDirName 以行为方式覆盖目录名编码与路径穿越防护：
+// 外部测试包看不到未导出的 safeDirName，因此改为走完整落盘路径断言可观察结果 ——
+//   - 含路径分隔符与 ".." 的 vhost / 队列名，其存储目录必须始终落在数据目录之下；
+//   - 不同的名字必须编码成不同目录（编码是单射），否则两个队列会共用同一目录；
+//   - Windows 保留设备名不能被原样用作目录名（否则目录创建会失败）。
 func TestSafeDirName(t *testing.T) {
-	if got := safeDirName("/"); got != "q_%2F" {
-		t.Fatalf("safeDirName(/) = %q, want q_%%2F", got)
+	dataDir := t.TempDir()
+	m := store.NewManager(dataDir, store.Options{Fsync: store.FsyncAlways}, testLogger())
+	defer m.CloseAll()
+
+	cleanData := filepath.Clean(dataDir)
+
+	// openUnder 打开一个 durable 队列，并断言其存储目录位于数据目录之下。
+	openUnder := func(vhost, queue string) *store.QueueStore {
+		t.Helper()
+		st, _, err := m.Open(vhost, queue, true)
+		if err != nil {
+			t.Fatalf("打开存储失败: vhost=%q queue=%q err=%v", vhost, queue, err)
+		}
+		if st == nil {
+			t.Fatalf("durable 队列必须创建存储: vhost=%q queue=%q", vhost, queue)
+		}
+		dir := filepath.Clean(st.Dir())
+		rel, err := filepath.Rel(cleanData, dir)
+		if err != nil {
+			t.Fatalf("无法计算相对路径: dir=%q dataDir=%q err=%v", dir, cleanData, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Fatalf("存储目录逃逸出数据目录: dir=%q dataDir=%q", dir, cleanData)
+		}
+		return st
 	}
-	if got := safeDirName("a/b"); got == "a/b" {
-		t.Fatalf("路径分隔符必须被编码，实际 %q", got)
+
+	// 路径穿越：vhost 与队列名都含 ".." 与 "/"，都不得逃出数据目录。
+	// 注意不用以 ".." 结尾的名字（如 vhost=".."）：safeDirName 允许 '.'，会得到形如
+	// "q_.." 的目录名，而 Windows 会剥掉结尾的点，导致 MkdirAll 找不到父目录而失败
+	// —— 这是平台文件名的限制，与"路径是否可控"无关，故这里用 "../../x" 仍保留穿越语义。
+	openUnder("../../x", "../evil/name")
+
+	// 编码单射：分隔符被编码后，"a/b" 与字面量 "a%2Fb" 不能落到同一目录。
+	slash := openUnder("/", "a/b")
+	literal := openUnder("/", "a%2Fb")
+	if filepath.Clean(slash.Dir()) == filepath.Clean(literal.Dir()) {
+		t.Fatalf("不同队列名编码到了同一目录: a/b 与 a%%2Fb 均为 %q", slash.Dir())
 	}
-	if got := safeDirName("con"); got != "q_con" {
-		t.Fatalf("safeDirName(con) = %q, want q_con（避开 Windows 保留设备名）", got)
+
+	// Windows 保留设备名不得被原样用作目录名。
+	con := openUnder("/", "con")
+	if base := filepath.Base(con.Dir()); base == "con" || base == "CON" {
+		t.Fatalf("队列名 con 被原样用作目录名（Windows 保留设备名）: %q", con.Dir())
 	}
 }

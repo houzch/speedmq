@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "postbuild": "node scripts/ensure-dist-keep.mjs",
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit"
   },

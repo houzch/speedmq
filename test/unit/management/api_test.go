@@ -1,4 +1,8 @@
-package management
+// Package management_test 从包外驱动管理 HTTP API：只使用 internal/management 的导出 API，
+// 断言落在"客户端能看到什么"上（状态码、响应体、指标文本、端口监听）。
+//
+// 文件位置与包形式的约定见 AGENTS.md §10.1。
+package management_test
 
 import (
 	"context"
@@ -7,7 +11,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/management"
 	"github.com/houzch/swiftmq/internal/transport"
 	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -23,12 +27,15 @@ import (
 // 队列/交换机/连接的读写、用户与权限、插件治理、Prometheus 指标。
 //
 // 这里的断言刻意贴近"客户端能看到什么"——管理 API 的价值就在于被外部工具消费。
+//
+// 服务经公开装配路径启动：management.New + Start + Addr，从而顺带覆盖真实监听与关停路径。
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // fakePlugins 是可编程的插件控制器替身（真身是 internal/plugin.Manager）。
+// 它结构化满足 management.PluginController，无需导出任何内部符号。
 type fakePlugins struct {
 	infos map[string]sdk.Info
 }
@@ -77,7 +84,7 @@ func (f *fakePlugins) Disable(name string) error {
 }
 
 type testEnv struct {
-	ts      *httptest.Server
+	baseURL string
 	broker  *broker.Broker
 	plugins *fakePlugins
 }
@@ -93,8 +100,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(b.Close)
 
 	plugins := newFakePlugins()
-	srv, err := New(discardLogger(), Deps{
-		Addr:    ":0",
+	// 监听地址用 127.0.0.1:0 让内核分配空闲端口，避免与开发机上的 15672 冲突。
+	srv, err := management.New(discardLogger(), management.Deps{
+		Addr:    "127.0.0.1:0",
 		Broker:  b,
 		Plugins: plugins,
 		Listeners: func() []transport.ListenerSnapshot {
@@ -107,9 +115,15 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("构造管理面失败: %v", err)
 	}
-	ts := httptest.NewServer(http.HandlerFunc(srv.serveHTTP))
-	t.Cleanup(ts.Close)
-	return &testEnv{ts: ts, broker: b, plugins: plugins}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("启动管理面失败: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
+	})
+	return &testEnv{baseURL: "http://" + srv.Addr(), broker: b, plugins: plugins}
 }
 
 // request 发起一次管理 API 请求；user/pass 为空时带默认管理员凭证。
@@ -123,7 +137,7 @@ func (e *testEnv) request(t *testing.T, method, path string, body any, user, pas
 		}
 		reader = strings.NewReader(string(raw))
 	}
-	req, err := http.NewRequest(method, e.ts.URL+path, reader)
+	req, err := http.NewRequest(method, e.baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("构造请求失败: %v", err)
 	}
@@ -136,7 +150,7 @@ func (e *testEnv) request(t *testing.T, method, path string, body any, user, pas
 	if user != "" {
 		req.SetBasicAuth(user, pass)
 	}
-	resp, err := e.ts.Client().Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("请求 %s %s 失败: %v", method, path, err)
 	}

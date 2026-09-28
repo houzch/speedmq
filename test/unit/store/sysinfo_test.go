@@ -1,8 +1,10 @@
-package store
+package store_test
 
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/houzch/swiftmq/internal/store"
 )
 
 // 本文件覆盖平台相关的资源探测：水位流控与 /api/nodes 都依赖它，
@@ -12,9 +14,9 @@ import (
 
 func TestDiskFree(t *testing.T) {
 	dir := t.TempDir()
-	free, err := DiskFree(dir)
+	free, err := store.DiskFree(dir)
 	if err != nil {
-		if err == ErrSysInfoUnsupported {
+		if err == store.ErrSysInfoUnsupported {
 			t.Skipf("当前平台未实现磁盘探测: %v", err)
 		}
 		t.Fatalf("探测 %s 的可用空间失败: %v", dir, err)
@@ -31,14 +33,14 @@ func TestDiskFreeMissingPath(t *testing.T) {
 	base := t.TempDir()
 	missing := filepath.Join(base, "not", "created", "yet")
 
-	got, err := DiskFree(missing)
+	got, err := store.DiskFree(missing)
 	if err != nil {
-		if err == ErrSysInfoUnsupported {
+		if err == store.ErrSysInfoUnsupported {
 			t.Skipf("当前平台未实现磁盘探测: %v", err)
 		}
 		t.Fatalf("路径不存在时也应能探测到所在卷: %v", err)
 	}
-	want, err := DiskFree(base)
+	want, err := store.DiskFree(base)
 	if err != nil {
 		t.Fatalf("探测已存在路径失败: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestDiskFreeMissingPath(t *testing.T) {
 }
 
 func TestTotalMemory(t *testing.T) {
-	total, ok := TotalMemory()
+	total, ok := store.TotalMemory()
 	if !ok {
 		t.Skip("当前平台未实现内存总量探测")
 	}

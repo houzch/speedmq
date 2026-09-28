@@ -1,16 +1,22 @@
-package plugin
+// Package plugin_test 从包外驱动插件运行时：只使用 internal/plugin 的导出 API，
+// 断言落在"端口是否真的能连上"这类可观察行为上。
+//
+// 文件位置与包形式的约定见 AGENTS.md §10.1。
+package plugin_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/houzch/swiftmq/internal/config"
+	pluginkit "github.com/houzch/swiftmq/internal/plugin"
 	"github.com/houzch/swiftmq/internal/protocol/amqp091"
 	"github.com/houzch/swiftmq/internal/transport"
 	sdk "github.com/houzch/swiftmq/pkg/plugin"
@@ -45,23 +51,34 @@ func (stubCore) Session(string) (sdk.Session, error) {
 	return nil, errors.New("stub 不提供会话")
 }
 
+// testConfig 通过真实配置文件注入治理开关，覆盖"配置文件 → 治理开关"这条链路。
+//
+// 数据目录指向测试专属临时目录：绝不写进仓库工作区。
+func testConfig(t *testing.T, pluginsJSON string) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "swiftmqd.json")
+	body := `{"data_dir": "` + filepath.ToSlash(dir) + `", "listeners": {"amqp091": [{"addr": "127.0.0.1:0"}]}, "plugins": ` + pluginsJSON + `}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("写测试配置失败: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("加载测试配置失败: %v", err)
+	}
+	return cfg
+}
+
 // newGovernanceEnv 装配 registry + manager + transport。
 // 监听地址用 127.0.0.1:0，由内核分配空闲端口，避免与开发机上的 5672 冲突。
-func newGovernanceEnv(t *testing.T) (*Manager, *transport.Server) {
+func newGovernanceEnv(t *testing.T, cfg *config.Config) (*pluginkit.Manager, *transport.Server) {
 	t.Helper()
-	cfg, err := config.Load("")
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
-	}
-	cfg.DataDir = t.TempDir()
-	cfg.Listeners = map[string][]config.Listener{"amqp091": {{Addr: "127.0.0.1:0"}}}
-
 	log := testLogger()
-	reg := NewRegistry(log)
-	manager := NewManager(reg, cfg, log)
+	reg := pluginkit.NewRegistry(log)
+	manager := pluginkit.NewManager(reg, cfg, log)
 	server := transport.New(log, manager.EnabledProtocols,
 		func(remote, local net.Addr) sdk.Core { return stubCore{} })
-	manager.SetListenerController(NewListenerController(context.Background(), server, reg, cfg))
+	manager.SetListenerController(pluginkit.NewListenerController(context.Background(), server, reg, cfg))
 
 	t.Cleanup(func() { server.Shutdown(context.Background()) })
 	return manager, server
@@ -69,7 +86,7 @@ func newGovernanceEnv(t *testing.T) (*Manager, *transport.Server) {
 
 // TestPluginHotDisableEnable 覆盖"停用 → 端口关闭 → 启用 → 端口恢复"的完整闭环。
 func TestPluginHotDisableEnable(t *testing.T) {
-	manager, server := newGovernanceEnv(t)
+	manager, server := newGovernanceEnv(t, testConfig(t, "{}"))
 	if err := manager.Load(context.Background(), amqp091.New()); err != nil {
 		t.Fatalf("加载插件失败: %v", err)
 	}
@@ -128,10 +145,7 @@ func TestPluginHotDisableEnable(t *testing.T) {
 
 // TestPluginDisabledByConfig 覆盖"配置里显式停用"：启动时不建监听、扩展点也不注册。
 func TestPluginDisabledByConfig(t *testing.T) {
-	manager, server := newGovernanceEnv(t)
-	manager.cfg.Plugins = map[string]json.RawMessage{
-		"amqp091": json.RawMessage(`{"enabled": false}`),
-	}
+	manager, server := newGovernanceEnv(t, testConfig(t, `{"amqp091": {"enabled": false}}`))
 	if err := manager.Load(context.Background(), amqp091.New()); err != nil {
 		t.Fatalf("加载插件失败: %v", err)
 	}
@@ -155,16 +169,13 @@ func TestPluginDisabledByConfig(t *testing.T) {
 // TestRequiredPluginFailureBlocksStartup 覆盖 required 语义：
 // 声明 required 的插件启动失败必须阻塞内核启动（其余情况只做隔离）。
 func TestRequiredPluginFailureBlocksStartup(t *testing.T) {
-	manager, _ := newGovernanceEnv(t)
-	manager.cfg.Plugins = map[string]json.RawMessage{
-		"broken": json.RawMessage(`{"required": true}`),
-	}
+	manager, _ := newGovernanceEnv(t, testConfig(t, `{"broken": {"required": true}}`))
 	if err := manager.Load(context.Background(), &brokenPlugin{}); err == nil {
 		t.Fatalf("required 插件启动失败应阻塞启动")
 	}
 
 	// 非 required：只隔离，不返回错误
-	manager2, _ := newGovernanceEnv(t)
+	manager2, _ := newGovernanceEnv(t, testConfig(t, "{}"))
 	if err := manager2.Load(context.Background(), &brokenPlugin{}); err != nil {
 		t.Fatalf("非 required 插件失败不应阻塞启动: %v", err)
 	}

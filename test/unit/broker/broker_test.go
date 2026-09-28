@@ -1,52 +1,37 @@
-package broker
+// Package broker_test 从包外驱动内核：只使用 internal/broker 的导出 API，
+// 断言一律落在对外可观察的行为上（路由、FIFO、确认、独占、保留名）。
+//
+// 文件位置与包形式的约定见 AGENTS.md §10.1。
+package broker_test
 
 import (
 	"context"
-	"io"
-	"log/slog"
+	"fmt"
 	"net"
 	"testing"
 
+	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
-// 本文件是内核语义的回归测试：路由、默认交换机、队列 FIFO 与确认。
-
-func fullPermSet(t *testing.T) *permissionSet {
-	t.Helper()
-	set, err := newPermissionSet(config.Permission{Configure: ".*", Write: ".*", Read: ".*"})
-	if err != nil {
-		t.Fatalf("构造权限失败: %v", err)
-	}
-	return set
-}
-
-func newTestSession(t *testing.T, id string) (*vhost, plugin.Session) {
-	t.Helper()
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	// dlxCh 传 nil：这些用例不涉及死信派发；stores 传 nil：这些用例的队列都不是 durable
-	vh := newVHost("/", log, nil, nil)
-	return vh, newVHostSession(vh, id, "guest", fullPermSet(t), log, nil)
-}
-
 // newTestBroker 返回带后台协程的内核（TTL 扫描、死信派发与水位检查依赖它）。
 //
 // 数据目录指向测试专属临时目录：durable 队列会真的落盘，绝不能写进仓库工作区。
-func newTestBroker(t *testing.T) *Broker {
+func newTestBroker(t *testing.T) *broker.Broker {
 	t.Helper()
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatalf("加载默认配置失败: %v", err)
 	}
 	cfg.DataDir = t.TempDir()
-	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), cfg)
+	b := broker.New(discardLogger(), cfg)
 	t.Cleanup(b.Close)
 	return b
 }
 
 // testSessionOf 走完整的"认证 → 打开 vhost"路径取会话，以便覆盖权限逻辑。
-func testSessionOf(t *testing.T, b *Broker, user, pass string) (plugin.Session, error) {
+func testSessionOf(t *testing.T, b *broker.Broker, user, pass string) (plugin.Session, error) {
 	t.Helper()
 	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}
 	local := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5672}
@@ -56,6 +41,18 @@ func testSessionOf(t *testing.T, b *Broker, user, pass string) (plugin.Session, 
 		t.Fatalf("认证失败: %v", err)
 	}
 	return core.Session("/")
+}
+
+// newTestSession 以内置 guest 用户打开默认 vhost 的会话。
+//
+// guest 在 config.Load("") 后自动补齐全部 vhost 的完全权限，因此这里无需额外授权。
+func newTestSession(t *testing.T, b *broker.Broker) plugin.Session {
+	t.Helper()
+	sess, err := testSessionOf(t, b, "guest", "guest")
+	if err != nil {
+		t.Fatalf("打开会话失败: %v", err)
+	}
+	return sess
 }
 
 func mustDeclareQueue(t *testing.T, sess plugin.Session, req plugin.QueueDeclare) plugin.QueueInfo {
@@ -70,7 +67,7 @@ func mustDeclareQueue(t *testing.T, sess plugin.Session, req plugin.QueueDeclare
 // TestDefaultExchangeRoutesByQueueName 覆盖最常用的发布方式：
 // 不写交换机、直接以队列名当 routing key（默认交换机的隐式绑定）。
 func TestDefaultExchangeRoutesByQueueName(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
 
 	res, err := sess.Publish(&plugin.Message{Body: []byte("hi")}, "", q.Name, false)
@@ -95,7 +92,7 @@ func TestDefaultExchangeRoutesByQueueName(t *testing.T) {
 
 // TestDefaultExchangeUnknownQueue 未命中时不应报错，只是没路由出去。
 func TestDefaultExchangeUnknownQueue(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	res, err := sess.Publish(&plugin.Message{Body: []byte("x")}, "", "no.such.queue", false)
 	if err != nil {
 		t.Fatalf("发布不应报错: %v", err)
@@ -107,7 +104,7 @@ func TestDefaultExchangeUnknownQueue(t *testing.T) {
 
 // TestFanoutRoutingToMultipleQueues 验证 fanout 广播与 basic.get 取回。
 func TestFanoutRoutingToMultipleQueues(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	if err := sess.DeclareExchange(plugin.ExchangeDeclare{
 		Name: "test.fanout", Type: plugin.ExchangeFanout,
 	}); err != nil {
@@ -144,7 +141,7 @@ func TestFanoutRoutingToMultipleQueues(t *testing.T) {
 
 // TestTopicRoutingAndDedup 验证通配匹配与"同一队列多条绑定只收一份"。
 func TestTopicRoutingAndDedup(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	if err := sess.DeclareExchange(plugin.ExchangeDeclare{
 		Name: "test.topic", Type: plugin.ExchangeTopic,
 	}); err != nil {
@@ -168,7 +165,19 @@ func TestTopicRoutingAndDedup(t *testing.T) {
 	}
 }
 
+// TestTopicMatch 把原先对内部函数 topicMatch(pattern, key) 的直测改写为行为化表驱动：
+// 每个用例声明一个专属队列绑定到 topic 交换机，发布后断言"该不该收到"。
+//
+// 这样锁住的是 RabbitMQ 兼容的可见路由行为，实现换成 Trie / 索引也不会失效。
 func TestTopicMatch(t *testing.T) {
+	sess := newTestSession(t, newTestBroker(t))
+	const exchange = "test.topicmatch"
+	if err := sess.DeclareExchange(plugin.ExchangeDeclare{
+		Name: exchange, Type: plugin.ExchangeTopic,
+	}); err != nil {
+		t.Fatalf("声明交换机失败: %v", err)
+	}
+
 	cases := []struct {
 		pattern string
 		key     string
@@ -190,15 +199,29 @@ func TestTopicMatch(t *testing.T) {
 		{"a.b", "", false},
 	}
 	for _, c := range cases {
-		if got := topicMatch(c.pattern, c.key); got != c.want {
-			t.Errorf("topicMatch(%q, %q) = %v, want %v", c.pattern, c.key, got, c.want)
-		}
+		t.Run(fmt.Sprintf("%s/%s", c.pattern, c.key), func(t *testing.T) {
+			q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
+			if err := sess.BindQueue(q.Name, exchange, c.pattern, nil); err != nil {
+				t.Fatalf("绑定 %q 失败: %v", c.pattern, err)
+			}
+
+			// 发布结果里的 Routed 表示"整台交换机是否有命中"，会被先前用例残留的
+			// 绑定（如 "#"）污染，因此这里只用本用例专属队列的收信情况判定。
+			if _, err := sess.Publish(&plugin.Message{Body: []byte("t")}, exchange, c.key, false); err != nil {
+				t.Fatalf("发布失败: %v", err)
+			}
+			if _, got, err := sess.Get(q.Name, true); err != nil {
+				t.Fatalf("get 失败: %v", err)
+			} else if got != c.want {
+				t.Fatalf("pattern=%q key=%q: 队列收到=%v, want %v", c.pattern, c.key, got, c.want)
+			}
+		})
 	}
 }
 
 // TestQueueFIFOWithPrefetch 验证 FIFO 顺序与 prefetch 闸门。
 func TestQueueFIFOWithPrefetch(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
 
 	for i := 0; i < 3; i++ {
@@ -226,7 +249,7 @@ func TestQueueFIFOWithPrefetch(t *testing.T) {
 
 // TestRequeueMarksRedelivered 验证重新入队会置 redelivered 并回到队首。
 func TestRequeueMarksRedelivered(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
 
 	if _, err := sess.Publish(&plugin.Message{Body: []byte("retry")}, "", q.Name, false); err != nil {
@@ -252,7 +275,7 @@ func TestRequeueMarksRedelivered(t *testing.T) {
 
 // TestConsumeDispatchAndAck 验证消费者投递、prefetch 与确认后继续投递。
 func TestConsumeDispatchAndAck(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Exclusive: true})
 
 	delivered := make(chan *plugin.Delivery, 8)
@@ -290,7 +313,7 @@ func TestConsumeDispatchAndAck(t *testing.T) {
 
 // TestReservedNameAndEquivalence 验证保留名与声明等价性检查。
 func TestReservedNameAndEquivalence(t *testing.T) {
-	_, sess := newTestSession(t, "conn-1")
+	sess := newTestSession(t, newTestBroker(t))
 
 	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "amq.illegal"}); err == nil {
 		t.Fatalf("保留名声明应被拒绝")
@@ -309,12 +332,15 @@ func TestReservedNameAndEquivalence(t *testing.T) {
 }
 
 // TestExclusiveQueueOwnership 验证独占队列被其他会话使用时报 405。
+//
+// 两个会话必须来自两次独立的 NewSession（即两条不同连接），
+// 否则会话标识相同，独占归属检查不会触发。
 func TestExclusiveQueueOwnership(t *testing.T) {
-	vh, owner := newTestSession(t, "conn-1")
+	b := newTestBroker(t)
+	owner := newTestSession(t, b)
 	q := mustDeclareQueue(t, owner, plugin.QueueDeclare{Name: "excl.q", Exclusive: true})
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	other := newVHostSession(vh, "conn-2", "guest", fullPermSet(t), log, nil)
+	other := newTestSession(t, b)
 	if _, err := other.DeclareQueue(plugin.QueueDeclare{Name: q.Name, Exclusive: true}); err == nil {
 		t.Fatalf("其他会话声明同一独占队列应被拒绝")
 	} else if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindResourceLocked {
@@ -324,12 +350,13 @@ func TestExclusiveQueueOwnership(t *testing.T) {
 
 // TestSessionCloseDeletesExclusiveQueue 验证会话关闭时独占队列被清理。
 func TestSessionCloseDeletesExclusiveQueue(t *testing.T) {
-	vh, sess := newTestSession(t, "conn-1")
+	b := newTestBroker(t)
+	sess := newTestSession(t, b)
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Name: "gone.q", Exclusive: true})
 
 	sess.Close()
 
-	if _, ok := vh.getQueue(q.Name); ok {
+	if _, ok := b.QueueSnapshot("/", q.Name); ok {
 		t.Fatalf("会话关闭后独占队列应被删除")
 	}
 }

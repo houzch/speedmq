@@ -87,6 +87,26 @@ msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview ui=/
 ```
 
+### 默认账号（首次登录用这个）
+
+| 项 | 值 |
+| --- | --- |
+| 用户名 | `guest` |
+| 口令 | `guest` |
+| 标签 | `administrator`（可读写所有 vhost，并可使用管理面） |
+
+服务起来后直接用这套凭证：
+
+- **管理 UI**：打开 <http://localhost:15672/>，界面会弹出登录框（默认已填好 `guest` / `guest`，直接点"登录"即可）
+- **AMQP 客户端**：`amqp://guest:guest@localhost:5672/`
+- **命令行**：`./bin/swiftmqctl -user guest -pass guest status`
+
+> ⚠️ **仅供本地开发与试用**。`configs/swiftmqd.json` 里把 `guest` 的 `remote_access` 设为 `true`，
+> 是为了让容器内的访问（来源地址是 Docker 网关而非 `127.0.0.1`）不被拒绝。
+> 一旦服务对外可访问，请务必更换凭证：改 `configs/swiftmqd.json` 的 `users` 段后重启，或运行期新建账号
+> `./bin/swiftmqctl add_user <用户名> <口令> administrator`，
+> 再用管理 API 删掉默认账号（`curl -u guest:guest -X DELETE http://127.0.0.1:15672/api/users/guest`）。
+
 ### 管理与观测（M5）
 
 启动后有两个入口（默认端口与 RabbitMQ 一致）：
@@ -94,7 +114,7 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 | 入口 | 地址 | 说明 |
 | --- | --- | --- |
 | 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections + 队列详情（发布测试消息 / 取消息 / purge / delete） |
-| 管理 HTTP API | <http://localhost:15672/api/overview> | RabbitMQ Management API 兼容子集，Basic Auth（账号口令同 AMQP） |
+| 管理 HTTP API | <http://localhost:15672/api/overview> | RabbitMQ Management API 兼容子集，Basic Auth（默认凭证 `guest` / `guest`，见上文「默认账号」） |
 | Prometheus 指标 | <http://localhost:15672/metrics> | 文本暴露格式，同样需要 Basic Auth |
 
 ```bash
@@ -109,9 +129,12 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 curl -u guest:guest http://127.0.0.1:15672/api/overview
 ```
 
-> 管理 UI 的前端源码在 `web/`，构建产物 `web/dist` 随仓库提交并经 `go:embed` 打进二进制，
+> 管理 UI 的前端源码在 `web/`，产物 `web/dist` **不入库**，由构建时生成并经 `go:embed` 打进二进制，
 > 因此**部署只需一个二进制**、不装 Node，也没有额外的 Nginx。
-> 改前端后必须重新 `npm run build` 并提交产物，否则二进制里跑的仍是旧页面。
+> 本地从头编译前需先构建前端（`cd web && npm ci && npm run build`）；若未构建，
+> 编译依然会通过，访问 `/` 会返回"管理 UI 未构建"的明确提示（仓库内保留了占位文件 `web/dist/.gitkeep`，
+> 因为 `go:embed` 在编译期必须至少匹配到一个文件）。
+> 镜像构建不需要你手动构建前端：Dockerfile 里有一个 Node 阶段专门产出 `web/dist`。
 
 ### 验证连接是否可用
 
@@ -230,7 +253,7 @@ conn.close()
 | `data_dir`  | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
 | `vhosts`    | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上                |
 | `listeners` | 按**插件名**覆盖监听地址                                          |
-| `users`     | 内置用户表，`remote_access: false` 时仅允许本机登录（管理面同样受限）           |
+| `users`     | 内置用户表；**默认内置 `guest` / `guest`（标签 `administrator`）**，`remote_access: false` 时仅允许本机登录（管理面同样受限） |
 | `plugins`   | 各插件的配置段；内核只读其中的治理开关（`enabled` / `required` / `builtin`），其余原样交给插件 |
 | `storage`   | 存储与流控配置段（M4 起生效）                                        |
 | `management`| 管理面配置段（M5 起生效）：`enabled` 关闭后不监听任何管理端口                   |
@@ -331,8 +354,10 @@ swiftmq/
 │   ├── auth/                # SASL：PLAIN / AMQPLAIN；用户与权限表
 │   └── config/              # 配置加载（JSON + SWIFTMQ_*）与默认值
 ├── pkg/plugin/              # 对外稳定插件 API
-├── web/                     # 管理 UI 前端工程（Vue 3 + Vite）；dist 经 go:embed 嵌入
-├── test/integration/        # 各语言客户端集成验证（独立 module）
+├── web/                     # 管理 UI 前端工程（Vue 3 + Vite）；dist 由构建生成并经 go:embed 嵌入
+├── test/
+│   ├── unit/               # 仓库内单测（外部测试包，只依赖被测包的导出 API）
+│   └── integration/        # 真实客户端集成验证（独立 module）
 ├── configs/                 # 示例配置
 └── Dockerfile / docker-compose.yml
 ```
@@ -352,11 +377,13 @@ gofmt -l .            # 检查格式（应无输出）
 
 ```bash
 cd web
-npm install
+npm ci                # 安装依赖（node_modules 不入库）
 npm run dev           # 开发态：HMR + /api 代理到 127.0.0.1:15672
-npm run build         # 产出 web/dist（需连同产物一起提交）
+npm run build         # 产出 web/dist（产物不入库，仅用于本地编译/预览）
 npm run type-check    # TypeScript 严格模式检查
 ```
+
+> 产物不入库，所以从零编译内核前要先 `npm run build`；Docker 构建会自动完成这一步。
 
 构建镜像：
 

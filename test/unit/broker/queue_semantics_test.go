@@ -1,4 +1,4 @@
-package broker
+package broker_test
 
 import (
 	"io"
@@ -6,11 +6,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // 本文件覆盖 M3 的内核语义：TTL、死信、长度限制、优先级、队列过期与权限。
+//
+// 队列参数与死信原因的取值一律写字面量（"x-message-ttl"、"expired" 等）：
+// 它们是协议级契约，锁字面量才能在实现里的常量被改错时暴露问题。
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -71,8 +75,8 @@ func declareDLX(t *testing.T, sess plugin.Session, dlx, dlq string) {
 // dlxArgs 返回把消息送入 dlx/dlq 的队列参数。
 func dlxArgs(dlx, dlq string, extra map[string]any) map[string]any {
 	args := map[string]any{
-		argDeadLetterEx:  dlx,
-		argDeadLetterKey: dlq,
+		"x-dead-letter-exchange":    dlx,
+		"x-dead-letter-routing-key": dlq,
 	}
 	for k, v := range extra {
 		args[k] = v
@@ -99,6 +103,11 @@ func checkDeath(t *testing.T, msg *plugin.Message, wantReason, wantQueue string)
 	}
 }
 
+func isKind(err error, want plugin.ErrorKind) bool {
+	ke, ok := err.(*plugin.Error)
+	return ok && ke.Kind == want
+}
+
 // TestMessageTTLToDeadLetter 覆盖"延迟队列"的经典构造：
 // 队列级 TTL 到期后消息自动转入死信，且不需要任何消费者。
 func TestMessageTTLToDeadLetter(t *testing.T) {
@@ -109,7 +118,7 @@ func TestMessageTTLToDeadLetter(t *testing.T) {
 	}
 	declareDLX(t, sess, "ttl.dlx", "ttl.dlq")
 
-	qArgs := dlxArgs("ttl.dlx", "ttl.dlq", map[string]any{argMessageTTL: int32(50)}) // 50ms
+	qArgs := dlxArgs("ttl.dlx", "ttl.dlq", map[string]any{"x-message-ttl": int32(50)}) // 50ms
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Name: "ttl.q", Arguments: qArgs})
 	if _, err := sess.Publish(&plugin.Message{Body: []byte("expire-me")}, "", q.Name, false); err != nil {
 		t.Fatalf("发布失败: %v", err)
@@ -128,7 +137,7 @@ func TestMessageTTLToDeadLetter(t *testing.T) {
 	if string(d.Message.Body) != "expire-me" {
 		t.Fatalf("死信内容错误: %q", d.Message.Body)
 	}
-	checkDeath(t, d.Message, deathReasonExpired, q.Name)
+	checkDeath(t, d.Message, "expired", q.Name)
 }
 
 // TestRejectToDeadLetter 覆盖 basic.reject/nack(requeue=false) 进死信。
@@ -159,7 +168,7 @@ func TestRejectToDeadLetter(t *testing.T) {
 	if !ok {
 		t.Fatalf("死信队列为空")
 	}
-	checkDeath(t, dl.Message, deathReasonRejected, q.Name)
+	checkDeath(t, dl.Message, "rejected", q.Name)
 }
 
 // TestAckDoesNotDeadLetter 是回归测试：确认消费（ack）绝不能被当成拒绝而复制进死信。
@@ -194,7 +203,7 @@ func TestMaxLengthDropHead(t *testing.T) {
 	sess, _ := testSessionOf(t, b, "guest", "guest")
 	declareDLX(t, sess, "len.dlx", "len.dlq")
 
-	qArgs := dlxArgs("len.dlx", "len.dlq", map[string]any{argMaxLength: int32(2)})
+	qArgs := dlxArgs("len.dlx", "len.dlq", map[string]any{"x-max-length": int32(2)})
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Name: "len.q", Arguments: qArgs})
 	for i := 0; i < 3; i++ {
 		body := []byte{byte('0' + i)}
@@ -213,7 +222,7 @@ func TestMaxLengthDropHead(t *testing.T) {
 	if !ok || string(dl.Message.Body) != "0" {
 		t.Fatalf("被挤出的应是最老的 \"0\"，实际 %q", dl.Message.Body)
 	}
-	checkDeath(t, dl.Message, deathReasonMaxLen, q.Name)
+	checkDeath(t, dl.Message, "maxlen", q.Name)
 
 	// 队列中应保留最后两条，且顺序不变
 	for _, want := range []string{"1", "2"} {
@@ -230,7 +239,7 @@ func TestMaxLengthRejectPublish(t *testing.T) {
 	b := newTestBroker(t)
 	sess, _ := testSessionOf(t, b, "guest", "guest")
 
-	qArgs := map[string]any{argMaxLength: int32(1), argOverflow: overflowRejectPublish}
+	qArgs := map[string]any{"x-max-length": int32(1), "x-overflow": "reject-publish"}
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{Name: "rejlen.q", Arguments: qArgs})
 	res, err := sess.Publish(&plugin.Message{Body: []byte("a")}, "", q.Name, false)
 	if err != nil || !res.Routed || res.Rejected {
@@ -255,7 +264,7 @@ func TestPriorityQueueOrdering(t *testing.T) {
 
 	q := mustDeclareQueue(t, sess, plugin.QueueDeclare{
 		Name:      "prio.q",
-		Arguments: map[string]any{argMaxPriority: int32(10)},
+		Arguments: map[string]any{"x-max-priority": int32(10)},
 	})
 	for _, p := range []uint8{1, 5, 3} {
 		if _, err := sess.Publish(&plugin.Message{
@@ -280,7 +289,7 @@ func TestQueueExpires(t *testing.T) {
 
 	mustDeclareQueue(t, sess, plugin.QueueDeclare{
 		Name:      "expiring.q",
-		Arguments: map[string]any{argQueueExpires: int32(100)}, // 100ms
+		Arguments: map[string]any{"x-expires": int32(100)}, // 100ms
 	})
 
 	waitFor(t, 3*time.Second, "空闲队列按 x-expires 被删除", func() bool {
@@ -297,7 +306,7 @@ func TestUnsupportedQueueTypeRejected(t *testing.T) {
 
 	_, err := sess.DeclareQueue(plugin.QueueDeclare{
 		Name:      "quorum.q",
-		Arguments: map[string]any{argQueueType: "quorum"},
+		Arguments: map[string]any{"x-queue-type": "quorum"},
 	})
 	ke, ok := err.(*plugin.Error)
 	if !ok || ke.Kind != plugin.KindNotImplemented {
@@ -307,7 +316,7 @@ func TestUnsupportedQueueTypeRejected(t *testing.T) {
 	// classic 显式声明应被接受
 	if _, err := sess.DeclareQueue(plugin.QueueDeclare{
 		Name:      "classic.q",
-		Arguments: map[string]any{argQueueType: "classic"},
+		Arguments: map[string]any{"x-queue-type": "classic"},
 	}); err != nil {
 		t.Fatalf("classic 队列应被接受: %v", err)
 	}
@@ -327,7 +336,7 @@ func TestPermissionEnforcement(t *testing.T) {
 			"/": {Configure: `^app\.`, Write: `^app\.`, Read: `^app\.`},
 		},
 	}
-	b := New(discardLogger(), cfg)
+	b := broker.New(discardLogger(), cfg)
 	t.Cleanup(b.Close)
 
 	sess, err := testSessionOf(t, b, "limited", "secret")
@@ -368,9 +377,4 @@ func TestPermissionEnforcement(t *testing.T) {
 	if err := sess.BindQueue("app.q", "amq.direct", "k", nil); !isKind(err, plugin.KindAccessRefused) {
 		t.Fatalf("绑定到 amq.direct 应 403，实际 %v", err)
 	}
-}
-
-func isKind(err error, want plugin.ErrorKind) bool {
-	ke, ok := err.(*plugin.Error)
-	return ok && ke.Kind == want
 }

@@ -1,4 +1,4 @@
-package codec
+package codec_test
 
 import (
 	"bufio"
@@ -7,12 +7,14 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/houzch/swiftmq/internal/protocol/codec"
 )
 
 // TestFieldTableRoundTrip 覆盖 field-table 的全部常用类型，含嵌套表与数组。
 // 类型标记写错一位客户端就会解析崩溃，是兼容性高危区。
 func TestFieldTableRoundTrip(t *testing.T) {
-	orig := Table{
+	orig := codec.Table{
 		"flag":   true,
 		"i8":     int8(-3),
 		"u8":     uint8(200),
@@ -26,24 +28,24 @@ func TestFieldTableRoundTrip(t *testing.T) {
 		"str":    "hello 世界",
 		"bytes":  []byte{1, 2, 3},
 		"ts":     time.Unix(1700000000, 0).UTC(),
-		"dec":    Decimal{Scale: 2, Value: 1234},
+		"dec":    codec.Decimal{Scale: 2, Value: 1234},
 		"nil":    nil,
-		"nested": Table{"k": "v"},
+		"nested": codec.Table{"k": "v"},
 		"arr":    []any{int32(1), "two"},
 	}
 
-	enc := NewEncoder()
+	enc := codec.NewEncoder()
 	if err := enc.Table(orig); err != nil {
 		t.Fatalf("编码失败: %v", err)
 	}
 
-	got, err := NewDecoder(enc.Bytes()).Table()
+	got, err := codec.NewDecoder(enc.Bytes()).Table()
 	if err != nil {
 		t.Fatalf("解码失败: %v", err)
 	}
 
 	// 注意：整数类型按 AMQP 类型标记解码，故 int 会被解成 int32（'I'）。
-	want := Table{
+	want := codec.Table{
 		"flag":   true,
 		"i8":     int8(-3),
 		"u8":     uint8(200),
@@ -57,9 +59,9 @@ func TestFieldTableRoundTrip(t *testing.T) {
 		"str":    "hello 世界",
 		"bytes":  []byte{1, 2, 3},
 		"ts":     time.Unix(1700000000, 0).UTC(),
-		"dec":    Decimal{Scale: 2, Value: 1234},
+		"dec":    codec.Decimal{Scale: 2, Value: 1234},
 		"nil":    nil,
-		"nested": Table{"k": "v"},
+		"nested": codec.Table{"k": "v"},
 		"arr":    []any{int32(1), "two"},
 	}
 
@@ -82,34 +84,34 @@ func TestFieldTableRoundTrip(t *testing.T) {
 //
 // field-table 的字段值没有统一长度前缀，遇到未知类型无法安全跳过，只能报语法错误。
 func TestUnknownFieldTypeRejected(t *testing.T) {
-	body := NewEncoder()
+	body := codec.NewEncoder()
 	if err := body.ShortStr("k"); err != nil {
 		t.Fatal(err)
 	}
 	body.Octet('Z') // 不存在的类型标记
 
 	inner := body.Bytes()
-	outer := NewEncoder()
+	outer := codec.NewEncoder()
 	outer.Long(uint32(len(inner))) // field-table 以 4 字节长度开头
 	raw := append(outer.Bytes(), inner...)
 
-	_, err := NewDecoder(raw).Table()
-	if !errors.Is(err, ErrSyntax) {
+	_, err := codec.NewDecoder(raw).Table()
+	if !errors.Is(err, codec.ErrSyntax) {
 		t.Fatalf("期望 ErrSyntax，实际: %v", err)
 	}
 }
 
 func TestShortStrTooLong(t *testing.T) {
-	e := NewEncoder()
-	if err := e.ShortStr(string(bytes.Repeat([]byte{'x'}, 256))); !errors.Is(err, ErrSyntax) {
+	e := codec.NewEncoder()
+	if err := e.ShortStr(string(bytes.Repeat([]byte{'x'}, 256))); !errors.Is(err, codec.ErrSyntax) {
 		t.Fatalf("期望 ErrSyntax，实际: %v", err)
 	}
 }
 
 // TestBitPacking 验证 bit 字段的打包规则：同一字节内连续打包，第 9 个 bit 另起一字节。
 func TestBitPacking(t *testing.T) {
-	e := NewEncoder()
-	w := NewBitWriter(e)
+	e := codec.NewEncoder()
+	w := codec.NewBitWriter(e)
 	// 1,0,1,0,1,0,1,0 → 0x55；第 9 个 bit 应为 1，落在新字节的最低位
 	pattern := []bool{true, false, true, false, true, false, true, false, true}
 	for _, b := range pattern {
@@ -124,7 +126,7 @@ func TestBitPacking(t *testing.T) {
 		t.Fatalf("打包结果错误: % x", e.Bytes())
 	}
 
-	r := NewBitReader(NewDecoder(e.Bytes()))
+	r := codec.NewBitReader(codec.NewDecoder(e.Bytes()))
 	for i, want := range pattern {
 		got, err := r.Bit()
 		if err != nil {
@@ -138,10 +140,10 @@ func TestBitPacking(t *testing.T) {
 
 func TestFrameRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
-	fw := NewFrameWriter(bufio.NewWriter(&buf))
+	fw := codec.NewFrameWriter(bufio.NewWriter(&buf))
 
 	payload := []byte{0, 10, 0, 10, 1, 2, 3}
-	if err := fw.Write(Frame{Type: FrameMethod, Channel: 0, Payload: payload}); err != nil {
+	if err := fw.Write(codec.Frame{Type: codec.FrameMethod, Channel: 0, Payload: payload}); err != nil {
 		t.Fatalf("写帧失败: %v", err)
 	}
 	if err := fw.WriteHeartbeat(); err != nil {
@@ -151,13 +153,13 @@ func TestFrameRoundTrip(t *testing.T) {
 		t.Fatalf("flush 失败: %v", err)
 	}
 
-	fr := NewFrameReader(bufio.NewReader(&buf), FrameMaxDefault)
+	fr := codec.NewFrameReader(bufio.NewReader(&buf), codec.FrameMaxDefault)
 
 	f, err := fr.Read()
 	if err != nil {
 		t.Fatalf("读帧失败: %v", err)
 	}
-	if f.Type != FrameMethod || f.Channel != 0 || !bytes.Equal(f.Payload, payload) {
+	if f.Type != codec.FrameMethod || f.Channel != 0 || !bytes.Equal(f.Payload, payload) {
 		t.Fatalf("帧内容不一致: type=%d channel=%d payload=% x", f.Type, f.Channel, f.Payload)
 	}
 
@@ -165,24 +167,24 @@ func TestFrameRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读心跳失败: %v", err)
 	}
-	if hb.Type != FrameHeartbeat || len(hb.Payload) != 0 {
+	if hb.Type != codec.FrameHeartbeat || len(hb.Payload) != 0 {
 		t.Fatalf("心跳帧内容不一致: type=%d payload=% x", hb.Type, hb.Payload)
 	}
 }
 
 func TestFrameEndByteValidated(t *testing.T) {
-	raw := []byte{FrameHeartbeat, 0, 0, 0, 0, 0, 0, 0x00} // 结束字节应为 0xCE
-	_, err := NewFrameReader(bufio.NewReader(bytes.NewReader(raw)), FrameMaxDefault).Read()
-	if !errors.Is(err, ErrFrameEnd) {
+	raw := []byte{codec.FrameHeartbeat, 0, 0, 0, 0, 0, 0, 0x00} // 结束字节应为 0xCE
+	_, err := codec.NewFrameReader(bufio.NewReader(bytes.NewReader(raw)), codec.FrameMaxDefault).Read()
+	if !errors.Is(err, codec.ErrFrameEnd) {
 		t.Fatalf("期望 ErrFrameEnd，实际: %v", err)
 	}
 }
 
 func TestFrameTooLarge(t *testing.T) {
 	// size 声明为 100，但 frame-max 限制为 16
-	raw := []byte{FrameMethod, 0, 0, 0, 0, 0, 100, 0}
-	_, err := NewFrameReader(bufio.NewReader(bytes.NewReader(raw)), 16).Read()
-	if !errors.Is(err, ErrFrameTooLarge) {
+	raw := []byte{codec.FrameMethod, 0, 0, 0, 0, 0, 100, 0}
+	_, err := codec.NewFrameReader(bufio.NewReader(bytes.NewReader(raw)), 16).Read()
+	if !errors.Is(err, codec.ErrFrameTooLarge) {
 		t.Fatalf("期望 ErrFrameTooLarge，实际: %v", err)
 	}
 }

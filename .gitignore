@@ -24,11 +24,16 @@ __debug_bin*
 *.log
 logs/
 
-# ---- 管理 UI 前端（web/）----
-# node_modules 不入库；web/dist 是构建产物，**必须入库**：
-# 它经 go:embed 打进二进制（单文件部署），且 CI 会校验产物与源码一致。
-/web/node_modules/
-npm-debug.log*
+# ---- 构建产物：一律不入库 ----
+# 前端产物（web/dist）与依赖目录都不提交：仓库里只放源码，产物由 CI / Docker 构建。
+# 例外：web/dist/.gitkeep 是被跟踪的**占位文件**——go:embed 在编译期必须至少匹配到一个
+# 文件，没有它 `go build ./...` 会直接失败（Go 不支持"可选 embed"）。详见 web/embed.go。
+dist/
+node_modules/
+# 先把 web/dist 目录本身放出来，再忽略其中的产物，最后放行占位文件
+!web/dist/
+web/dist/*
+!web/dist/.gitkeep
 
 # ---- 本地私有配置 ----
 # 示例配置 configs/ 需要提交；本地覆盖请用 *.local.json / *.local.yaml
@@ -47,6 +52,4 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
-# ---前端---
-dist/
-node_modules/
+AGENTS.md

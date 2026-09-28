@@ -1,0 +1,12 @@
+# 占位文件：不要删除
+
+本目录（web/dist）是前端构建产物，**不入库**（见根目录 .gitignore）。
+保留这个占位文件的原因：`web/embed.go` 用 `//go:embed all:dist` 把管理 UI 打进二进制，
+而 go:embed 在**编译期**必须至少匹配到一个文件 —— 目录为空或不存在时
+`go build ./...` 会直接报 `pattern all:dist: no matching files found`
+（Go 不支持"可选 embed"，没有别的写法能绕开）。
+
+所以：
+- 未构建前端时：编译照常通过，管理面访问 `/` 会返回"管理 UI 未构建"的提示；
+- 构建前端时：`npm run build` 产出真实页面覆盖本目录，`postbuild` 钩子会把本文件补回来
+  （Vite 的 emptyOutDir 会清空目录）。
