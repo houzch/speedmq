@@ -67,9 +67,12 @@ type queue struct {
 	exclusive  bool
 	autoDelete bool
 	owner      string // 独占队列归属的会话标识；空表示非独占
-	arguments  map[string]any
-	args       queueArgs
-	log        *slog.Logger
+	// remote 表示该队列的消息数据不在本节点（集群里由别的节点持有）。
+	// 本期没有跨节点转发，因此对它的消息操作一律返回 NOT_IMPLEMENTED。
+	remote    bool
+	arguments map[string]any
+	args      queueArgs
+	log       *slog.Logger
 
 	// deadLetter 把消息交给 vhost 投递到死信交换机；由 vhost 在创建队列时注入。
 	deadLetter func(msg *plugin.Message, reason string)
@@ -113,6 +116,10 @@ func newQueue(name string, durable, exclusive, autoDelete bool, owner string,
 		lastUsed:   time.Now(),
 	}
 }
+
+// clusterManaged 表示该队列是否由集群元数据托管（durable 且非 exclusive）。
+// 它的生命周期变更必须经元数据层提交，本地不得单独增删。
+func (q *queue) clusterManaged() bool { return q.durable && !q.exclusive }
 
 // needsTimer 表示该队列需要被扫描（有过期消息或队列自身会过期）。
 func (q *queue) needsTimer() bool {

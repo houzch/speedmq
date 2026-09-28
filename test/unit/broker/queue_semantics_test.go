@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -336,7 +335,7 @@ func TestPermissionEnforcement(t *testing.T) {
 			"/": {Configure: `^app\.`, Write: `^app\.`, Read: `^app\.`},
 		},
 	}
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	t.Cleanup(b.Close)
 
 	sess, err := testSessionOf(t, b, "limited", "secret")

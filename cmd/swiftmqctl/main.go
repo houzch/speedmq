@@ -89,6 +89,7 @@ func printUsage() {
 
 命令:
   status                                                     查看节点概览（节点、版本、运行时长、对象统计、内存/磁盘）
+  cluster_status                                             查看集群状态（模式、角色、领导者、成员、共识进度）
   list_queues [vhost]                                        列出队列
   list_connections                                           列出连接
   list_exchanges [vhost]                                     列出交换机

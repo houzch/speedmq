@@ -15,6 +15,19 @@ import (
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
+// mustBroker 构造内核；失败时终止用例。
+//
+// 集群/元数据层让 broker.New 有了失败路径（成员表配置错误、端口占用、日志损坏），
+// 测试里遇到即视为用例失败。
+func mustBroker(t *testing.T, cfg *config.Config) *broker.Broker {
+	t.Helper()
+	b, err := broker.New(discardLogger(), cfg)
+	if err != nil {
+		t.Fatalf("构造内核失败: %v", err)
+	}
+	return b
+}
+
 // newTestBroker 返回带后台协程的内核（TTL 扫描、死信派发与水位检查依赖它）。
 //
 // 数据目录指向测试专属临时目录：durable 队列会真的落盘，绝不能写进仓库工作区。
@@ -25,7 +38,7 @@ func newTestBroker(t *testing.T) *broker.Broker {
 		t.Fatalf("加载默认配置失败: %v", err)
 	}
 	cfg.DataDir = t.TempDir()
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	t.Cleanup(b.Close)
 	return b
 }

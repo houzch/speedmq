@@ -291,11 +291,34 @@ func readRequest(r io.Reader) (string, string, []byte, error) {
 	if err != nil {
 		return "", "", nil, err
 	}
-	payload, err := readSized(r, maxPayload)
+	payload, err := readPayload(r)
 	if err != nil {
 		return "", "", nil, err
 	}
 	return string(from), string(method), payload, nil
+}
+
+// readPayload 读取"u32 长度 + 内容"的请求载荷。
+//
+// 长度字段是 u32（见 writeRequest），不能用 readSized 的 u16 口径读 ——
+// 那样只会读到长度字段的高 16 位，得到空载荷并把整条流读错位。
+func readPayload(r io.Reader) ([]byte, error) {
+	var head [4]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return nil, err
+	}
+	n := binary.BigEndian.Uint32(head[:])
+	if n > maxPayload {
+		return nil, fmt.Errorf("raft: 请求载荷长度 %d 超出上限 %d", n, maxPayload)
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
 }
 
 func writeResponse(w io.Writer, status byte, payload []byte) error {

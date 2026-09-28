@@ -57,7 +57,10 @@ func run() error {
 		"vhost", cfg.DefaultVHost,
 		"fsync", cfg.Storage.Fsync)
 
-	kernel := broker.New(log, cfg)
+	kernel, err := broker.New(log, cfg)
+	if err != nil {
+		return err
+	}
 	// 停止 TTL 扫描、死信派发、水位检查，并收尾刷盘
 	defer kernel.Close()
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/meta"
 	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -27,10 +28,18 @@ const (
 // reservedPrefix 是服务端保留的名字前缀，客户端不得自行声明。
 const reservedPrefix = "amq."
 
+// 绑定目标的类型（与 meta.Binding.DestinationType 的取值一致）。
+const (
+	destinationQueue    = "queue"
+	destinationExchange = "exchange"
+)
+
 // vhost 是一个虚拟主机的拓扑与队列集合。
 type vhost struct {
 	name string
 	log  *slog.Logger
+	// broker 是内核引用：拓扑变更需要经它提交到元数据层（durable 且非 exclusive 的对象）。
+	broker *Broker
 
 	mu        sync.RWMutex
 	exchanges map[string]*exchange
@@ -55,10 +64,11 @@ type deadLetterEntry struct {
 }
 
 // newVHost 创建 vhost 并预声明内置交换机。
-func newVHost(name string, log *slog.Logger, stores *store.Manager, dlxCh chan<- deadLetterEntry) *vhost {
+func newVHost(b *Broker, name string, log *slog.Logger, stores *store.Manager, dlxCh chan<- deadLetterEntry) *vhost {
 	v := &vhost{
 		name:      name,
 		log:       log.With("vhost", name),
+		broker:    b,
 		exchanges: map[string]*exchange{},
 		queues:    map[string]*queue{},
 		consumers: map[string]*queue{},
@@ -136,20 +146,7 @@ func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.
 func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args queueArgs) (*queue, error) {
 	q := newQueue(name, req.Durable, req.Exclusive, req.AutoDelete,
 		s.ownerOf(req.Exclusive), map[string]any(req.Arguments), args, s.vh.log)
-
-	dlx, dlxKey, vhostName := args.deadLetterEx, args.deadLetterKey, s.vh.name
-	ch := s.vh.dlxCh
-	q.deadLetter = func(msg *plugin.Message, reason string) {
-		if ch == nil {
-			return
-		}
-		select {
-		case ch <- deadLetterEntry{vhost: vhostName, msg: msg, exchange: dlx, routingKey: dlxKey, reason: reason}:
-		default:
-			// 派发器积压：明确记录并丢弃，而不是无限堆积拖垮内核
-			s.log.Warn("死信派发队列已满，丢弃死信", "queue", name, "reason", reason)
-		}
-	}
+	s.vh.wireDeadLetter(q, args)
 
 	if s.vh.stores != nil {
 		st, recovered, err := s.vh.stores.Open(s.vh.name, name, req.Durable)
@@ -163,9 +160,40 @@ func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args que
 	return q, nil
 }
 
+// wireDeadLetter 给队列接线死信派发器。
+//
+// 抽到 vhost 上是因为有两条创建路径：会话声明（transient / exclusive）与
+// 元数据恢复（durable 非 exclusive），两者的死信语义必须完全一致。
+func (v *vhost) wireDeadLetter(q *queue, args queueArgs) {
+	ch, vhostName := v.dlxCh, v.name
+	q.deadLetter = func(msg *plugin.Message, reason string) {
+		if ch == nil {
+			return
+		}
+		select {
+		case ch <- deadLetterEntry{vhost: vhostName, msg: msg, exchange: args.deadLetterEx, routingKey: args.deadLetterKey, reason: reason}:
+		default:
+			// 派发器积压：明确记录并丢弃，而不是无限堆积拖垮内核
+			v.log.Warn("死信派发队列已满，丢弃死信", "queue", q.name, "reason", reason)
+		}
+	}
+}
+
+// managedQueue 表示该队列声明是否属于"集群级元数据"（durable 且非 exclusive）。
+//
+// 其余（transient / exclusive / auto-delete）是会话本地的，不进元数据：
+// 进元数据会让"重启后凭空出现一堆临时队列"，也让单机行为偏离 M1–M5。
+func managedQueue(req plugin.QueueDeclare) bool { return req.Durable && !req.Exclusive }
+
+// managedExchange 表示该交换机声明是否属于"集群级元数据"（durable）。
+func managedExchange(req plugin.ExchangeDeclare) bool { return req.Durable }
+
 // ---------- 交换机 ----------
 
 func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowConfigure(req.Name); err != nil {
 		return err
 	}
@@ -200,6 +228,26 @@ func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
 		return err
 	}
 
+	// durable 交换机是集群级元数据：经元数据层提交（单机落 state.json、集群经 Raft 复制），
+	// 本地建立统一由 ApplyMeta 完成 —— 一条变更只有一条落地路径，才不会有"哪边先写"的分叉。
+	if managedExchange(req) {
+		rec := meta.Exchange{
+			VHost: s.vh.name, Name: req.Name, Type: string(typ), Durable: req.Durable,
+			AutoDelete: req.AutoDelete, Internal: req.Internal, Arguments: req.Arguments,
+		}
+		if err := s.vh.broker.submitMeta(meta.OpPutExchange, rec); err != nil {
+			return err
+		}
+		if err := s.vh.broker.awaitMeta(func() bool {
+			_, ok := s.vh.getExchange(req.Name)
+			return ok
+		}); err != nil {
+			return err
+		}
+		s.log.Debug("交换机已声明", "exchange", req.Name, "type", req.Type)
+		return nil
+	}
+
 	ex := newExchange(req.Name, typ, req.Durable, req.AutoDelete, req.Internal, req.Arguments)
 	s.vh.mu.Lock()
 	// 并发声明的竞争：谁先写入谁生效
@@ -215,6 +263,9 @@ func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
 }
 
 func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowConfigure(name); err != nil {
 		return err
 	}
@@ -236,6 +287,30 @@ func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
 			"PRECONDITION_FAILED - exchange '%s' in vhost '%s' in use", name, s.vh.name)
 	}
 
+	// durable 交换机：删除走元数据层，并级联清掉元数据里与它相关的绑定记录 ——
+	// 否则 state.json 会不断堆积指向已删交换机的悬空绑定。
+	if ex.durable {
+		related := s.vh.broker.bindingsForExchange(s.vh.name, name)
+		if err := s.vh.broker.submitMeta(meta.OpDeleteExchange,
+			meta.Exchange{VHost: s.vh.name, Name: name}); err != nil {
+			return err
+		}
+		for _, rec := range related {
+			// 级联失败只告警：交换机删除本身已经提交成功，不能反过来让客户端以为删除失败。
+			if err := s.vh.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
+				s.log.Warn("清理交换机绑定的元数据失败", "exchange", name, "err", err)
+			}
+		}
+		if err := s.vh.broker.awaitMeta(func() bool {
+			_, ok := s.vh.getExchange(name)
+			return !ok
+		}); err != nil {
+			return err
+		}
+		s.log.Debug("交换机已删除", "exchange", name)
+		return nil
+	}
+
 	s.vh.mu.Lock()
 	delete(s.vh.exchanges, name)
 	// 清理其他交换机指向它的绑定，避免留下悬空绑定
@@ -249,6 +324,9 @@ func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
 }
 
 func (s *vhostSession) BindExchange(destination, source, routingKey string, arguments map[string]any) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowWrite(source); err != nil {
 		return err
 	}
@@ -257,15 +335,32 @@ func (s *vhostSession) BindExchange(destination, source, routingKey string, argu
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", source, s.vh.name)
 	}
-	if _, ok := s.vh.getExchange(destination); !ok {
+	dst, ok := s.vh.getExchange(destination)
+	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", destination, s.vh.name)
+	}
+	// 两端都是 durable 交换机时绑定属于集群级元数据；否则是本地绑定。
+	if src.durable && dst.durable {
+		rec := meta.Binding{
+			VHost: s.vh.name, Source: source, Destination: destination,
+			DestinationType: destinationExchange, RoutingKey: routingKey, Arguments: arguments,
+		}
+		if err := s.vh.broker.submitMeta(meta.OpPutBinding, rec); err != nil {
+			return err
+		}
+		return s.vh.broker.awaitMeta(func() bool {
+			return src.hasExchangeBinding(routingKey, destination)
+		})
 	}
 	src.addExchangeBinding(routingKey, destination, arguments)
 	return nil
 }
 
 func (s *vhostSession) UnbindExchange(destination, source, routingKey string, arguments map[string]any) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowWrite(source); err != nil {
 		return err
 	}
@@ -273,6 +368,23 @@ func (s *vhostSession) UnbindExchange(destination, source, routingKey string, ar
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", source, s.vh.name)
+	}
+	if dst, ok := s.vh.getExchange(destination); ok && src.durable && dst.durable {
+		if !src.hasExchangeBinding(routingKey, destination) {
+			return plugin.Errorf(plugin.KindNotFound,
+				"NOT_FOUND - no binding '%s' between exchange '%s' and exchange '%s'",
+				routingKey, source, destination)
+		}
+		rec := meta.Binding{
+			VHost: s.vh.name, Source: source, Destination: destination,
+			DestinationType: destinationExchange, RoutingKey: routingKey, Arguments: arguments,
+		}
+		if err := s.vh.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
+			return err
+		}
+		return s.vh.broker.awaitMeta(func() bool {
+			return !src.hasExchangeBinding(routingKey, destination)
+		})
 	}
 	if !src.removeExchangeBinding(routingKey, destination) {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -285,6 +397,9 @@ func (s *vhostSession) UnbindExchange(destination, source, routingKey string, ar
 // ---------- 队列 ----------
 
 func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, error) {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return plugin.QueueInfo{}, err
+	}
 	// 参数先解析：非法参数必须在创建任何东西之前就报 406
 	args, err := parseQueueArgs(req.Arguments)
 	if err != nil {
@@ -300,6 +415,9 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		name := generatedQueueName()
 		if err := s.perm.allowConfigure(name); err != nil {
 			return plugin.QueueInfo{}, err
+		}
+		if managedQueue(req) {
+			return s.declareManagedQueue(name, req, args)
 		}
 		q, err := s.newQueueIn(name, req, args)
 		if err != nil {
@@ -336,6 +454,10 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		return plugin.QueueInfo{}, err
 	}
 
+	if managedQueue(req) {
+		return s.declareManagedQueue(req.Name, req, args)
+	}
+
 	q, err := s.newQueueIn(req.Name, req, args)
 	if err != nil {
 		return plugin.QueueInfo{}, err
@@ -357,19 +479,39 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 	return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
 }
 
+// declareManagedQueue 提交一次"集群级"队列声明（durable 且非 exclusive），
+// 并等待本地拓扑可见后返回统计信息。
+//
+// 声明本身由元数据层决定归属与顺序；本地对象由 ApplyMeta 建立，
+// 因此这里在提交成功后要等一下本地应用 —— follower 的应用滞后于 leader 的提交。
+func (s *vhostSession) declareManagedQueue(name string, req plugin.QueueDeclare, args queueArgs) (plugin.QueueInfo, error) {
+	rec := meta.Queue{
+		VHost: s.vh.name, Name: name, Durable: req.Durable, AutoDelete: req.AutoDelete,
+		Exclusive: req.Exclusive, Arguments: req.Arguments,
+		Owner: s.vh.broker.queueOwner(), CreatedAt: time.Now().UTC(),
+	}
+	if err := s.vh.broker.submitMeta(meta.OpPutQueue, rec); err != nil {
+		return plugin.QueueInfo{}, err
+	}
+	if err := s.vh.broker.awaitMeta(func() bool {
+		_, ok := s.vh.getQueue(name)
+		return ok
+	}); err != nil {
+		return plugin.QueueInfo{}, err
+	}
+	s.log.Debug("队列已声明（集群元数据）", "queue", name, "owner", rec.Owner,
+		"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
+	q, _ := s.vh.getQueue(name)
+	// 恢复出来的持久消息也要体现在声明响应里：客户端常据此判断"队列里是否还有存量"
+	ready, consumers := q.stats()
+	return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
+}
+
 // addQueue 把队列加入 vhost，并按需要登记到定时扫描集合。返回 false 表示同名队列已存在。
 func (s *vhostSession) addQueue(q *queue, args queueArgs) bool {
-	s.vh.mu.Lock()
-	if _, dup := s.vh.queues[q.name]; dup {
-		s.vh.mu.Unlock()
+	if !s.vh.addQueueObject(q, args) {
 		return false
 	}
-	s.vh.queues[q.name] = q
-	if args.messageTTL > 0 || args.expires > 0 {
-		s.vh.sweepSet[q.name] = q
-	}
-	s.vh.mu.Unlock()
-
 	if q.exclusive {
 		s.trackExclusive(q.name)
 	}
@@ -377,6 +519,9 @@ func (s *vhostSession) addQueue(q *queue, args queueArgs) bool {
 }
 
 func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.QueueInfo, error) {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return plugin.QueueInfo{}, err
+	}
 	if err := s.perm.allowConfigure(name); err != nil {
 		return plugin.QueueInfo{}, err
 	}
@@ -384,6 +529,9 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 	if !ok {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", name, s.vh.name)
+	}
+	if q.remote {
+		return plugin.QueueInfo{}, remoteQueueErr(s.vh.name, name)
 	}
 	if q.exclusive && q.owner != s.id {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
@@ -399,12 +547,32 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 			"PRECONDITION_FAILED - queue '%s' in vhost '%s' not empty", name, s.vh.name)
 	}
 
+	// durable 非 exclusive 队列：删除必须经元数据层，本地移除由 ApplyMeta 完成。
+	if q.clusterManaged() {
+		if err := s.vh.broker.submitMeta(meta.OpDeleteQueue,
+			meta.Queue{VHost: s.vh.name, Name: name}); err != nil {
+			return plugin.QueueInfo{}, err
+		}
+		if err := s.vh.broker.awaitMeta(func() bool {
+			_, ok := s.vh.getQueue(name)
+			return !ok
+		}); err != nil {
+			return plugin.QueueInfo{}, err
+		}
+		s.forgetQueueLocal(name)
+		s.log.Debug("队列已删除（集群元数据）", "queue", name)
+		return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
+	}
+
 	s.removeQueue(name, q)
 	s.log.Debug("队列已删除", "queue", name)
 	return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
 }
 
 func (s *vhostSession) BindQueue(queueName, exchangeName, routingKey string, arguments map[string]any) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowWrite(exchangeName); err != nil {
 		return err
 	}
@@ -413,15 +581,37 @@ func (s *vhostSession) BindQueue(queueName, exchangeName, routingKey string, arg
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", exchangeName, s.vh.name)
 	}
-	if _, ok := s.vh.getQueue(queueName); !ok {
+	q, ok := s.vh.getQueue(queueName)
+	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", queueName, s.vh.name)
+	}
+	// 指向远端队列的绑定本期直接拒绝：消息数据不在本节点、又没有跨节点转发，
+	// 建出来的绑定只会把消息投进黑洞 —— 不如明确报错。
+	if q.remote {
+		return remoteQueueErr(s.vh.name, queueName)
+	}
+	// durable 交换机 + durable 非 exclusive 队列 → 绑定属于集群级元数据。
+	if ex.durable && q.clusterManaged() {
+		rec := meta.Binding{
+			VHost: s.vh.name, Source: exchangeName, Destination: queueName,
+			DestinationType: destinationQueue, RoutingKey: routingKey, Arguments: arguments,
+		}
+		if err := s.vh.broker.submitMeta(meta.OpPutBinding, rec); err != nil {
+			return err
+		}
+		return s.vh.broker.awaitMeta(func() bool {
+			return ex.hasQueueBinding(routingKey, queueName)
+		})
 	}
 	ex.addBinding(routingKey, queueName, arguments)
 	return nil
 }
 
 func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, arguments map[string]any) error {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
 	if err := s.perm.allowWrite(exchangeName); err != nil {
 		return err
 	}
@@ -429,6 +619,23 @@ func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, a
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", exchangeName, s.vh.name)
+	}
+	if q, ok := s.vh.getQueue(queueName); ok && ex.durable && q.clusterManaged() {
+		if !ex.hasQueueBinding(routingKey, queueName) {
+			return plugin.Errorf(plugin.KindNotFound,
+				"NOT_FOUND - no binding '%s' between exchange '%s' and queue '%s'",
+				routingKey, exchangeName, queueName)
+		}
+		rec := meta.Binding{
+			VHost: s.vh.name, Source: exchangeName, Destination: queueName,
+			DestinationType: destinationQueue, RoutingKey: routingKey, Arguments: arguments,
+		}
+		if err := s.vh.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
+			return err
+		}
+		return s.vh.broker.awaitMeta(func() bool {
+			return !ex.hasQueueBinding(routingKey, queueName)
+		})
 	}
 	if !ex.removeBinding(routingKey, queueName) {
 		return plugin.Errorf(plugin.KindNotFound,
@@ -439,6 +646,9 @@ func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, a
 }
 
 func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return 0, err
+	}
 	if err := s.perm.allowConfigure(name); err != nil {
 		return 0, err
 	}
@@ -447,6 +657,9 @@ func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
 		return 0, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", name, s.vh.name)
 	}
+	if q.remote {
+		return 0, remoteQueueErr(s.vh.name, name)
+	}
 	return q.purge(), nil
 }
 
@@ -454,6 +667,10 @@ func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
 
 func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey string, mandatory bool) (plugin.PublishResult, error) {
 	var res plugin.PublishResult
+
+	if err := s.vh.broker.checkServing(); err != nil {
+		return res, err
+	}
 
 	// 资源水位触发时在这里挂起：读循环停读 → TCP 背压，客户端自然被限速。
 	// 阻塞生产者而不是丢弃消息，是水位流控的核心语义。
@@ -487,6 +704,9 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		if !ok {
 			return res, nil
 		}
+		if q.remote {
+			return res, remoteQueueErr(s.vh.name, routingKey)
+		}
 		accepted, commit := q.publish(cloneForQueue(msg))
 		res.Routed = true
 		res.Rejected = !accepted
@@ -502,6 +722,10 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		q, ok := s.vh.getQueue(name)
 		if !ok {
 			continue
+		}
+		// 命中远端队列：消息数据不在本节点，本期没有跨节点转发 —— 明确失败而不是静默丢消息。
+		if q.remote {
+			return res, remoteQueueErr(s.vh.name, name)
 		}
 		res.Routed = true
 		accepted, commit := q.publish(cloneForQueue(msg))
@@ -740,10 +964,21 @@ func (v *vhost) sweep(now time.Time) {
 	v.mu.RUnlock()
 
 	for _, q := range queues {
-		if q.sweep(now) {
-			v.log.Debug("队列已过期，已删除", "queue", q.name)
-			v.removeQueue(q)
+		if !q.sweep(now) {
+			continue
 		}
+		// 集群托管队列（durable 非 exclusive）的删除必须经元数据层，否则拓扑会分叉；
+		// 本地移除由 ApplyMeta 完成，这里不做。
+		if q.clusterManaged() {
+			if err := v.broker.deleteManagedQueue(v.name, q.name); err != nil {
+				v.log.Warn("过期队列的元数据删除失败，保留队列", "queue", q.name, "err", err)
+				continue
+			}
+			v.log.Debug("队列已过期，正在按元数据删除", "queue", q.name)
+			continue
+		}
+		v.log.Debug("队列已过期，已删除", "queue", q.name)
+		v.removeQueue(q)
 	}
 }
 
@@ -822,6 +1057,9 @@ func (v *vhost) dispatchDeadLetter(e deadLetterEntry) {
 // ---------- 消费 ----------
 
 func (s *vhostSession) Consume(sub plugin.Subscription) (string, error) {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return "", err
+	}
 	if err := s.perm.allowRead(sub.Queue); err != nil {
 		return "", err
 	}
@@ -829,6 +1067,9 @@ func (s *vhostSession) Consume(sub plugin.Subscription) (string, error) {
 	if !ok {
 		return "", plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", sub.Queue, s.vh.name)
+	}
+	if q.remote {
+		return "", remoteQueueErr(s.vh.name, sub.Queue)
 	}
 	if q.exclusive && q.owner != s.id {
 		return "", plugin.Errorf(plugin.KindResourceLocked,
@@ -880,6 +1121,9 @@ func (s *vhostSession) Cancel(consumerTag string) error {
 }
 
 func (s *vhostSession) Get(queueName string, noAck bool) (*plugin.Delivery, bool, error) {
+	if err := s.vh.broker.checkServing(); err != nil {
+		return nil, false, err
+	}
 	if err := s.perm.allowRead(queueName); err != nil {
 		return nil, false, err
 	}
@@ -887,6 +1131,9 @@ func (s *vhostSession) Get(queueName string, noAck bool) (*plugin.Delivery, bool
 	if !ok {
 		return nil, false, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", queueName, s.vh.name)
+	}
+	if q.remote {
+		return nil, false, remoteQueueErr(s.vh.name, queueName)
 	}
 	if q.exclusive && q.owner != s.id {
 		return nil, false, plugin.Errorf(plugin.KindResourceLocked,
@@ -976,10 +1223,34 @@ func (s *vhostSession) removeQueue(name string, q *queue) {
 	s.mu.Unlock()
 }
 
+// forgetQueueLocal 清理本会话对某队列的本地记账（消费者标签、独占归属），
+// 不触碰 vhost 中的队列对象 —— 后者的移除由元数据应用完成。
+func (s *vhostSession) forgetQueueLocal(name string) {
+	s.mu.Lock()
+	delete(s.exclusive, name)
+	for tag, queueName := range s.tags {
+		if queueName == name {
+			delete(s.tags, tag)
+		}
+	}
+	s.mu.Unlock()
+}
+
 // deleteQueueIfAuto 在自动删除队列的最后一名消费者离开后删除队列。
 func (s *vhostSession) deleteQueueIfAuto(name string) {
 	q, ok := s.vh.getQueue(name)
 	if !ok {
+		return
+	}
+	// 集群托管队列：删除经元数据层提交。
+	if q.clusterManaged() {
+		if err := s.vh.broker.submitMeta(meta.OpDeleteQueue,
+			meta.Queue{VHost: s.vh.name, Name: name}); err != nil {
+			s.log.Warn("自动删除队列的元数据删除失败", "queue", name, "err", err)
+			return
+		}
+		s.forgetQueueLocal(name)
+		s.log.Debug("自动删除队列已删除（集群元数据）", "queue", name)
 		return
 	}
 	s.removeQueue(name, q)

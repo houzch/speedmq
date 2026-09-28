@@ -96,7 +96,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("加载配置失败: %v", err)
 	}
 	cfg.DataDir = t.TempDir()
-	b := broker.New(discardLogger(), cfg)
+	b, err := broker.New(discardLogger(), cfg)
+	if err != nil {
+		t.Fatalf("构造内核失败: %v", err)
+	}
 	t.Cleanup(b.Close)
 
 	plugins := newFakePlugins()
@@ -818,5 +821,52 @@ func TestPermissionDenied(t *testing.T) {
 	resp, raw := env.request(t, http.MethodGet, "/api/overview", nil, "plain", "pw")
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("无管理标签的用户应 403，实际 %d %s", resp.StatusCode, raw)
+	}
+}
+
+// TestClusterEndpoint 覆盖 M6 新增的集群端点：
+// 单机部署下也应给出明确答案（mode=local、role=single），而不是 404 —— 运维据此判断节点是否真的在集群里。
+func TestClusterEndpoint(t *testing.T) {
+	env := newTestEnv(t)
+
+	var cl struct {
+		Enabled   bool     `json:"enabled"`
+		Mode      string   `json:"mode"`
+		Role      string   `json:"role"`
+		HasQuorum bool     `json:"has_quorum"`
+		Paused    bool     `json:"paused"`
+		Peers     []string `json:"peers"`
+	}
+	resp := env.getJSON(t, "/api/cluster", &cl)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/cluster 应为 200，实际 %d", resp.StatusCode)
+	}
+	if cl.Enabled {
+		t.Fatalf("默认配置下集群应关闭")
+	}
+	if cl.Mode != "local" || cl.Role != "single" {
+		t.Fatalf("单机模式期望 local/single，实际 %s/%s", cl.Mode, cl.Role)
+	}
+	if !cl.HasQuorum || cl.Paused {
+		t.Fatalf("单机应恒有多数派且不暂停：quorum=%v paused=%v", cl.HasQuorum, cl.Paused)
+	}
+
+	// RabbitMQ 兼容端点：工具用它读集群名。
+	var name struct {
+		Name string `json:"name"`
+	}
+	resp = env.getJSON(t, "/api/cluster/name", &name)
+	if resp.StatusCode != http.StatusOK || name.Name == "" {
+		t.Fatalf("GET /api/cluster/name 应返回非空 name，实际 %d %q", resp.StatusCode, name.Name)
+	}
+
+	// /api/nodes 上挂载集群扩展字段。
+	var nodes []map[string]any
+	resp = env.getJSON(t, "/api/nodes", &nodes)
+	if resp.StatusCode != http.StatusOK || len(nodes) != 1 {
+		t.Fatalf("GET /api/nodes 应返回 1 个节点，实际 %d", resp.StatusCode)
+	}
+	if _, ok := nodes[0]["swiftmq_cluster"]; !ok {
+		t.Fatalf("/api/nodes 的节点对象应包含 swiftmq_cluster 字段")
 	}
 }

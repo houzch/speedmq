@@ -22,6 +22,12 @@
     "enabled": true,
     "addr": ":15672"
   },
+  "cluster": {
+    "enabled": false,
+    "node_id": "",
+    "listen": ":25672",
+    "partition_policy": "pause_minority"
+  },
   "plugins": {
     "amqp091": {
       "builtin": true,

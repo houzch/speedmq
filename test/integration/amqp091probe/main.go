@@ -21,6 +21,9 @@ var (
 	user   = flag.String("user", "guest", "用户名")
 	pass   = flag.String("pass", "guest", "口令")
 	expect = flag.String("expect-product", "SwiftMQ", "期望的 server product 名")
+	// declareDurable 只声明一个 durable 队列后退出，供 M6 的集群验证使用：
+	// durable 队列属集群元数据，声明后应在**所有**节点上可见（用管理 API 佐证）。
+	declareDurable = flag.String("declare-durable", "", "只声明指定名字的 durable 队列后退出")
 )
 
 // testCase 是一条验证用例。
@@ -31,6 +34,15 @@ type testCase struct {
 
 func main() {
 	flag.Parse()
+
+	if *declareDurable != "" {
+		if err := declareDurableQueue(*declareDurable); err != nil {
+			fmt.Printf("FAIL  声明 durable 队列 %s: %v\n", *declareDurable, err)
+			os.Exit(1)
+		}
+		fmt.Printf("OK    已声明 durable 队列 %s\n", *declareDurable)
+		return
+	}
 
 	cases := []testCase{
 		{"M1 正常连接 + Channel 开关 + 优雅关闭", testHappyPath},
@@ -61,6 +73,16 @@ func main() {
 
 func url(vhost string) string {
 	return fmt.Sprintf("amqp://%s:%s@%s/%s", *user, *pass, *addr, vhost)
+}
+
+// declareDurableQueue 只声明一个 durable 队列后断开（集群元数据复制的验证入口）。
+func declareDurableQueue(name string) error {
+	return withChannel(func(ch *amqp.Channel) error {
+		if _, err := ch.QueueDeclare(name, true, false, false, false, nil); err != nil {
+			return fmt.Errorf("声明 durable 队列失败: %w", err)
+		}
+		return nil
+	})
 }
 
 // testHappyPath 覆盖 M1 的核心路径。

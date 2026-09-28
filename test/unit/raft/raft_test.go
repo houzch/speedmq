@@ -1,6 +1,7 @@
 package raft_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -199,6 +201,48 @@ func (c *cluster) propose(id, value string) (any, error) {
 	return c.nodes[id].Propose(ctx, []byte(value))
 }
 
+// proposeOnLeader 在当前 leader 上提案；若等待期间发生换届（ErrNotLeader），
+// 重新发现 leader 后重试 —— 集群中"领导者可变"是常态，客户端必须容忍，
+// 测试也不应把"某一瞬间的 leader 永久不变"当成前提。
+func (c *cluster) proposeOnLeader(t *testing.T, ids []string, value string) string {
+	t.Helper()
+	deadline := time.Now().Add(testTimeout)
+	for {
+		leader := c.waitLeader(t, ids)
+		if _, err := c.propose(leader, value); err == nil {
+			return leader
+		} else if !errors.Is(err, raft.ErrNotLeader) {
+			t.Fatalf("Propose(%s) 在 leader %s 上失败: %v", value, leader, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("反复换届，未能在超时内完成提案 %s", value)
+		}
+	}
+}
+
+// stableLeader 等到一个"已完成本任期首次提交"的 leader。
+//
+// 提交意味着它已拿到多数派应答，其心跳也已被 followers 收到（选举计时被重置），
+// 因此接下来一段时间不会再有peer 先超时换届 —— 需要"下线某个节点"这类
+// 一次性动作的用例必须先拿到这样的 leader，否则动作可能落在换届窗口里。
+func (c *cluster) stableLeader(t *testing.T, ids []string) string {
+	t.Helper()
+	deadline := time.Now().Add(testTimeout)
+	for {
+		leader := c.waitLeader(t, ids)
+		st := c.nodes[leader].Status()
+		// 还要求状态机追平提交点：leader 上任时的 no-op 在提交后可能有短暂应用延迟，
+		// 若用例在"应用之前"记录基线，就会把随后到来的应用误判成"分区期间的状态变化"。
+		if st.CommitIndex > 0 && c.fsms[leader].lastIndex() >= st.CommitIndex {
+			return leader
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("未能在超时内得到稳定的 leader")
+		}
+		time.Sleep(testPollInterval)
+	}
+}
+
 // waitLeader 等给定节点集合收敛到"恰好一个 leader"，返回其 ID。
 func (c *cluster) waitLeader(t *testing.T, ids []string) string {
 	t.Helper()
@@ -355,32 +399,37 @@ func TestThreeNodeElectionConverges(t *testing.T) {
 // TestLogReplicationOrderConsistent：leader 连续提案后所有节点状态一致且顺序一致。
 func TestLogReplicationOrderConsistent(t *testing.T) {
 	c := startCluster(t, "n1", "n2", "n3")
-	leader := c.waitLeader(t, c.ids)
 
 	want := []string{"m0", "m1", "m2", "m3", "m4"}
 	for _, v := range want {
-		if _, err := c.propose(leader, v); err != nil {
-			t.Fatalf("Propose(%s) 失败: %v", v, err)
-		}
+		c.proposeOnLeader(t, c.ids, v)
 	}
-	waitFor(t, "所有节点追平 leader", func() bool {
-		target := c.nodes[leader].Status().LastApplied
+	waitFor(t, "所有节点都应用了全部载荷", func() bool {
 		for _, id := range c.ids {
-			if c.nodes[id].Status().LastApplied < target {
+			if !c.fsms[id].hasValues(want) {
+				return false
+			}
+		}
+		return true
+	})
+	waitFor(t, "所有节点的应用进度一致", func() bool {
+		target := c.nodes[c.ids[0]].Status().LastApplied
+		for _, id := range c.ids {
+			if c.nodes[id].Status().LastApplied != target {
 				return false
 			}
 		}
 		return true
 	})
 
-	base := c.fsms[leader].state()
+	base := c.fsms[c.ids[0]].state()
 	for _, id := range c.ids {
 		got := c.fsms[id].state()
 		if !equalUint64(got.Applied, base.Applied) {
-			t.Fatalf("节点 %s 的应用索引序列与 leader 不一致:\n%s=%v\nleader=%v", id, id, got.Applied, base.Applied)
+			t.Fatalf("节点 %s 的应用索引序列与基准节点不一致:\n%s=%v\n基准=%v", id, id, got.Applied, base.Applied)
 		}
 		if !equalString(got.Values, base.Values) {
-			t.Fatalf("节点 %s 的应用载荷与 leader 不一致:\n%s=%v\nleader=%v", id, id, got.Values, base.Values)
+			t.Fatalf("节点 %s 的应用载荷与基准节点不一致:\n%s=%v\n基准=%v", id, id, got.Values, base.Values)
 		}
 	}
 
@@ -399,15 +448,13 @@ func TestLogReplicationOrderConsistent(t *testing.T) {
 // TestMajorityStillCommitsWithOneFollowerDown：3 节点掉 1 个仍能提交，且存活两节点状态一致。
 func TestMajorityStillCommitsWithOneFollowerDown(t *testing.T) {
 	c := startCluster(t, "n1", "n2", "n3")
-	leader := c.waitLeader(t, c.ids)
+	leader := c.stableLeader(t, c.ids)
 	rest := others(c.ids, leader)
 	victim, survivor := rest[0], rest[1]
 
 	c.net.Down(victim)
 
-	if _, err := c.propose(leader, "majority"); err != nil {
-		t.Fatalf("2/3 仍是多数派，Propose 不应失败: %v", err)
-	}
+	leader = c.proposeOnLeader(t, c.ids, "majority")
 	waitFor(t, "leader 与存活 follower 都已应用", func() bool {
 		return c.fsms[leader].hasValue("majority") && c.fsms[survivor].hasValue("majority")
 	})
@@ -425,12 +472,13 @@ func TestMajorityStillCommitsWithOneFollowerDown(t *testing.T) {
 // TestMinorityCannotCommit：只剩 leader（1/3）时提案不得成功，也不得被应用。
 func TestMinorityCannotCommit(t *testing.T) {
 	c := startCluster(t, "n1", "n2", "n3")
-	leader := c.waitLeader(t, c.ids)
-	// 先确保 leader 已完成一轮多数派确认（无操作条目已提交）。
-	waitFor(t, "leader 已完成首次提交", func() bool { return c.nodes[leader].Status().CommitIndex > 0 })
+	leader := c.stableLeader(t, c.ids)
 
 	for _, id := range others(c.ids, leader) {
 		c.net.Down(id)
+	}
+	if !c.nodes[leader].IsLeader() {
+		t.Fatalf("少数派被下线不应让 leader 失去角色（它只是失去了提交能力）")
 	}
 
 	before := c.nodes[leader].Status()
@@ -458,11 +506,12 @@ func TestMinorityCannotCommit(t *testing.T) {
 // TestLeaderFailover：leader 不可达后剩余 2 节点选出新 leader，并能提交新提案。
 func TestLeaderFailover(t *testing.T) {
 	c := startCluster(t, "n1", "n2", "n3")
-	old := c.waitLeader(t, c.ids)
+	old := c.stableLeader(t, c.ids)
 
 	c.net.Down(old)
 	alive := others(c.ids, old)
-	newLeader := c.waitLeader(t, alive)
+	// 剩余 2 个节点仍是多数派，必须能选出新 leader 并完成提交。
+	newLeader := c.proposeOnLeader(t, alive, "after-failover")
 	if newLeader == old {
 		t.Fatalf("新 leader 不应是已下线的节点")
 	}
@@ -470,9 +519,6 @@ func TestLeaderFailover(t *testing.T) {
 		t.Fatalf("被隔离的旧 leader 不应仍认为拥有多数派")
 	}
 
-	if _, err := c.propose(newLeader, "after-failover"); err != nil {
-		t.Fatalf("新 leader 上 Propose 失败: %v", err)
-	}
 	waitFor(t, "新 leader 应用了提案", func() bool { return c.fsms[newLeader].hasValue("after-failover") })
 	survivor := others(alive, newLeader)[0]
 	waitFor(t, "存活 follower 追平", func() bool { return c.fsms[survivor].hasValue("after-failover") })
@@ -548,7 +594,7 @@ func TestLaggingFollowerCatchesUp(t *testing.T) {
 	// 缩小快照阈值，确保 leader 在 follower 离线期间完成日志压缩，
 	// 从而走 InstallSnapshot 这条路径而不是逐条回退复制。
 	c := startClusterCfg(t, clusterConfig{snapshotThreshold: 8}, "n1", "n2", "n3")
-	leader := c.waitLeader(t, c.ids)
+	leader := c.stableLeader(t, c.ids)
 	rest := others(c.ids, leader)
 	victim, survivor := rest[0], rest[1]
 
@@ -558,9 +604,7 @@ func TestLaggingFollowerCatchesUp(t *testing.T) {
 	for i := 0; i < 24; i++ {
 		v := fmt.Sprintf("lag%02d", i)
 		want = append(want, v)
-		if _, err := c.propose(leader, v); err != nil {
-			t.Fatalf("Propose(%s) 失败: %v", v, err)
-		}
+		leader = c.proposeOnLeader(t, c.ids, v)
 	}
 	waitFor(t, "leader 已压缩日志（覆盖快照路径）", func() bool {
 		return c.nodes[leader].Status().SnapshotIndex > 0
@@ -572,6 +616,12 @@ func TestLaggingFollowerCatchesUp(t *testing.T) {
 	waitFor(t, "落后节点进度与 leader 一致", func() bool {
 		return c.nodes[victim].Status().LastApplied == c.nodes[leader].Status().LastApplied
 	})
+
+	// 该节点离线期间收不到任何日志，因此本地不可能自行压缩；
+	// SnapshotIndex > 0 只可能来自 leader 的整体快照安装 —— 这正是本用例要覆盖的路径。
+	if st := c.nodes[victim].Status(); st.SnapshotIndex == 0 {
+		t.Fatalf("落后节点应通过 InstallSnapshot 追赶（SnapshotIndex 仍为 0）")
+	}
 
 	got := c.fsms[victim].state()
 	base := c.fsms[leader].state()
@@ -718,4 +768,69 @@ func TestMemNetworkPartitionAndHeal(t *testing.T) {
 	if got, err := call(n1, "n2", echoMethod, "x"); err != nil || got != "n1|x" {
 		t.Fatalf("Up 后应恢复连通，得到 %q, %v", got, err)
 	}
+}
+
+// TestTCPTransportRoundTrip 覆盖真实 TCP 传输的编解码。
+//
+// 这一条是"只有真端口才能守住"的用例：此前请求载荷的长度按 u16 读、按 u32 写，
+// 真实集群里每次 RPC 的载荷都变成空串（选举因此永远无法完成），
+// 而进程内内存网络绕过了编解码，测试全绿也发现不了。
+func TestTCPTransportRoundTrip(t *testing.T) {
+	logger := raft.NewLogger(slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	aAddr := freeTCPAddr(t)
+	bAddr := freeTCPAddr(t)
+	for bAddr == aAddr {
+		// 端口在"关闭临时监听"后可能被再次分配：确保两个节点拿到不同地址。
+		bAddr = freeTCPAddr(t)
+	}
+	peers := map[string]string{"a": aAddr, "b": bAddr}
+
+	ta, err := raft.NewTCPTransport(aAddr, "a", peers, logger)
+	if err != nil {
+		t.Fatalf("创建传输 a 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = ta.Close() })
+	tb, err := raft.NewTCPTransport(bAddr, "b", peers, logger)
+	if err != nil {
+		t.Fatalf("创建传输 b 失败: %v", err)
+	}
+	t.Cleanup(func() { _ = tb.Close() })
+
+	const echoMethod = "test.tcp_echo"
+	// 载荷刻意超过 255 字节：长度字段一旦按错的口径读，立刻就能看出来。
+	want := []byte(`{"op":"queue.put","payload":{"vhost":"/","name":"` +
+		string(bytes.Repeat([]byte("q"), 300)) + `"}}`)
+	if err := tb.Serve(echoMethod, func(_ context.Context, from string, payload []byte) ([]byte, error) {
+		if from != "a" {
+			return nil, fmt.Errorf("来源标识错误: %q", from)
+		}
+		return payload, nil
+	}); err != nil {
+		t.Fatalf("注册 RPC 处理器失败: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	got, err := ta.Call(ctx, "b", echoMethod, want)
+	if err != nil {
+		t.Fatalf("TCP RPC 失败: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("回显不一致: got %d 字节 want %d 字节", len(got), len(want))
+	}
+}
+
+// freeTCPAddr 预留一个空闲的本地 TCP 地址（绑定后立即关闭）。
+func freeTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("分配空闲端口失败: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("释放临时监听失败: %v", err)
+	}
+	return addr
 }

@@ -30,6 +30,12 @@ func (s *Server) registerRoutes() {
 	s.handle(http.MethodGet, "/api/nodes", s.getNodes)
 	s.handle(http.MethodGet, "/api/whoami", s.getWhoami)
 
+	// ---- 集群（M6）----
+	// /api/cluster 是 SwiftMQ 的扩展端点（RabbitMQ 没有对应接口），
+	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
+	s.handle(http.MethodGet, "/api/cluster", s.getCluster)
+	s.handle(http.MethodGet, "/api/cluster/name", s.getClusterName)
+
 	// ---- vhost ----
 	s.handle(http.MethodGet, "/api/vhosts", s.getVHosts)
 	s.handle(http.MethodGet, "/api/vhosts/{vhost}", s.getVHost)
@@ -240,7 +246,60 @@ func (s *Server) getNodes(w http.ResponseWriter, _ *http.Request, _ params, au a
 	if _, limit := s.deps.Broker.StorageLimits(); limit > 0 {
 		node["disk_free_limit"] = limit
 	}
+	// 集群信息作为扩展字段挂在节点对象上：rabbitmqadmin 等工具会忽略不认识的字段，
+	// 但运维/监控能在 /api/nodes 里一并拿到"本节点在集群中的角色"。
+	node["swiftmq_cluster"] = s.clusterObject()
 	writeJSON(w, http.StatusOK, []map[string]any{node})
+}
+
+// getCluster 返回本节点的集群/元数据层状态。
+//
+// 走读权限：集群状态包含成员与共识进度，属监控范畴（与 /api/nodes 同级）。
+func (s *Server) getCluster(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.clusterObject())
+}
+
+// getClusterName 对齐 RabbitMQ 的 GET /api/cluster/name（返回 {"name": ...}）。
+//
+// SwiftMQ 本期没有独立的"集群名"概念：集群由静态成员表定义，
+// 因此用本节点名作为集群名 —— 与 RabbitMQ 的默认行为一致（集群名 = 首个节点名）。
+func (s *Server) getClusterName(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": s.deps.NodeName})
+}
+
+// clusterObject 组装集群状态视图（/api/cluster 与 /api/nodes 共用）。
+func (s *Server) clusterObject() map[string]any {
+	st := s.deps.Broker.ClusterStatus()
+	peers := st.Peers
+	if peers == nil {
+		peers = []string{}
+	}
+	return map[string]any{
+		"enabled":         s.deps.Broker.ClusterEnabled(),
+		"mode":            st.Mode,
+		"node_id":         st.NodeID,
+		"role":            st.Role,
+		"term":            st.Term,
+		"leader":          st.Leader,
+		"has_quorum":      st.HasQuorum,
+		"paused":          s.deps.Broker.ClusterPaused(),
+		"peers":           peers,
+		"commit_index":    st.CommitIndex,
+		"last_applied":    st.LastApplied,
+		"applied_records": st.AppliedRecords,
+		"object_totals": map[string]any{
+			"queues": st.Queues, "exchanges": st.Exchanges,
+			"bindings": st.Bindings, "users": st.Users,
+		},
+	}
 }
 
 func (s *Server) enabledPlugins() []string {

@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -74,7 +73,7 @@ func TestDurableQueueRecoveryAfterRestart(t *testing.T) {
 	cfg := m4Config(t, "always")
 	const queue = "m4.recover.q"
 
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	sess, err := testSessionOf(t, b, "guest", "guest")
 	if err != nil {
 		t.Fatalf("打开会话失败: %v", err)
@@ -107,7 +106,7 @@ func TestDurableQueueRecoveryAfterRestart(t *testing.T) {
 	b.Close() // 收尾刷盘
 
 	// 重启：复用同一数据目录
-	b2 := broker.New(discardLogger(), cfg)
+	b2 := mustBroker(t, cfg)
 	t.Cleanup(b2.Close)
 	sess2, err := testSessionOf(t, b2, "guest", "guest")
 	if err != nil {
@@ -140,7 +139,7 @@ func TestTransientMessageNotRecovered(t *testing.T) {
 	cfg := m4Config(t, "always")
 	const queue = "m4.transient.q"
 
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	sess, err := testSessionOf(t, b, "guest", "guest")
 	if err != nil {
 		t.Fatalf("打开会话失败: %v", err)
@@ -159,7 +158,7 @@ func TestTransientMessageNotRecovered(t *testing.T) {
 	}
 	b.Close()
 
-	b2 := broker.New(discardLogger(), cfg)
+	b2 := mustBroker(t, cfg)
 	t.Cleanup(b2.Close)
 	sess2, err := testSessionOf(t, b2, "guest", "guest")
 	if err != nil {
@@ -176,7 +175,7 @@ func TestFsyncNoneDisablesPersistence(t *testing.T) {
 	cfg := m4Config(t, "none")
 	const queue = "m4.none.q"
 
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	sess, err := testSessionOf(t, b, "guest", "guest")
 	if err != nil {
 		t.Fatalf("打开会话失败: %v", err)
@@ -195,7 +194,7 @@ func TestFsyncNoneDisablesPersistence(t *testing.T) {
 	}
 	b.Close()
 
-	b2 := broker.New(discardLogger(), cfg)
+	b2 := mustBroker(t, cfg)
 	t.Cleanup(b2.Close)
 	sess2, err := testSessionOf(t, b2, "guest", "guest")
 	if err != nil {
@@ -213,7 +212,7 @@ func TestDurableQueueDeleteRemovesStore(t *testing.T) {
 	cfg := m4Config(t, "always")
 	const queue = "m4.deleted.q"
 
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	sess, err := testSessionOf(t, b, "guest", "guest")
 	if err != nil {
 		t.Fatalf("打开会话失败: %v", err)
@@ -225,7 +224,7 @@ func TestDurableQueueDeleteRemovesStore(t *testing.T) {
 	}
 	b.Close()
 
-	b2 := broker.New(discardLogger(), cfg)
+	b2 := mustBroker(t, cfg)
 	t.Cleanup(b2.Close)
 	sess2, err := testSessionOf(t, b2, "guest", "guest")
 	if err != nil {
@@ -249,7 +248,7 @@ func TestFlowControlBlocksAndUnblocks(t *testing.T) {
 	cfg.Storage.DiskFreeLimit = 1 << 40
 	cfg.Storage.MemoryHighWatermark = 0
 
-	b := broker.New(discardLogger(), cfg)
+	b := mustBroker(t, cfg)
 	t.Cleanup(b.Close)
 
 	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}

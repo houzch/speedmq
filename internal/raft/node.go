@@ -469,6 +469,7 @@ func (n *Node) resetElectionLocked() {
 // leader 按心跳间隔复制日志并评估多数派联系。
 func (n *Node) runLoop() {
 	defer n.wg.Done()
+	wasLeader := false
 	for {
 		n.mu.Lock()
 		role := n.role
@@ -484,6 +485,16 @@ func (n *Node) runLoop() {
 			n.startElection()
 			continue
 		}
+
+		// 刚当选就立刻广播一轮心跳，把"其他节点还没听说新 leader"的窗口压到最小。
+		// 若等到一个心跳间隔后才首次广播，某些选举超时更早的 peer 会先发起新一轮竞选，
+		// 造成没必要的换届（对外表现为 Propose 偶发 ErrNotLeader）。
+		if role == RoleLeader && !wasLeader {
+			wasLeader = true
+			n.tickLeader()
+			continue
+		}
+		wasLeader = role == RoleLeader
 
 		wait := n.heartbeatInterval
 		if role != RoleLeader {

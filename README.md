@@ -6,9 +6,9 @@
 
 ***
 
-## ⚠️ 当前状态：M5（管理与观测），**仍不可用于生产**
+## ⚠️ 当前状态：M6（集群地基），**仍不可用于生产**
 
-处于早期开发阶段。M5 已交付管理 HTTP API、内嵌管理 UI、Prometheus 指标、`swiftmqctl` 与插件热启停。
+处于早期开发阶段。M6 已交付节点身份与静态成员表、自研 Raft、元数据（durable 拓扑）的集群复制与 follower 转发 leader、集群可观测与 `pause_minority` 分区保护。**跨节点消息转发与仲裁队列留待下一轮**，因此集群模式下队列的消息数据仍只在其 Owner 节点上可读写（详见下文「集群」）。
 
 **已实现**
 
@@ -31,18 +31,22 @@
 - **可观测性（M5）**：Prometheus 文本格式 `/metrics`（队列深度、未确认、投递/确认计数、磁盘/内存水位、插件状态）；`-log-format json` 结构化日志
 - **运维 CLI（M5）**：`swiftmqctl`（`status` / `list_queues` / `list_connections` / `list_exchanges` / `list_bindings` / `add_user` / `set_permissions` / `close_connection` / `plugins list|show|enable|disable`）
 - **插件治理（M5）**：`swiftmqctl plugins` 与管理 API 均可**不重启内核**热启用/停用插件（落到实处是关闭/恢复它的 listener），配置可声明 `enabled` / `required` / `builtin`
-- **动态用户与权限（M5）**：通过管理 API / CLI 增删用户与权限（内存生效，不落盘 —— 元数据持久化属 M6 的内嵌 Raft）
+- **动态用户与权限（M5）**：通过管理 API / CLI 增删用户与权限
+- **集群与高可用（M6，地基）**：`cluster` 配置段定义节点身份与**静态成员表**；自研 Raft（零依赖）负责元数据一致性；**durable 拓扑**（durable 交换机 / durable 非 exclusive 队列 / 绑定）经 Raft 复制到全体节点，在 follower 上写入会自动**转发给 leader**；元数据在**单机模式下也落盘**（`<data_dir>/meta/state.json`），因此交换机与绑定重启后不再丢失
+- **集群观测（M6）**：`GET /api/cluster`（模式 / 角色 / 任期 / leader / 成员 / 共识进度 / 元数据规模）与 `GET /api/cluster/name`（RabbitMQ 兼容）；`/api/nodes` 每个节点附带 `swiftmq_cluster` 扩展字段；`swiftmqctl cluster_status`
+- **分区保护（M6）**：`partition_policy: pause_minority`（默认）下，节点与多数派失联即暂停服务并断开在途连接，客户端会自动重连到健康节点，避免脑裂产生分叉数据
 - **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
 - 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
 
 **尚未实现**
 
 - Direct Reply-To（`amq.rabbitmq.reply-to`）、消费者优先级（`x-priority`）
-- 用户 / vhost / 权限的**持久化**（重启后回到配置文件的内容）；vhost 的动态增删
+- **集群的完整能力**：跨节点消息转发（当前发往远端队列返回 540 NOT_IMPLEMENTED）、仲裁队列（Quorum Queue）、动态成员变更（本期成员表是静态配置，改成员需滚动重启）、集群管理 UI 页面
+- 用户 / 权限 / vhost 的集群复制（当前只在本地生效；本期复制的是 durable 拓扑）
+- vhost 的动态增删
 - 策略（policies）接口：`/api/policies` 返回空数组，功能未实现
-- 拓扑元数据的持久化（交换机与绑定重启后需客户端重新声明；M4/M5 只持久化队列消息）
 - 段文件的轮转与磁盘回收（当前每队列单段，删除仅标记）
-- 集群、仲裁队列与流队列、Stream 协议
+- 流队列与 Stream 协议
 - AMQP 1.0 / MQTT / STOMP（计划以插件形态提供）
 - YAML 配置（当前支持 JSON 文件 + `SWIFTMQ_*` 环境变量；YAML 需要引入解析依赖，暂缓）
 
@@ -81,7 +85,7 @@ go build -o bin/swiftmqctl ./cmd/swiftmqctl
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.5.0 data_dir=data vhost=/ fsync=os
+msg="SwiftMQ 启动中" version=0.6.0 data_dir=data vhost=/ fsync=os
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview ui=/
@@ -242,6 +246,17 @@ conn.close()
     "enabled": true,
     "addr": ":15672"
   },
+  "cluster": {
+    "enabled": false,
+    "node_id": "swiftmq@node1",
+    "listen": ":25672",
+    "partition_policy": "pause_minority",
+    "peers": {
+      "swiftmq@node1": "10.0.0.1:25672",
+      "swiftmq@node2": "10.0.0.2:25672",
+      "swiftmq@node3": "10.0.0.3:25672"
+    }
+  },
   "plugins": {
     "amqp091": { "builtin": true, "enabled": true }
   }
@@ -257,6 +272,7 @@ conn.close()
 | `plugins`   | 各插件的配置段；内核只读其中的治理开关（`enabled` / `required` / `builtin`），其余原样交给插件 |
 | `storage`   | 存储与流控配置段（M4 起生效）                                        |
 | `management`| 管理面配置段（M5 起生效）：`enabled` 关闭后不监听任何管理端口                   |
+| `cluster`   | 集群配置段（M6 起生效）：`enabled` 为 `true` 时才走 Raft，默认关闭时是单机语义                     |
 
 `storage` 字段：
 
@@ -274,6 +290,16 @@ conn.close()
 | `enabled` | `true`    | 是否启用管理面（HTTP API + 内嵌 UI + 指标） |
 | `addr`    | `:15672`  | 管理面监听地址                         |
 
+`cluster` 字段：
+
+| 字段                 | 默认值              | 说明                                                                             |
+| ------------------ | ---------------- | ------------------------------------------------------------------------------ |
+| `enabled`          | `false`          | 是否启用集群。为 `false` 时是纯单机：不监听集群端口、元数据落本地 `state.json`                              |
+| `node_id`          | `swiftmq@<主机名>`   | 本节点标识，集群内唯一；默认与 `/api/nodes` 的 `name` 同口径                                         |
+| `listen`           | `:25672`         | 节点间 RPC 监听地址（对齐 RabbitMQ 的节点间端口）                                                |
+| `peers`            | 未启用时为 `{}`       | 静态成员表：`node_id → RPC 地址`，**必须包含本节点**；留空时自动填 `{node_id: listen}`（即单节点集群）            |
+| `partition_policy` | `pause_minority` | 分区策略：`pause_minority`（与多数派失联即暂停服务并断开在途连接）/ `ignore`（只记录状态，不暂停）                 |
+
 `plugins` 治理开关：
 
 | 字段         | 默认值    | 说明                                              |
@@ -286,15 +312,89 @@ conn.close()
 
 `SWIFTMQ_DATA_DIR`、`SWIFTMQ_DEFAULT_VHOST`、`SWIFTMQ_AMQP_ADDR`、`SWIFTMQ_FSYNC`、
 `SWIFTMQ_FLUSH_INTERVAL_MS`、`SWIFTMQ_MEMORY_HIGH_WATERMARK`、`SWIFTMQ_DISK_FREE_LIMIT`、
-`SWIFTMQ_MANAGEMENT_ENABLED`、`SWIFTMQ_MANAGEMENT_ADDR`、`SWIFTMQ_LOG_LEVEL`、`SWIFTMQ_LOG_FORMAT`
+`SWIFTMQ_MANAGEMENT_ENABLED`、`SWIFTMQ_MANAGEMENT_ADDR`、`SWIFTMQ_CLUSTER_ENABLED`、
+`SWIFTMQ_CLUSTER_NODE_ID`、`SWIFTMQ_CLUSTER_LISTEN`、`SWIFTMQ_CLUSTER_PARTITION_POLICY`、
+`SWIFTMQ_LOG_LEVEL`、`SWIFTMQ_LOG_FORMAT`
 
 > 持久化范围（M4）：只针对 **durable 队列**中的 **`delivery-mode=2`** 消息，与 RabbitMQ 一致。
 > 非 durable 队列、瞬时消息与 `fsync: none` 档位都不落盘。
 >
-> 拓扑元数据（交换机、绑定、队列声明）尚不持久化：重启后需要客户端重新声明队列，
-> 重新声明时会自动从磁盘恢复该队列的持久消息。用户与权限的动态变更同样只在内存生效。
+> 拓扑元数据（M6 起持久化）：**durable 交换机**、**durable 且非 exclusive 的队列**与它们之间的绑定
+> 会落到 `<data_dir>/meta/state.json`（单机）或经 Raft 复制（集群），重启后自动恢复，
+> **不再需要客户端重新声明**。transient / exclusive / auto-delete 的对象仍属会话本地，重启即消失。
+> 用户与权限的动态变更仍只在本地生效，本期不参与集群复制。
 >
 > YAML 配置暂不支持（需引入解析依赖）；当前用 JSON + `SWIFTMQ_*` 覆盖。
+
+***
+
+## 集群（M6，地基）
+
+> ⚠️ 本期是**集群地基**：元数据（durable 拓扑）具备集群一致性，但**消息数据仍只在队列的 Owner 节点上**。
+> 跨节点消息转发与仲裁队列在下一轮交付。
+
+开启集群只需在每个节点配置 `cluster` 段，并保证**各节点的 `vhosts` 列表一致**：
+
+```json
+{
+  "data_dir": "/var/lib/swiftmq",
+  "vhosts": ["/"],
+  "cluster": {
+    "enabled": true,
+    "node_id": "swiftmq@node1",
+    "listen": "10.0.0.1:25672",
+    "partition_policy": "pause_minority",
+    "peers": {
+      "swiftmq@node1": "10.0.0.1:25672",
+      "swiftmq@node2": "10.0.0.2:25672",
+      "swiftmq@node3": "10.0.0.3:25672"
+    }
+  }
+}
+```
+
+**怎么工作**
+
+- **元数据一致性**：节点身份与成员表来自配置；元数据由**自研 Raft**（零依赖）复制 —— 选主、日志复制、任期与投票先落盘、快照与落后节点追赶。
+- **写在哪都行**：在任意节点声明 durable 拓扑，写请求会**转发给 leader** 提交，再按同一顺序应用到全体节点。
+- **队列放置**：Owner = 声明该队列的节点（对齐 RabbitMQ 经典的 client-local 放置）。
+- **分区保护**：`pause_minority`（默认）下，与多数派失联的节点会暂停服务并断开在途连接，客户端自动重连到健康节点；这样避免两个分区各自接受写入而产生分叉数据。
+
+**本期限制（有意为之）**
+
+- 发往**远端队列**（消息数据不在本节点）的 `Basic.Publish / Basic.Consume / Basic.Get / Purge` 返回 `540 NOT_IMPLEMENTED`；把远端队列绑到交换机同样被拒绝 —— 明确失败优于静默丢消息。
+- 成员表是**静态**的：增删节点需改配置并滚动重启（无 joint consensus）。
+- 用户 / 权限不参与集群复制。
+- 集群管理 UI 页面尚未提供（可先用下面的接口与 CLI）。
+
+**观测**
+
+```bash
+curl -u guest:guest http://127.0.0.1:15672/api/cluster        # 模式/角色/任期/leader/成员/共识进度
+curl -u guest:guest http://127.0.0.1:15672/api/cluster/name   # RabbitMQ 兼容：集群名
+
+swiftmqctl cluster_status                                     # 命令行版
+```
+
+`/api/cluster` 返回示例：
+
+```json
+{
+  "enabled": true,
+  "mode": "raft",
+  "node_id": "swiftmq@node1",
+  "role": "leader",
+  "term": 3,
+  "leader": "swiftmq@node1",
+  "has_quorum": true,
+  "paused": false,
+  "peers": ["swiftmq@node1", "swiftmq@node2", "swiftmq@node3"],
+  "commit_index": 12,
+  "last_applied": 12,
+  "applied_records": 12,
+  "object_totals": { "queues": 4, "exchanges": 7, "bindings": 4, "users": 0 }
+}
+```
 
 ***
 
@@ -349,6 +449,8 @@ swiftmq/
 │   ├── transport/           # 监听、TLS、协议嗅探、按插件热启停监听
 │   ├── plugin/              # 插件注册中心、生命周期与治理、Host 句柄
 │   ├── broker/              # 内核：vhost、路由模型、队列、死信、水位流控、管理面视图
+│   ├── raft/                # 自研 Raft：选主、日志复制、持久化、快照（M6）
+│   ├── meta/                # 集群元数据层：Raft 复制 / 本地落盘两种后端（M6）
 │   ├── store/               # 持久化：段日志、队列索引、组提交、崩溃恢复
 │   ├── management/          # Management HTTP API + Prometheus 指标 + UI 静态服务
 │   ├── auth/                # SASL：PLAIN / AMQPLAIN；用户与权限表
@@ -388,7 +490,7 @@ npm run type-check    # TypeScript 严格模式检查
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.5.0 .
+docker build -t swiftmq:0.6.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -404,7 +506,8 @@ docker build -t swiftmq:0.5.0 .
 | 一期 | M3  | 发布确认、TTL、死信、长度限制、优先级、权限校验                            | ✅ 已完成 |
 | 一期 | M4  | 持久化（段日志 + 队列索引）、fsync 档位、崩溃恢复、资源水位流控                      | ✅ 已完成 |
 | 一期 | M5  | 管理 HTTP API、管理 UI（Vue 3 + Element Plus）、Prometheus、`swiftmqctl`、插件热启停 | ✅ 已完成 |
-| 二期 | M6  | 集群、Quorum Queue 复制、分区处理、故障切换                         | 规划中   |
+| 二期 | M6  | 集群地基：节点身份与成员表、自研 Raft、元数据复制、分区处理、故障切换、集群观测 | ✅ 已完成（跨节点消息转发与 Quorum Queue 见下） |
+| 二期 | M6b | 跨节点消息转发、Quorum Queue（每队列 Raft 组）、动态成员变更 | 规划中   |
 | 二期 | M7  | 性能打磨、插件化验证（MQTT / AMQP 1.0）                          | 规划中   |
 
 每个里程碑的完成标准是"**真实客户端跑通 + 与 RabbitMQ 行为一致**"，而非"代码写完"。

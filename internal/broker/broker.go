@@ -17,12 +17,13 @@ import (
 
 	"github.com/houzch/swiftmq/internal/auth"
 	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/meta"
 	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Version 是内核版本。
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -65,10 +66,23 @@ type Broker struct {
 	dlxCh  chan deadLetterEntry
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// ---- 集群（M6）----
+
+	// nodeID 是本节点标识；单机模式即主机名（元数据里作为队列 Owner 的取值来源）。
+	nodeID string
+	// clusterOn 表示是否以集群模式运行（决定元数据后端与分区策略是否生效）。
+	clusterOn bool
+	// meta 是元数据层：durable 拓扑的权威来源。单机模式也用它（ModeLocal 落 state.json），
+	// 因此内核里只有"一条"拓扑变更路径，不必到处判断是否集群。
+	meta *meta.Store
+	// clusterPaused 在 pause_minority 且与多数派失联时为 true：暂停服务。
+	clusterPaused atomic.Bool
 }
 
-// New 构造内核。
-func New(log *slog.Logger, cfg *config.Config) *Broker {
+// New 构造内核。返回 error 是因为集群模式下元数据层可能启动失败
+// （端口占用、日志损坏、成员表配置错误），此时必须让进程明确启动失败而不是带病运行。
+func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 	log = log.With("component", "broker")
 
 	names := make([]string, 0, len(cfg.VHosts)+1)
@@ -77,16 +91,18 @@ func New(log *slog.Logger, cfg *config.Config) *Broker {
 	names = append(names, cfg.DefaultVHost)
 
 	b := &Broker{
-		log:    log,
-		cfg:    cfg,
-		auth:   auth.NewStore(cfg.Users),
-		vhosts: map[string]*vhost{},
-		stores: store.NewManager(cfg.DataDir, storageOptions(cfg), log),
-		flow:   newFlowGate(),
-		subs:   map[int]chan plugin.Notification{},
-		conns:  map[string]*connEntry{},
-		dlxCh:  make(chan deadLetterEntry, deadLetterBuffer),
-		done:   make(chan struct{}),
+		log:       log,
+		cfg:       cfg,
+		auth:      auth.NewStore(cfg.Users),
+		vhosts:    map[string]*vhost{},
+		stores:    store.NewManager(cfg.DataDir, storageOptions(cfg), log),
+		flow:      newFlowGate(),
+		subs:      map[int]chan plugin.Notification{},
+		conns:     map[string]*connEntry{},
+		dlxCh:     make(chan deadLetterEntry, deadLetterBuffer),
+		done:      make(chan struct{}),
+		nodeID:    cfg.Cluster.NodeID,
+		clusterOn: cfg.Cluster.Enabled,
 	}
 	b.memWatermark.Store(math.Float64bits(cfg.Storage.MemoryHighWatermark))
 	b.diskLimit.Store(cfg.Storage.DiskFreeLimit)
@@ -94,13 +110,20 @@ func New(log *slog.Logger, cfg *config.Config) *Broker {
 		if _, dup := b.vhosts[name]; dup {
 			continue
 		}
-		b.vhosts[name] = newVHost(name, log, b.stores, b.dlxCh)
+		b.vhosts[name] = newVHost(b, name, log, b.stores, b.dlxCh)
+	}
+
+	// 元数据层必须在 vhost 建好之后打开：打开过程会把已有拓扑回调给内核，
+	// 回调需要落在已经存在的 vhost 上（vhost 集合由配置驱动，见 cluster.go）。
+	if err := b.openMeta(); err != nil {
+		b.stores.CloseAll()
+		return nil, fmt.Errorf("打开元数据层失败: %w", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancel = cancel
 	go b.background(ctx)
-	return b
+	return b, nil
 }
 
 // storageOptions 把配置翻译成存储层选项。
@@ -124,6 +147,13 @@ func (b *Broker) Close() {
 	b.cancel()
 	b.cancel = nil
 	<-b.done
+	// 先停元数据层（集群模式会停 Raft），再收尾刷盘队列数据：
+	// 反过来会让"元数据还认为队列存在"的窗口里队列存储已关闭。
+	if b.meta != nil {
+		if err := b.meta.Close(); err != nil {
+			b.log.Warn("关闭元数据层失败", "err", err)
+		}
+	}
 	// 收尾刷盘：把内存缓冲中的消息与 ack 记录落盘，否则优雅退出也会丢消息
 	b.stores.CloseAll()
 }
@@ -148,6 +178,7 @@ func (b *Broker) background(ctx context.Context) {
 			b.dispatchDeadLetter(e)
 		case <-watermarks.C:
 			b.checkWatermarks()
+			b.checkCluster()
 		case <-ticker.C:
 			now := time.Now()
 			for _, v := range b.vhosts {

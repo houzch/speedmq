@@ -51,6 +51,28 @@ type node struct {
 	EnabledPlugins []string `json:"enabled_plugins"`
 }
 
+// clusterStatus 是 GET /api/cluster 的响应（由内核的 meta.Status 组装）。
+type clusterStatus struct {
+	Enabled        bool     `json:"enabled"`
+	Mode           string   `json:"mode"`
+	NodeID         string   `json:"node_id"`
+	Role           string   `json:"role"`
+	Term           uint64   `json:"term"`
+	Leader         string   `json:"leader"`
+	HasQuorum      bool     `json:"has_quorum"`
+	Paused         bool     `json:"paused"`
+	Peers          []string `json:"peers"`
+	CommitIndex    uint64   `json:"commit_index"`
+	LastApplied    uint64   `json:"last_applied"`
+	AppliedRecords uint64   `json:"applied_records"`
+	ObjectTotals   struct {
+		Queues    int `json:"queues"`
+		Exchanges int `json:"exchanges"`
+		Bindings  int `json:"bindings"`
+		Users     int `json:"users"`
+	} `json:"object_totals"`
+}
+
 type queue struct {
 	Name                   string `json:"name"`
 	VHost                  string `json:"vhost"`
@@ -242,6 +264,11 @@ func dispatch(c *client, cmd string, args []string) error {
 			return err
 		}
 		return cmdStatus(c)
+	case "cluster_status":
+		if err := wantArgs(args, 0, "cluster_status"); err != nil {
+			return err
+		}
+		return cmdClusterStatus(c)
 	case "list_queues":
 		vhost, has, err := optionalArg(args, "list_queues [vhost]")
 		if err != nil {
@@ -359,7 +386,63 @@ func cmdStatus(c *client) error {
 	return w.Flush()
 }
 
-// ---------- 2. list_queues ----------
+// ---------- 2. cluster_status ----------
+
+// cmdClusterStatus 展示本节点在集群中的角色与元数据共识进度。
+//
+// 单机部署也会输出（mode=local、role=single）：运维因此能用同一条命令
+// 确认"这台机器是不是真的在集群里"，而不是靠猜测。
+func cmdClusterStatus(c *client) error {
+	data, err := c.get("/api/cluster", nil)
+	if err != nil {
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+	var cl clusterStatus
+	if err := decodeJSON(data, &cl); err != nil {
+		return err
+	}
+
+	mode := cl.Mode
+	if !cl.Enabled {
+		mode = "单机（cluster 未启用）"
+	}
+	leader := cl.Leader
+	if leader == "" {
+		leader = "（未选出）"
+	}
+	quorum, paused := "是", "正常"
+	if !cl.HasQuorum {
+		quorum = "否"
+	}
+	if cl.Paused {
+		paused = "已暂停（pause_minority：与多数派失联）"
+	}
+	peers := "（无）"
+	if len(cl.Peers) > 0 {
+		peers = strings.Join(cl.Peers, ", ")
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "模式\t%s\n", mode)
+	fmt.Fprintf(w, "节点\t%s\n", cl.NodeID)
+	fmt.Fprintf(w, "角色\t%s\n", cl.Role)
+	fmt.Fprintf(w, "任期\t%d\n", cl.Term)
+	fmt.Fprintf(w, "领导者\t%s\n", leader)
+	fmt.Fprintf(w, "成员\t%s\n", peers)
+	fmt.Fprintf(w, "拥有多数派\t%s\n", quorum)
+	fmt.Fprintf(w, "服务状态\t%s\n", paused)
+	fmt.Fprintf(w, "共识进度\t提交 %d  已应用 %d  累计 %d 条\n",
+		cl.CommitIndex, cl.LastApplied, cl.AppliedRecords)
+	fmt.Fprintf(w, "元数据规模\t队列 %d  交换机 %d  绑定 %d  用户 %d\n",
+		cl.ObjectTotals.Queues, cl.ObjectTotals.Exchanges,
+		cl.ObjectTotals.Bindings, cl.ObjectTotals.Users)
+	return w.Flush()
+}
+
+// ---------- 3. list_queues ----------
 
 func cmdListQueues(c *client, vhost string, hasVhost bool) error {
 	q := url.Values{}

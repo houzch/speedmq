@@ -95,6 +95,32 @@ func (e *exchange) bindingCount() int {
 	return len(e.bindings) + len(e.exchBindings)
 }
 
+// hasQueueBinding 判断 (routing key, 队列) 绑定是否存在。
+//
+// 集群模式下用于"提交后等待本地应用"：确认绑定真的落到本节点上了才向客户端返回成功。
+func (e *exchange) hasQueueBinding(routingKey, queue string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, b := range e.bindings {
+		if b.queue == queue && b.routingKey == routingKey {
+			return true
+		}
+	}
+	return false
+}
+
+// hasExchangeBinding 判断 (routing key, 目标交换机) 的交换机间绑定是否存在。
+func (e *exchange) hasExchangeBinding(routingKey, dest string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, b := range e.exchBindings {
+		if b.queue == dest && b.routingKey == routingKey {
+			return true
+		}
+	}
+	return false
+}
+
 // ExchangeSnapshot 是交换机的只读视图（管理面用）。
 type ExchangeSnapshot struct {
 	VHost            string

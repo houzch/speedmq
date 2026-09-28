@@ -66,6 +66,37 @@ type Management struct {
 	Addr string `json:"addr"`
 }
 
+// Cluster 是集群配置（二期 M6）。
+//
+// 只有 enabled=true 时才走 Raft：元数据（durable 拓扑与账号权限）在成员间复制并落盘；
+// 未启用时仍是单机语义（元数据落本地快照，不监听集群端口）—— 默认关闭，
+// 让"单机部署"保持与 M1–M5 完全一致的行为。
+type Cluster struct {
+	// Enabled 为 true 时启用集群。
+	Enabled bool `json:"enabled"`
+	// NodeID 是本节点标识，集群内唯一；留空时取主机名。
+	NodeID string `json:"node_id"`
+	// Listen 是集群内 RPC 监听地址，默认 ":25672"（对齐 RabbitMQ 的节点间端口）。
+	Listen string `json:"listen"`
+	// Peers 是成员表：node_id → 该节点可达的 RPC 地址（**含自己**）。
+	//
+	// 本期为静态成员表（无 gossip 自动发现），成员变更需改配置并滚动重启 ——
+	// Raft 日志里的成员信息不在本期范围内（见 M6 交付说明）。
+	Peers map[string]string `json:"peers,omitempty"`
+	// PartitionPolicy 是分区策略：
+	//   - pause_minority（默认）：与多数派失联时暂停服务，避免脑裂产生分叉数据；
+	//   - ignore：不暂停（仅记录状态），由部署方自行承担风险。
+	PartitionPolicy string `json:"partition_policy"`
+}
+
+// 分区策略取值。
+const (
+	// PartitionPauseMinority 是默认策略：少数派停止服务。
+	PartitionPauseMinority = "pause_minority"
+	// PartitionIgnore 表示不做分区保护。
+	PartitionIgnore = "ignore"
+)
+
 // Config 是内核配置。
 type Config struct {
 	// DataDir 节点数据目录：消息、日志与元数据都放在其下
@@ -88,6 +119,8 @@ type Config struct {
 	Storage Storage `json:"storage"`
 	// Management 管理面配置段（M5 起生效）。
 	Management Management `json:"management"`
+	// Cluster 集群配置段（M6 起生效）。
+	Cluster Cluster `json:"cluster"`
 }
 
 // Default 返回默认配置。
@@ -109,6 +142,22 @@ func Default() *Config {
 			Enabled: true,
 			Addr:    ":15672",
 		},
+		Cluster: DefaultCluster(),
+	}
+}
+
+// 默认集群参数。
+const (
+	// DefaultClusterListen 是节点间 RPC 的默认监听地址（对齐 RabbitMQ 的节点间端口）。
+	DefaultClusterListen = ":25672"
+)
+
+// DefaultCluster 返回默认集群配置：默认关闭，单机部署行为与 M1–M5 完全一致。
+func DefaultCluster() Cluster {
+	return Cluster{
+		Enabled:         false,
+		Listen:          DefaultClusterListen,
+		PartitionPolicy: PartitionPauseMinority,
 	}
 }
 
@@ -164,6 +213,9 @@ func Load(path string) (*Config, error) {
 	if err := normalizeManagement(&cfg.Management); err != nil {
 		return nil, err
 	}
+	if err := normalizeCluster(&cfg.Cluster); err != nil {
+		return nil, err
+	}
 	backfillPermissions(cfg)
 	return cfg, nil
 }
@@ -179,6 +231,9 @@ func (c *Config) ApplyEnv() error {
 	str("SWIFTMQ_DEFAULT_VHOST", &c.DefaultVHost)
 	str("SWIFTMQ_FSYNC", &c.Storage.Fsync)
 	str("SWIFTMQ_MANAGEMENT_ADDR", &c.Management.Addr)
+	str("SWIFTMQ_CLUSTER_NODE_ID", &c.Cluster.NodeID)
+	str("SWIFTMQ_CLUSTER_LISTEN", &c.Cluster.Listen)
+	str("SWIFTMQ_CLUSTER_PARTITION_POLICY", &c.Cluster.PartitionPolicy)
 
 	if v, ok := os.LookupEnv("SWIFTMQ_FLUSH_INTERVAL_MS"); ok && v != "" {
 		n, err := strconv.Atoi(v)
@@ -207,6 +262,13 @@ func (c *Config) ApplyEnv() error {
 			return fmt.Errorf("SWIFTMQ_MANAGEMENT_ENABLED 取值非法: %q（应为 true/false）", v)
 		}
 		c.Management.Enabled = b
+	}
+	if v, ok := os.LookupEnv("SWIFTMQ_CLUSTER_ENABLED"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("SWIFTMQ_CLUSTER_ENABLED 取值非法: %q（应为 true/false）", v)
+		}
+		c.Cluster.Enabled = b
 	}
 	if v, ok := os.LookupEnv("SWIFTMQ_AMQP_ADDR"); ok && v != "" {
 		if c.Listeners == nil {
@@ -259,6 +321,54 @@ func normalizeManagement(m *Management) error {
 	}
 	if _, _, err := net.SplitHostPort(m.Addr); err != nil {
 		return fmt.Errorf("management.addr 取值非法: %q（应形如 :15672 或 127.0.0.1:15672）", m.Addr)
+	}
+	return nil
+}
+
+// normalizeCluster 校验并补齐集群配置。
+//
+// 默认关闭集群：未启用时不校验监听地址，也不触碰成员表，让单机部署与 M1–M5 完全一致。
+func normalizeCluster(c *Cluster) error {
+	if c.Listen == "" {
+		c.Listen = DefaultClusterListen
+	}
+	if c.NodeID == "" {
+		host, err := os.Hostname()
+		if err != nil || host == "" {
+			return fmt.Errorf("cluster.node_id 为空且无法获取主机名，请显式配置")
+		}
+		// 与 swiftmqd 的节点名（swiftmq@<host>）保持同一口径：同一台机器上，
+		// /api/cluster 的 node_id 与 /api/nodes 的 name 应当能对上。
+		c.NodeID = "swiftmq@" + host
+	}
+	switch c.PartitionPolicy {
+	case "":
+		c.PartitionPolicy = PartitionPauseMinority
+	case PartitionPauseMinority, PartitionIgnore:
+	default:
+		return fmt.Errorf("cluster.partition_policy 取值非法: %q（可选 %s / %s）",
+			c.PartitionPolicy, PartitionPauseMinority, PartitionIgnore)
+	}
+	if !c.Enabled {
+		return nil
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
+		return fmt.Errorf("cluster.listen 取值非法: %q（应形如 :25672 或 127.0.0.1:25672）", c.Listen)
+	}
+	// 成员表必须包含自己：缺省时按本节点监听地址补上，让"单节点集群"零配置可跑。
+	if len(c.Peers) == 0 {
+		c.Peers = map[string]string{c.NodeID: c.Listen}
+	}
+	for id, addr := range c.Peers {
+		if id == "" {
+			return fmt.Errorf("cluster.peers 含空节点标识")
+		}
+		if _, _, err := net.SplitHostPort(addr); err != nil {
+			return fmt.Errorf("cluster.peers[%s] 地址非法: %q", id, addr)
+		}
+	}
+	if _, ok := c.Peers[c.NodeID]; !ok {
+		return fmt.Errorf("cluster.peers 缺少本节点 %q（成员表须含自己）", c.NodeID)
 	}
 	return nil
 }
