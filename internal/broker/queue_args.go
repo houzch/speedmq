@@ -44,7 +44,15 @@ type queueArgs struct {
 	deadLetterKey string
 	// maxPriority 是 x-max-priority；0 表示普通队列。
 	maxPriority uint8
+	// queueType 是 x-queue-type：classic（默认）或 quorum。
+	queueType string
 }
+
+// 队列类型取值。
+const (
+	queueTypeClassic = "classic"
+	queueTypeQuorum  = "quorum"
+)
 
 // parseQueueArgs 解析并校验队列参数。
 //
@@ -52,7 +60,7 @@ type queueArgs struct {
 // 明确不支持的能力返回 NOT_IMPLEMENTED，而不是静默忽略 —— 静默忽略会让业务
 // 以为自己拿到了 TTL/优先级/仲裁队列语义，实际没有。
 func parseQueueArgs(args map[string]any) (queueArgs, error) {
-	a := queueArgs{overflow: overflowDropHead}
+	a := queueArgs{overflow: overflowDropHead, queueType: queueTypeClassic}
 	if len(args) == 0 {
 		return a, nil
 	}
@@ -118,14 +126,46 @@ func parseQueueArgs(args map[string]any) (queueArgs, error) {
 		a.maxPriority = uint8(v)
 	}
 
-	// 队列类型：v1 只有 classic。要求 quorum / stream 时明确报错，
-	// 否则业务会以为自己得到了仲裁队列的持久性保证。
-	if v, ok := stringArg(args, argQueueType); ok && v != "" && v != "classic" {
+	// 队列类型：classic 与 quorum 已支持；其余（stream 等）明确报错，
+	// 否则业务会以为自己得到了它并不具备的语义。
+	switch v, ok := stringArg(args, argQueueType); {
+	case !ok || v == "" || v == queueTypeClassic:
+		a.queueType = queueTypeClassic
+	case v == queueTypeQuorum:
+		a.queueType = queueTypeQuorum
+	default:
 		return a, plugin.Errorf(plugin.KindNotImplemented,
-			"NOT_IMPLEMENTED - queue type %q is not supported yet (only classic)", v)
+			"NOT_IMPLEMENTED - queue type %q is not supported yet (classic and quorum are)", v)
+	}
+	if a.queueType == queueTypeQuorum {
+		if err := validateQuorumArgs(args, a); err != nil {
+			return a, err
+		}
 	}
 
 	return a, nil
+}
+
+// validateQuorumArgs 校验仲裁队列不支持/必需的参数。
+//
+// 与 RabbitMQ 的口径一致：仲裁队列**必须** durable 且非独占、非自动删除；
+// `x-expires`（空闲过期）、`x-max-priority`（优先级）、`x-overflow=reject-publish-dlx`
+// 在仲裁队列上不被支持 —— 一律返回 406 明确拒绝，而不是静默忽略这些参数。
+func validateQuorumArgs(args map[string]any, a queueArgs) error {
+	if v, ok, err := intArg(args, argQueueExpires); err != nil {
+		return err
+	} else if ok && v > 0 {
+		return precondition("%s is not supported for quorum queues", argQueueExpires)
+	}
+	if v, ok, err := intArg(args, argMaxPriority); err != nil {
+		return err
+	} else if ok && v > 0 {
+		return precondition("%s is not supported for quorum queues", argMaxPriority)
+	}
+	if a.overflow == overflowRejectPublishDLX {
+		return precondition("%s=%s is not supported for quorum queues", argOverflow, overflowRejectPublishDLX)
+	}
+	return nil
 }
 
 // hasTTL 表示该队列需要过期扫描。

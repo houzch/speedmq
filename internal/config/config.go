@@ -78,11 +78,18 @@ type Cluster struct {
 	NodeID string `json:"node_id"`
 	// Listen 是集群内 RPC 监听地址，默认 ":25672"（对齐 RabbitMQ 的节点间端口）。
 	Listen string `json:"listen"`
-	// Peers 是成员表：node_id → 该节点可达的 RPC 地址（**含自己**）。
+	// Peers 是集群地址簿：node_id → 该节点可达的 RPC 地址（**含自己**）。
 	//
-	// 本期为静态成员表（无 gossip 自动发现），成员变更需改配置并滚动重启 ——
-	// Raft 日志里的成员信息不在本期范围内（见 M6 交付说明）。
+	// 它既是传输层寻址的依据，也是**首次引导**时的投票成员集合；
+	// 一旦本地已持久化过成员表（发生过运行期成员变更），就以持久化的为准 ——
+	// 运行期成员变更无需再改配置文件（见 `join` 与 `swiftmqctl add_member`）。
 	Peers map[string]string `json:"peers,omitempty"`
+	// Join 表示本节点以 **learner** 身份加入既有集群：启动时只复制日志、不参与投票、
+	// 不发起竞选，等待集群 leader 通过 `swiftmqctl add_member` 把它提升为投票成员。
+	//
+	// 与 Peers 一样只在**首次引导**时生效。新节点用它启动，可以避免"自认为已是成员、
+	// 却在别人的成员表之外"造成的选举抖动。
+	Join bool `json:"join,omitempty"`
 	// PartitionPolicy 是分区策略：
 	//   - pause_minority（默认）：与多数派失联时暂停服务，避免脑裂产生分叉数据；
 	//   - ignore：不暂停（仅记录状态），由部署方自行承担风险。
@@ -269,6 +276,13 @@ func (c *Config) ApplyEnv() error {
 			return fmt.Errorf("SWIFTMQ_CLUSTER_ENABLED 取值非法: %q（应为 true/false）", v)
 		}
 		c.Cluster.Enabled = b
+	}
+	if v, ok := os.LookupEnv("SWIFTMQ_CLUSTER_JOIN"); ok && v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("SWIFTMQ_CLUSTER_JOIN 取值非法: %q（应为 true/false）", v)
+		}
+		c.Cluster.Join = b
 	}
 	if v, ok := os.LookupEnv("SWIFTMQ_AMQP_ADDR"); ok && v != "" {
 		if c.Listeners == nil {

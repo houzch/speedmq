@@ -18,12 +18,13 @@ import (
 	"github.com/houzch/swiftmq/internal/auth"
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/internal/meta"
+	"github.com/houzch/swiftmq/internal/raft"
 	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // Version 是内核版本。
-const Version = "0.6.0"
+const Version = "0.9.0"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -78,6 +79,32 @@ type Broker struct {
 	meta *meta.Store
 	// clusterPaused 在 pause_minority 且与多数派失联时为 true：暂停服务。
 	clusterPaused atomic.Bool
+
+	// ---- 跨节点消息转发（M6b，见 forward.go）----
+
+	// cluster 是集群端口：与 Raft、元数据转发**共用一根连接、按方法名分发**。
+	// 由本节点创建并持有（元数据层只是借用），因此关闭顺序也由这里负责。
+	cluster raft.Transport
+
+	// codec 是消息编解码器，由进程入口注入（消息属性的类型体系属于协议，内核不解释它）。
+	codecMu sync.RWMutex
+	codec   plugin.MessageCodec
+
+	// fwdMu 保护下面四张表；临界区内不做 RPC 与队列操作（避免与外层锁交叉）。
+	fwdMu     sync.Mutex
+	fwdLocal  map[string]*localProxy   // 本节点代客户端持有的远端消费者
+	fwdRemote map[string]*remoteProxy  // 远端挂在本节点队列上的代理消费者
+	fwdHeld   map[uint64]*heldDelivery // 本节点持有、等待远端结算的投递
+	fwdGets   map[uint64]string        // 本节点尚未结算的跨节点拉取（编号 → Owner 节点）
+	fwdNextID uint64                   // fwdHeld 的编号分配器
+	// fwdLastLease / fwdLastReap 是后台维护的节流时间戳。
+	fwdLastLease time.Time
+	fwdLastReap  time.Time
+
+	// 转发计数（只增不减，供管理面与日志观测）。
+	fwdOut        atomic.Uint64
+	fwdIn         atomic.Uint64
+	fwdDeliveries atomic.Uint64
 }
 
 // New 构造内核。返回 error 是因为集群模式下元数据层可能启动失败
@@ -103,6 +130,10 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 		done:      make(chan struct{}),
 		nodeID:    cfg.Cluster.NodeID,
 		clusterOn: cfg.Cluster.Enabled,
+		fwdLocal:  map[string]*localProxy{},
+		fwdRemote: map[string]*remoteProxy{},
+		fwdHeld:   map[uint64]*heldDelivery{},
+		fwdGets:   map[uint64]string{},
 	}
 	b.memWatermark.Store(math.Float64bits(cfg.Storage.MemoryHighWatermark))
 	b.diskLimit.Store(cfg.Storage.DiskFreeLimit)
@@ -147,12 +178,20 @@ func (b *Broker) Close() {
 	b.cancel()
 	b.cancel = nil
 	<-b.done
-	// 先停元数据层（集群模式会停 Raft），再收尾刷盘队列数据：
-	// 反过来会让"元数据还认为队列存在"的窗口里队列存储已关闭。
+	// 先停元数据层（集群模式会停 Raft），再停各仲裁队列的 Raft 组，
+	// 最后关集群端口与队列存储：端口是它们共用的，必须最后关。
 	if b.meta != nil {
 		if err := b.meta.Close(); err != nil {
 			b.log.Warn("关闭元数据层失败", "err", err)
 		}
+	}
+	b.stopQuorumGroups()
+	// 集群端口归本层所有（元数据层只是借用），因此由这里关闭。
+	if b.cluster != nil {
+		if err := b.cluster.Close(); err != nil {
+			b.log.Warn("关闭集群端口失败", "err", err)
+		}
+		b.cluster = nil
 	}
 	// 收尾刷盘：把内存缓冲中的消息与 ack 记录落盘，否则优雅退出也会丢消息
 	b.stores.CloseAll()
@@ -179,6 +218,8 @@ func (b *Broker) background(ctx context.Context) {
 		case <-watermarks.C:
 			b.checkWatermarks()
 			b.checkCluster()
+			b.maintainForwards(time.Now())
+			b.checkQuorumLeadership()
 		case <-ticker.C:
 			now := time.Now()
 			for _, v := range b.vhosts {

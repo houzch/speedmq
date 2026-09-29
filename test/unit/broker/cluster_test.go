@@ -8,6 +8,7 @@ import (
 
 	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/protocol/spec"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
@@ -69,6 +70,8 @@ func startTestCluster(t *testing.T, n int) []*clusterNode {
 		if err != nil {
 			t.Fatalf("启动节点 %s 失败: %v", ids[i], err)
 		}
+		// 与 swiftmqd 的装配一致：跨节点转发需要协议侧提供的消息编解码器。
+		b.SetMessageCodec(spec.NewMessageCodec())
 		nodes = append(nodes, &clusterNode{id: ids[i], dir: dirs[i], port: ports[i], b: b})
 	}
 	t.Cleanup(func() {
@@ -207,8 +210,8 @@ func TestClusterReplicatesTopology(t *testing.T) {
 		t.Fatalf("在 Owner 节点拉取失败: ok=%v err=%v", ok, err)
 	}
 
-	// 其他节点只持有"远端占位队列"：发布/消费必须明确报 NOT_IMPLEMENTED，
-	// 而不是路由到不存在的本地数据上（那等于静默丢消息）。
+	// 其他节点持的是"远端占位队列"，但从 M6b 起可以正常发布与消费：
+	// 本节点做代理，把消息转发给 Owner（数据面仍在 Owner 上）。
 	// 取一个非 Owner 节点（不假设它就是 leader：任期内角色可能变化）。
 	var other *clusterNode
 	for _, node := range nodes {
@@ -221,15 +224,22 @@ func TestClusterReplicatesTopology(t *testing.T) {
 	if err != nil {
 		t.Fatalf("在节点 %s 上打开会话失败: %v", other.id, err)
 	}
-	if _, err := otherSess.Publish(&plugin.Message{Body: []byte("x")}, "", "m6.repl.q", false); err == nil {
-		t.Fatalf("向远端队列发布应报错（跨节点转发本期未实现）")
+	// 绑定是拓扑，与数据在哪无关：在非 Owner 节点上把远端队列绑到交换机也必须成立。
+	if err := otherSess.BindQueue("m6.repl.q", "m6.repl.ex", "rk2", nil); err != nil {
+		t.Fatalf("把远端队列绑到交换机失败: %v", err)
 	}
-	if _, err := otherSess.Consume(plugin.Subscription{Queue: "m6.repl.q", NoAck: true}); err == nil {
-		t.Fatalf("消费远端队列应报错（跨节点转发本期未实现）")
+	remoteRes, err := otherSess.Publish(&plugin.Message{Body: []byte("from-remote")}, "m6.repl.ex", "rk2", false)
+	if err != nil || !remoteRes.Routed {
+		t.Fatalf("向远端队列发布失败: routed=%v err=%v", remoteRes.Routed, err)
 	}
-	if err := otherSess.BindQueue("m6.repl.q", "m6.repl.ex", "rk2", nil); err == nil {
-		t.Fatalf("把远端队列绑到交换机应被拒绝（避免消息黑洞）")
-	}
+	// 消息最终落在 Owner 上：从 Owner 拉取应当能拿到。
+	waitFor(t, 5*time.Second, "转发过来的消息出现在 Owner 队列里", func() bool {
+		d, ok, err := sess.Get("m6.repl.q", true)
+		if err != nil || !ok {
+			return false
+		}
+		return string(d.Message.Body) == "from-remote"
+	})
 }
 
 // TestClusterPauseMinority：3 节点里失去 2 个后，剩下的节点按 pause_minority 暂停服务。

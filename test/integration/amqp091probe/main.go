@@ -44,6 +44,34 @@ func main() {
 		return
 	}
 
+	// 跨节点转发验证：只跑这一条（它是双节点协作的验证，与单节点的用例清单互斥）。
+	if *clusterPeer != "" {
+		if err := runClusterCheck(); err != nil {
+			fmt.Printf("FAIL  M6b 跨节点转发（非 Owner 节点 %s，Owner 节点 %s）\n      %v\n", *addr, *clusterPeer, err)
+			os.Exit(1)
+		}
+		fmt.Printf("PASS  M6b 跨节点转发：在非 Owner 节点发布与消费均正常\n")
+		return
+	}
+
+	// 仲裁队列验证的两步（中间由外部脚本杀掉组 leader）。
+	if *quorumProduce != "" {
+		if err := runQuorumProduce(); err != nil {
+			fmt.Printf("FAIL  仲裁队列发布（%s）：%v\n", *addr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("PASS  仲裁队列已发布并确认\n")
+		return
+	}
+	if *quorumVerify != "" {
+		if err := runQuorumVerify(); err != nil {
+			fmt.Printf("FAIL  仲裁队列校验（%s）：%v\n", *addr, err)
+			os.Exit(1)
+		}
+		fmt.Printf("PASS  仲裁队列的消息在 leader 宕机后仍然完整\n")
+		return
+	}
+
 	cases := []testCase{
 		{"M1 正常连接 + Channel 开关 + 优雅关闭", testHappyPath},
 		{"M1 错误口令应被拒绝", testBadPassword},

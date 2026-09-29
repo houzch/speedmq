@@ -58,6 +58,9 @@ type installSnapshotArgs struct {
 	LastIncludedIndex uint64 `json:"last_included_index"`
 	LastIncludedTerm  uint64 `json:"last_included_term"`
 	Data              []byte `json:"data"`
+	// Members 是快照时刻的成员表：快照压缩会丢掉配置变更条目，
+	// 若不随快照下发，接收方会退回配置文件里的初始成员表，算出错误的多数派。
+	Members []Member `json:"members,omitempty"`
 }
 
 type installSnapshotReply struct {
@@ -82,12 +85,15 @@ type applyResult struct {
 //   - 后台协程只有两个：runLoop（选举/心跳驱动）与 applyLoop（状态机应用），
 //     都监听 done，Stop 之后必然退出。
 type Node struct {
-	id    string
-	peers []string // 已排序，含自己
-	tr    Transport
-	fsm   FSM
-	log   Logger
-	dir   string
+	id       string
+	members  []Member // 按 ID 排序；含自己（除非自己已被移除）
+	selfAddr string
+	tr       Transport
+	fsm      FSM
+	log      Logger
+	dir      string
+
+	onMembershipChange func(Membership)
 
 	electionTimeout   time.Duration
 	heartbeatInterval time.Duration
@@ -111,6 +117,10 @@ type Node struct {
 
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
+
+	// pendingConfIndex 是本节点作为 leader 时最后一条成员变更条目的索引。
+	// 它大于 commitIndex 表示"变更尚未提交"，此时拒绝新的变更（无 joint consensus）。
+	pendingConfIndex uint64
 
 	// votes 是本轮竞选中已获得的票（含自己）。
 	votes map[string]struct{}
@@ -137,12 +147,13 @@ type Node struct {
 //
 // 若目录中已有快照，会先调用一次 FSM.Restore 把状态机恢复到快照位置，
 // 这样启动后的重放从 lastApplied+1 继续，不会重复应用已压缩的前缀。
+//
+// 成员表按"状态文件 → 快照 → Options（首次引导）"的优先级解析，并立即把其中
+// 带地址的成员注册进传输层 —— 这样运行期加入的节点在重启后依然能被联系上。
 func New(opt Options) (*Node, error) {
 	if err := validateOptions(opt); err != nil {
 		return nil, err
 	}
-	peers := append([]string(nil), opt.Peers...)
-	sort.Strings(peers)
 
 	electionTimeout := opt.ElectionTimeout
 	if electionTimeout <= 0 {
@@ -186,9 +197,12 @@ func New(opt Options) (*Node, error) {
 		return nil, err
 	}
 
+	members := resolveInitialMembers(opt, ps, snap, hasSnap)
 	n := &Node{
-		id: opt.ID, peers: peers, tr: opt.Transport, fsm: opt.FSM, log: logger, dir: opt.Dir,
-		electionTimeout: electionTimeout, heartbeatInterval: heartbeat, snapshotThreshold: threshold,
+		id: opt.ID, members: members, selfAddr: memberAddr(members, opt.ID),
+		tr: opt.Transport, fsm: opt.FSM, log: logger, dir: opt.Dir,
+		onMembershipChange: opt.OnMembershipChange,
+		electionTimeout:    electionTimeout, heartbeatInterval: heartbeat, snapshotThreshold: threshold,
 		role: RoleFollower, term: ps.Term, votedFor: ps.VotedFor,
 		commitIndex: snapIndex, lastApplied: snapIndex,
 		storage: st, rlog: rl, snapData: snapData,
@@ -201,6 +215,7 @@ func New(opt Options) (*Node, error) {
 		applyCh:    make(chan struct{}, 1),
 		resetCh:    make(chan struct{}, 1),
 	}
+	n.registerMemberAddrs(members)
 	if hasSnap {
 		if err := opt.FSM.Restore(snapData); err != nil {
 			_ = st.close()
@@ -208,6 +223,68 @@ func New(opt Options) (*Node, error) {
 		}
 	}
 	return n, nil
+}
+
+// resolveInitialMembers 解析启动时的成员表。
+//
+// 优先级：状态文件（最近一次已应用的成员表）→ 快照（含成员表）→ Options（首次引导）。
+// 前两者存在就说明本节点曾经加入过集群，必须沿用，否则重启会把运行期的成员变更抹掉。
+func resolveInitialMembers(opt Options, ps persistedState, snap persistedSnapshot, hasSnap bool) []Member {
+	if len(ps.Members) > 0 {
+		return normalizeMembers(ps.Members)
+	}
+	if hasSnap && len(snap.Members) > 0 {
+		return normalizeMembers(snap.Members)
+	}
+	out := make([]Member, 0, len(opt.Peers)+len(opt.Learners))
+	for _, id := range opt.Peers {
+		out = append(out, Member{ID: id})
+	}
+	for _, id := range opt.Learners {
+		out = append(out, Member{ID: id, Learner: true})
+	}
+	return normalizeMembers(out)
+}
+
+// normalizeMembers 去重、丢弃空 ID 并按 ID 排序（成员表参与多数派计算，顺序必须稳定）。
+func normalizeMembers(in []Member) []Member {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]Member, 0, len(in))
+	for _, m := range in {
+		if m.ID == "" {
+			continue
+		}
+		if _, dup := seen[m.ID]; dup {
+			continue
+		}
+		seen[m.ID] = struct{}{}
+		out = append(out, m)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// memberAddr 返回指定成员的地址（不存在或未知名时为空串）。
+func memberAddr(members []Member, id string) string {
+	for _, m := range members {
+		if m.ID == id {
+			return m.Addr
+		}
+	}
+	return ""
+}
+
+// registerMemberAddrs 把带地址的成员注册进传输层（传输层不支持注册时静默跳过）。
+func (n *Node) registerMemberAddrs(members []Member) {
+	reg, ok := n.tr.(PeerRegistrar)
+	if !ok {
+		return
+	}
+	for _, m := range members {
+		if m.Addr != "" {
+			reg.RegisterPeer(m.ID, m.Addr)
+		}
+	}
 }
 
 // validateOptions 校验必填项与成员表的一致性。
@@ -224,17 +301,17 @@ func validateOptions(opt Options) error {
 	if opt.Transport == nil {
 		return errors.New("raft: Options.Transport 不能为空")
 	}
-	if len(opt.Peers) == 0 {
-		return errors.New("raft: Options.Peers 不能为空")
+	if len(opt.Peers) == 0 && len(opt.Learners) == 0 {
+		return errors.New("raft: Options.Peers 与 Options.Learners 不能同时为空")
 	}
-	seen := make(map[string]struct{}, len(opt.Peers))
+	seen := make(map[string]struct{}, len(opt.Peers)+len(opt.Learners))
 	found := false
-	for _, p := range opt.Peers {
+	for _, p := range append(append([]string(nil), opt.Peers...), opt.Learners...) {
 		if p == "" {
-			return errors.New("raft: Options.Peers 含空成员 ID")
+			return errors.New("raft: 成员 ID 不能为空")
 		}
 		if _, dup := seen[p]; dup {
-			return fmt.Errorf("raft: Options.Peers 成员 %q 重复", p)
+			return fmt.Errorf("raft: 成员 %q 重复（Peers 与 Learners 不得重叠）", p)
 		}
 		seen[p] = struct{}{}
 		if p == opt.ID {
@@ -242,7 +319,10 @@ func validateOptions(opt Options) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("raft: Options.Peers 必须包含本节点 ID %q", opt.ID)
+		return fmt.Errorf("raft: 成员表必须包含本节点 ID %q（作为投票成员或 learner）", opt.ID)
+	}
+	if len(opt.Peers) == 0 {
+		return errors.New("raft: Options.Peers 不能为空（至少要有一个投票成员，否则无法选出领导者）")
 	}
 	return nil
 }
@@ -379,8 +459,13 @@ func (n *Node) Leader() string {
 func (n *Node) Status() Status {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	peers := make([]string, len(n.peers))
-	copy(peers, n.peers)
+	var progress map[string]uint64
+	if n.role == RoleLeader {
+		progress = make(map[string]uint64, len(n.matchIndex))
+		for id, idx := range n.matchIndex {
+			progress[id] = idx
+		}
+	}
 	return Status{
 		ID:            n.id,
 		Role:          n.role,
@@ -390,9 +475,72 @@ func (n *Node) Status() Status {
 		LastLogIndex:  n.rlog.lastIndex(),
 		LastApplied:   n.lastApplied,
 		SnapshotIndex: n.rlog.snapIndex(),
-		Peers:         peers,
+		Peers:         n.voterIDsLocked(),
+		Learners:      n.learnerIDsLocked(),
+		Progress:      progress,
 	}
 }
+
+// Membership 返回当前成员划分。
+func (n *Node) Membership() Membership {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.membershipLocked()
+}
+
+func (n *Node) membershipLocked() Membership {
+	return Membership{Voters: n.voterIDsLocked(), Learners: n.learnerIDsLocked()}
+}
+
+// voterIDsLocked 返回排序后的投票成员 ID（要求持有主锁）。
+func (n *Node) voterIDsLocked() []string {
+	out := make([]string, 0, len(n.members))
+	for _, m := range n.members {
+		if !m.Learner {
+			out = append(out, m.ID)
+		}
+	}
+	return out
+}
+
+// learnerIDsLocked 返回排序后的非投票成员 ID（要求持有主锁）。
+func (n *Node) learnerIDsLocked() []string {
+	out := make([]string, 0, len(n.members))
+	for _, m := range n.members {
+		if m.Learner {
+			out = append(out, m.ID)
+		}
+	}
+	return out
+}
+
+// memberIDsLocked 返回全部成员 ID（投票 + learner，要求持有主锁）。
+func (n *Node) memberIDsLocked() []string {
+	out := make([]string, 0, len(n.members))
+	for _, m := range n.members {
+		out = append(out, m.ID)
+	}
+	return out
+}
+
+// memberLocked 查找成员（要求持有主锁）。
+func (n *Node) memberLocked(id string) (Member, bool) {
+	for _, m := range n.members {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return Member{}, false
+}
+
+// isVoterLocked 判断 id 是否为投票成员（要求持有主锁）。
+func (n *Node) isVoterLocked(id string) bool {
+	m, ok := n.memberLocked(id)
+	return ok && !m.Learner
+}
+
+// selfIsVoterLocked 判断本节点当前是否为投票成员（要求持有主锁）。
+func (n *Node) selfIsVoterLocked() bool { return n.isVoterLocked(n.id) }
 
 // HasQuorum 判断本节点是否仍与多数派保持联系。
 //
@@ -407,8 +555,19 @@ func (n *Node) HasQuorum() bool {
 	return n.hasQuorumLocked()
 }
 
-// quorum 是多数派所需票数。
-func (n *Node) quorum() int { return len(n.peers)/2 + 1 }
+// voterCountLocked 是投票成员数（要求持有主锁；不分配切片，供热路径使用）。
+func (n *Node) voterCountLocked() int {
+	c := 0
+	for _, m := range n.members {
+		if !m.Learner {
+			c++
+		}
+	}
+	return c
+}
+
+// quorum 是多数派所需票数。**只统计投票成员**：learner 不参与表决。
+func (n *Node) quorum() int { return n.voterCountLocked()/2 + 1 }
 
 // leaderAckWindow 是 leader 判定"仍与多数派联系"的时间窗。
 //
@@ -431,22 +590,23 @@ func (n *Node) hasQuorumLocked() bool {
 		count := 1 // 自己
 		now := time.Now()
 		window := n.leaderAckWindow()
-		for _, p := range n.peers {
-			if p == n.id {
+		for _, m := range n.members {
+			if m.Learner || m.ID == n.id {
 				continue
 			}
-			if t, ok := n.lastAck[p]; ok && now.Sub(t) < window {
+			if t, ok := n.lastAck[m.ID]; ok && now.Sub(t) < window {
 				count++
 			}
 		}
 		return count >= n.quorum()
-	case RoleFollower:
+	default:
+		// follower / candidate，以及"自己是 learner 或已被移除"的情形：
+		// 依据是否在选举超时内听到 leader —— learner 与已移除节点不参与表决，
+		// 但只要还在跟着某个 leader，就不该被 pause_minority 判成"失去多数派"。
 		if n.lastLeaderContact.IsZero() {
 			return false
 		}
 		return time.Since(n.lastLeaderContact) < n.electionTimeout
-	default:
-		return false
 	}
 }
 
@@ -473,7 +633,8 @@ func (n *Node) runLoop() {
 	for {
 		n.mu.Lock()
 		role := n.role
-		single := len(n.peers) == 1
+		selfVoter := n.selfIsVoterLocked()
+		single := selfVoter && n.voterCountLocked() == 1
 		n.mu.Unlock()
 		if role == RoleShutdown {
 			return
@@ -513,14 +674,18 @@ func (n *Node) runLoop() {
 
 		n.mu.Lock()
 		role = n.role
+		selfVoter = n.selfIsVoterLocked()
 		n.mu.Unlock()
 		if role == RoleShutdown {
 			return
 		}
-		if role == RoleLeader {
+		switch {
+		case role == RoleLeader:
 			n.tickLeader()
-		} else {
+		case selfVoter:
 			n.startElection()
+		default:
+			// learner / 已被移除：绝不发起竞选，只等 leader 的心跳把自己带上去。
 		}
 	}
 }
@@ -528,7 +693,7 @@ func (n *Node) runLoop() {
 // startElection 发起一轮竞选：任期 +1、投自己一票（先落盘）后并行拉票。
 func (n *Node) startElection() {
 	n.mu.Lock()
-	if n.role == RoleLeader || n.role == RoleShutdown {
+	if n.role == RoleLeader || n.role == RoleShutdown || !n.selfIsVoterLocked() {
 		n.mu.Unlock()
 		return
 	}
@@ -538,7 +703,7 @@ func (n *Node) startElection() {
 	n.leaderID = ""
 	// 选举安全性：投票（与任期一起）必须先 fsync 再对外拉票，
 	// 否则崩溃重启后可能在同任期投出第二票。
-	if err := n.storage.saveState(n.term, n.votedFor); err != nil {
+	if err := n.storage.saveState(n.term, n.votedFor, n.members); err != nil {
 		n.log.Error("持久化任期与投票失败", "term", n.term, "err", err)
 	}
 	term := n.term
@@ -549,10 +714,11 @@ func (n *Node) startElection() {
 		n.mu.Unlock()
 		return
 	}
-	others := make([]string, 0, len(n.peers)-1)
-	for _, p := range n.peers {
-		if p != n.id {
-			others = append(others, p)
+	others := make([]string, 0, len(n.members)-1)
+	for _, m := range n.members {
+		// 只向**投票成员**拉票：learner 的表决不计入多数派。
+		if m.ID != n.id && !m.Learner {
+			others = append(others, m.ID)
 		}
 	}
 	n.mu.Unlock()
@@ -580,21 +746,30 @@ func (n *Node) becomeLeaderLocked() {
 	if n.role == RoleLeader {
 		return
 	}
+	if !n.selfIsVoterLocked() {
+		// learner 不可能当选；此外"自己已被移除"的节点即使拿到旧票也不得执政。
+		n.log.Warn("非投票成员试图成为领导者，已拒绝", "id", n.id, "term", n.term)
+		n.role = RoleFollower
+		return
+	}
 	now := time.Now()
 	n.role = RoleLeader
 	n.leaderID = n.id
 	last := n.rlog.lastIndex()
-	n.nextIndex = make(map[string]uint64, len(n.peers))
-	n.matchIndex = make(map[string]uint64, len(n.peers))
-	n.lastAck = make(map[string]time.Time, len(n.peers))
-	for _, p := range n.peers {
-		if p == n.id {
+	// 新任期从"没有未提交变更"开始：上一个任期里未提交的配置变更已被覆盖，
+	// 若还留着 pendingConfIndex 就会永久拒绝新的成员变更。
+	n.pendingConfIndex = 0
+	n.nextIndex = make(map[string]uint64, len(n.members))
+	n.matchIndex = make(map[string]uint64, len(n.members))
+	n.lastAck = make(map[string]time.Time, len(n.members))
+	for _, m := range n.members {
+		if m.ID == n.id {
 			continue
 		}
-		n.nextIndex[p] = last + 1
-		n.matchIndex[p] = 0
+		n.nextIndex[m.ID] = last + 1
+		n.matchIndex[m.ID] = 0
 		// 乐观初始应答时间：首轮心跳返回前不至于误判"无多数派"，窗口过后若无应答即判失去联系。
-		n.lastAck[p] = now
+		n.lastAck[m.ID] = now
 	}
 	n.matchIndex[n.id] = last
 	n.log.Info("当选领导者", "id", n.id, "term", n.term, "last_log_index", last)
@@ -640,19 +815,22 @@ func (n *Node) tickLeader() {
 	}
 	term := n.term
 	commit := n.commitIndex
-	tasks := make([]task, 0, len(n.peers))
-	for _, p := range n.peers {
-		if p == n.id {
+	// 复制对象是**全部成员**（含 learner）：learner 不投票，但必须跟上日志，
+	// 否则"追平后再提升为 voter"就无从谈起。
+	members := append([]Member(nil), n.members...)
+	tasks := make([]task, 0, len(members))
+	for _, m := range members {
+		if m.ID == n.id {
 			continue
 		}
-		next := n.nextIndex[p]
+		next := n.nextIndex[m.ID]
 		if next == 0 {
 			next = 1
 		}
 		// 需要的前一条已被压缩掉：只能整体安装快照（增量追赶不再可能）。
 		if next <= n.rlog.snapIndex() {
 			if snap, ok := n.snapshotToSendLocked(); ok {
-				tasks = append(tasks, task{peer: p, snap: &snap})
+				tasks = append(tasks, task{peer: m.ID, snap: &snap})
 				continue
 			}
 		}
@@ -665,11 +843,11 @@ func (n *Node) tickLeader() {
 		if t, ok := n.rlog.termAt(args.PrevLogIndex); ok {
 			args.PrevLogTerm = t
 		} else if snap, ok := n.snapshotToSendLocked(); ok {
-			tasks = append(tasks, task{peer: p, snap: &snap})
+			tasks = append(tasks, task{peer: m.ID, snap: &snap})
 			continue
 		}
 		args.Entries = n.rlog.entriesFrom(next, maxAppendEntries)
-		tasks = append(tasks, task{peer: p, args: args})
+		tasks = append(tasks, task{peer: m.ID, args: args})
 	}
 	n.mu.Unlock()
 
@@ -705,6 +883,7 @@ func (n *Node) snapshotToSendLocked() (installSnapshotArgs, bool) {
 		LastIncludedIndex: n.rlog.snapIndex(),
 		LastIncludedTerm:  n.rlog.snapTerm(),
 		Data:              n.snapData,
+		Members:           append([]Member(nil), n.members...),
 	}, true
 }
 
@@ -815,13 +994,14 @@ func (n *Node) maybeAdvanceCommitLocked() {
 	if n.role != RoleLeader {
 		return
 	}
-	candidates := make([]uint64, 0, len(n.peers))
+	candidates := make([]uint64, 0, n.voterCountLocked())
 	candidates = append(candidates, n.rlog.lastIndex())
-	for _, p := range n.peers {
-		if p == n.id {
+	for _, m := range n.members {
+		if m.Learner || m.ID == n.id {
+			// learner 的复制进度不参与提交判定（它不是多数派的一部分）。
 			continue
 		}
-		candidates = append(candidates, n.matchIndex[p])
+		candidates = append(candidates, n.matchIndex[m.ID])
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i] > candidates[j] })
 	q := n.quorum()
@@ -863,6 +1043,23 @@ func (n *Node) failProposalsLocked(err error) {
 	}
 }
 
+// failProposalsExceptLocked 让除 keep 之外的全部等待中提案失败。
+//
+// 用于"应用一条成员变更导致本节点卸任"的场景：那条成员变更本身必须成功返回
+// （它已经提交并应用了），其余提案则应立即失败而不是干等超时。
+func (n *Node) failProposalsExceptLocked(keep uint64, err error) {
+	if len(n.proposals) == 0 {
+		return
+	}
+	for index, ch := range n.proposals {
+		if index == keep {
+			continue
+		}
+		delete(n.proposals, index)
+		ch <- applyResult{err: err}
+	}
+}
+
 // dropProposal 在调用方放弃等待（ctx 超时 / 节点停止）时移除提案。
 func (n *Node) dropProposal(index uint64) {
 	n.mu.Lock()
@@ -897,7 +1094,7 @@ func (n *Node) stepDownLocked(term uint64, leaderID string) {
 	n.leaderID = leaderID
 	// 即使落盘失败也不回滚内存中的任期：内存里保持更高任期最多让本节点拒绝旧 leader，
 	// 而用旧任期对外应答则可能导致同任期重复投票（安全性破坏），两害相权取其轻。
-	if err := n.storage.saveState(n.term, n.votedFor); err != nil {
+	if err := n.storage.saveState(n.term, n.votedFor, n.members); err != nil {
 		n.log.Error("持久化任期失败", "term", term, "err", err)
 	}
 	n.failProposalsLocked(ErrNotLeader)
@@ -928,14 +1125,17 @@ func (n *Node) handleRequestVote(_ context.Context, _ string, payload []byte) ([
 		n.stepDownLocked(args.Term, "")
 	}
 	reply := requestVoteReply{Term: n.term}
+	// 只给**已知的投票成员**投票：否则一个"自认为已被加入、但本节点还没应用该配置变更"
+	// 的节点，就可能凑出一个与旧多数派不相交的多数派，同时选出两个 leader。
 	grantable := args.Term == n.term &&
+		n.isVoterLocked(args.CandidateID) &&
 		(n.votedFor == "" || n.votedFor == args.CandidateID) &&
 		n.candidateLogUpToDateLocked(args.LastLogIndex, args.LastLogTerm)
 	if grantable {
 		if n.votedFor != args.CandidateID {
 			n.votedFor = args.CandidateID
 			// 投票先落盘再应答：否则崩溃重启后可能在同一任期投出第二票。
-			if err := n.storage.saveState(n.term, n.votedFor); err != nil {
+			if err := n.storage.saveState(n.term, n.votedFor, n.members); err != nil {
 				n.mu.Unlock()
 				return nil, fmt.Errorf("持久化投票失败: %w", err)
 			}
@@ -981,6 +1181,10 @@ func (n *Node) handleRequestVoteReply(peer string, term uint64, reply requestVot
 		return
 	}
 	if !reply.VoteGranted {
+		return
+	}
+	// 只统计投票成员的票：learner 的票不算数（否则多数派会被算小）。
+	if !n.isVoterLocked(peer) {
 		return
 	}
 	n.votes[peer] = struct{}{}
@@ -1130,6 +1334,7 @@ func (n *Node) handleInstallSnapshot(_ context.Context, _ string, payload []byte
 		LastIncludedIndex: args.LastIncludedIndex,
 		LastIncludedTerm:  args.LastIncludedTerm,
 		Data:              args.Data,
+		Members:           args.Members,
 	}
 	if err := n.storage.saveSnapshot(snap); err != nil {
 		return nil, fmt.Errorf("写入快照文件失败: %w", err)
@@ -1139,10 +1344,13 @@ func (n *Node) handleInstallSnapshot(_ context.Context, _ string, payload []byte
 	}
 
 	n.mu.Lock()
-	defer n.mu.Unlock()
 	if args.LastIncludedIndex <= n.rlog.snapIndex() {
-		return json.Marshal(installSnapshotReply{Term: n.term, Success: true})
+		term := n.term
+		n.mu.Unlock()
+		return json.Marshal(installSnapshotReply{Term: term, Success: true})
 	}
+	// 采纳快照里的成员表：这是"落后节点/新节点"唯一能拿到运行期成员变更的途径。
+	membersChanged := n.adoptMembersLocked(args.Members)
 	// 本地在快照位置处有相同任期的条目时保留其后缀，否则整体丢弃重建。
 	var err error
 	if t, ok := n.rlog.termAt(args.LastIncludedIndex); ok && t == args.LastIncludedTerm {
@@ -1151,6 +1359,7 @@ func (n *Node) handleInstallSnapshot(_ context.Context, _ string, payload []byte
 		err = n.rlog.reset(args.LastIncludedIndex, args.LastIncludedTerm)
 	}
 	if err != nil {
+		n.mu.Unlock()
 		return nil, fmt.Errorf("安装快照后整理日志失败: %w", err)
 	}
 	if args.LastIncludedIndex > n.commitIndex {
@@ -1161,8 +1370,68 @@ func (n *Node) handleInstallSnapshot(_ context.Context, _ string, payload []byte
 	}
 	n.snapData = args.Data
 	n.appliedSinceSnap = 0
+	term := n.term
+	members := n.membershipLocked()
+	n.mu.Unlock()
+
+	if membersChanged {
+		n.notifyMembership(members)
+	}
 	n.log.Info("已安装快照", "index", args.LastIncludedIndex, "term", args.LastIncludedTerm)
-	return json.Marshal(installSnapshotReply{Term: n.term, Success: true})
+	return json.Marshal(installSnapshotReply{Term: term, Success: true})
+}
+
+// adoptMembersLocked 用快照带来的成员表替换本地成员表，返回是否发生了变化。
+//
+// 快照里的成员表是"**该位置的事实**"：即便本地成员表更新（例如本地已应用了
+// 快照点之后的变更），也不应回退 —— 因此只有本地日志中没有比快照更新的配置变更时才采纳。
+// 实务上"本地成员表 != 快照成员表"只发生在本地落后于快照的情形，此时采纳是正确的。
+func (n *Node) adoptMembersLocked(in []Member) bool {
+	if len(in) == 0 {
+		return false
+	}
+	members := normalizeMembers(in)
+	if membersEqual(n.members, members) {
+		return false
+	}
+	n.members = members
+	n.selfAddr = memberAddr(members, n.id)
+	n.registerMemberAddrs(members)
+	if !n.selfIsVoterLocked() && n.role == RoleLeader {
+		// 新成员表里没有自己：立即让位，并唤醒 runLoop 重新评估。
+		n.stepDownLocked(n.term, n.leaderID)
+	}
+	if err := n.storage.saveState(n.term, n.votedFor, n.members); err != nil {
+		n.log.Warn("持久化成员表失败", "err", err)
+	}
+	return true
+}
+
+// membersEqual 判断两份成员表是否一致（均假定已排序）。
+func membersEqual(a, b []Member) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// notifyMembership 触发成员变更回调（必须在锁外调用）。
+func (n *Node) notifyMembership(m Membership) {
+	if n.onMembershipChange == nil {
+		return
+	}
+	defer func() {
+		// 回调是上层代码，panic 不应该把 Raft 的协程带走。
+		if r := recover(); r != nil {
+			n.log.Error("成员变更回调 panic", "err", r)
+		}
+	}()
+	n.onMembershipChange(m)
 }
 
 // applyLoop 是唯一调用 FSM.Apply / FSM.Snapshot 的协程。
@@ -1205,6 +1474,20 @@ func (n *Node) applyCommitted() {
 		needSnapshot := n.appliedSinceSnap >= n.snapshotThreshold
 		n.mu.Unlock()
 
+		if entry.Type == EntryConfChange {
+			// 成员变更条目由 Raft 自己消化，不进上层状态机。
+			values, err := n.applyConfChangeEntry(index, entry.Data)
+			if needSnapshot {
+				n.takeSnapshot(index, entry.Term)
+			}
+			n.fsmMu.Unlock()
+			n.deliverResult(index, nil, err)
+			if err == nil && values.changed {
+				n.notifyMembership(values.membership)
+			}
+			continue
+		}
+
 		value, err := n.fsm.Apply(index, entry.Data)
 
 		if needSnapshot {
@@ -1213,6 +1496,287 @@ func (n *Node) applyCommitted() {
 		n.fsmMu.Unlock()
 
 		n.deliverResult(index, value, err)
+	}
+}
+
+// confApplyOutcome 是一次成员变更的应用结果。
+type confApplyOutcome struct {
+	changed    bool
+	membership Membership
+}
+
+// applyConfChangeEntry 应用一条已提交的成员变更条目。
+//
+// 与提案路径的区别：这里对"重复/无意义"的操作是**幂等宽容**的（重放会再次走到这里），
+// 只有解析失败才算错误。严格的合法性校验放在 ChangeMembership 的提案路径上。
+func (n *Node) applyConfChangeEntry(index uint64, data []byte) (confApplyOutcome, error) {
+	var cc ConfChange
+	if err := json.Unmarshal(data, &cc); err != nil {
+		return confApplyOutcome{}, fmt.Errorf("解析成员变更条目失败: %w", err)
+	}
+	n.mu.Lock()
+	changed := n.applyConfChangeLocked(cc)
+	// 本次变更导致本节点不再是领导者（例如移除的是自己）：其余在途提案必然无法完成，
+	// 立即让它们失败，而不是让调用方干等 ctx 超时。**本次**这条变更要正常返回。
+	if n.role != RoleLeader {
+		n.failProposalsExceptLocked(index, ErrNotLeader)
+	}
+	if index >= n.pendingConfIndex {
+		n.pendingConfIndex = 0
+	}
+	out := confApplyOutcome{changed: changed, membership: n.membershipLocked()}
+	n.mu.Unlock()
+
+	if changed {
+		n.log.Info("成员变更已生效", "op", cc.Op, "id", cc.ID,
+			"voters", out.membership.Voters, "learners", out.membership.Learners)
+	}
+	return out, nil
+}
+
+// applyConfChangeLocked 把一条成员变更作用到本地成员表，返回是否发生了变化。
+func (n *Node) applyConfChangeLocked(cc ConfChange) bool {
+	switch cc.Op {
+	case ConfAddLearner:
+		m, ok := n.memberLocked(cc.ID)
+		if ok {
+			// 幂等：已经是成员。地址有更新时同步一次（例如新节点换了监听地址）。
+			if cc.Addr != "" && m.Addr != cc.Addr {
+				for i := range n.members {
+					if n.members[i].ID == cc.ID {
+						n.members[i].Addr = cc.Addr
+					}
+				}
+				n.registerMembersLocked()
+				n.persistMembersLocked()
+				return true
+			}
+			return false
+		}
+		n.members = normalizeMembers(append(n.members, Member{ID: cc.ID, Addr: cc.Addr, Learner: true}))
+	case ConfPromote:
+		found := false
+		for i := range n.members {
+			if n.members[i].ID == cc.ID {
+				found = true
+				if !n.members[i].Learner {
+					return false // 幂等：已经是投票成员
+				}
+				n.members[i].Learner = false
+			}
+		}
+		if !found {
+			return false
+		}
+	case ConfRemove:
+		next := make([]Member, 0, len(n.members))
+		removed := false
+		for _, m := range n.members {
+			if m.ID == cc.ID {
+				removed = true
+				continue
+			}
+			next = append(next, m)
+		}
+		if !removed {
+			return false
+		}
+		n.members = next
+		if reg, ok := n.tr.(PeerRegistrar); ok {
+			reg.UnregisterPeer(cc.ID)
+		}
+	default:
+		n.log.Warn("未知的成员变更操作，已忽略", "op", string(cc.Op), "id", cc.ID)
+		return false
+	}
+
+	n.members = normalizeMembers(n.members)
+	n.selfAddr = memberAddr(n.members, n.id)
+	n.registerMembersLocked()
+	n.persistMembersLocked()
+	if !n.selfIsVoterLocked() && n.role == RoleLeader {
+		// 领导者把自己移出（或降为 learner）：立即卸任。
+		//
+		// 这里**不能**走 stepDownLocked：它会 fail 掉全部在途提案，包括"正在被应用的
+		// 这条配置变更"，而这条变更必须把成功结果交回提案方。其余提案由调用方在
+		// applyConfChangeEntry 里显式失败（见 failProposalsExceptLocked）。
+		n.role = RoleFollower
+		n.leaderID = ""
+		n.resetElectionLocked()
+	}
+	return true
+}
+
+// registerMembersLocked 把成员表里的地址注册进传输层（要求持有主锁）。
+func (n *Node) registerMembersLocked() {
+	reg, ok := n.tr.(PeerRegistrar)
+	if !ok {
+		return
+	}
+	for _, m := range n.members {
+		if m.Addr != "" {
+			reg.RegisterPeer(m.ID, m.Addr)
+		}
+	}
+}
+
+// persistMembersLocked 把成员表与当前任期/投票一起落盘（要求持有主锁）。
+func (n *Node) persistMembersLocked() {
+	if err := n.storage.saveState(n.term, n.votedFor, n.members); err != nil {
+		n.log.Error("持久化成员表失败", "err", err)
+	}
+}
+
+// ChangeMembership 提交一次成员变更（仅领导者可用）。
+//
+// 用法（新增一个节点）：
+//  1. 新节点以 Options.Learners=[自己] 启动（它因此不会竞选、也不计入多数派）；
+//  2. 在 leader 上 ChangeMembership{Op: ConfAddLearner, ID: 新节点, Addr: 地址}；
+//  3. AwaitCatchUp 等它追平；
+//  4. ChangeMembership{Op: ConfPromote, ID: 新节点} 把它提升为投票成员。
+//
+// 本实现**一次只允许一个未提交的变更**（没有 joint consensus）：否则新旧配置的
+// 多数派可能不相交，同一任期选出两个 leader。
+func (n *Node) ChangeMembership(ctx context.Context, cc ConfChange) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	n.mu.Lock()
+	if n.closed || n.role == RoleShutdown {
+		n.mu.Unlock()
+		return ErrStopped
+	}
+	if n.role != RoleLeader {
+		n.mu.Unlock()
+		return ErrNotLeader
+	}
+	if !n.hasQuorumLocked() {
+		n.mu.Unlock()
+		return ErrNoQuorum
+	}
+	if n.pendingConfIndex > n.commitIndex {
+		n.mu.Unlock()
+		return ErrConfigInFlight
+	}
+	if err := n.validateConfChangeLocked(cc); err != nil {
+		n.mu.Unlock()
+		return err
+	}
+	data, err := json.Marshal(cc)
+	if err != nil {
+		n.mu.Unlock()
+		return fmt.Errorf("编码成员变更失败: %w", err)
+	}
+	index, err := n.appendConfLocked(data)
+	if err != nil {
+		n.mu.Unlock()
+		return fmt.Errorf("追加成员变更日志失败: %w", err)
+	}
+	n.pendingConfIndex = index
+	ch := make(chan applyResult, 1)
+	n.proposals[index] = ch
+	n.maybeAdvanceCommitLocked()
+	n.mu.Unlock()
+
+	select {
+	case res := <-ch:
+		return res.err
+	case <-ctx.Done():
+		n.dropProposal(index)
+		return ctx.Err()
+	case <-n.done:
+		n.dropProposal(index)
+		return ErrStopped
+	}
+}
+
+// validateConfChangeLocked 在提案阶段做严格校验（要求持有主锁）。
+func (n *Node) validateConfChangeLocked(cc ConfChange) error {
+	if cc.ID == "" {
+		return errors.New("raft: 成员变更缺少目标节点 ID")
+	}
+	switch cc.Op {
+	case ConfAddLearner:
+		if _, ok := n.memberLocked(cc.ID); ok {
+			return fmt.Errorf("%w: %s", ErrMemberExists, cc.ID)
+		}
+	case ConfPromote:
+		m, ok := n.memberLocked(cc.ID)
+		if !ok {
+			return fmt.Errorf("%w: %s", ErrUnknownMember, cc.ID)
+		}
+		if !m.Learner {
+			return fmt.Errorf("%w: %s", ErrNotLearner, cc.ID)
+		}
+	case ConfRemove:
+		if _, ok := n.memberLocked(cc.ID); !ok {
+			return fmt.Errorf("%w: %s", ErrUnknownMember, cc.ID)
+		}
+		if n.isVoterLocked(cc.ID) && n.voterCountLocked() <= 1 {
+			return ErrLastVoter
+		}
+	default:
+		return fmt.Errorf("raft: 未知的成员变更操作 %q", string(cc.Op))
+	}
+	return nil
+}
+
+// appendConfLocked 追加一条成员变更日志并落盘。
+func (n *Node) appendConfLocked(data []byte) (uint64, error) {
+	index := n.rlog.lastIndex() + 1
+	e := Entry{Index: index, Term: n.term, Data: data, Type: EntryConfChange}
+	if err := n.rlog.append(e); err != nil {
+		return 0, err
+	}
+	if err := n.rlog.sync(); err != nil {
+		return 0, err
+	}
+	n.matchIndex[n.id] = index
+	return index, nil
+}
+
+// awaitCatchUpPoll 是 AwaitCatchUp 的轮询间隔。
+const awaitCatchUpPoll = 20 * time.Millisecond
+
+// AwaitCatchUp 等待成员 id 的复制进度追上本节点的提交点（仅领导者可用）。
+func (n *Node) AwaitCatchUp(ctx context.Context, id string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	tick := time.NewTicker(awaitCatchUpPoll)
+	defer tick.Stop()
+	for {
+		n.mu.Lock()
+		role := n.role
+		commit := n.commitIndex
+		progress := n.matchIndex[id]
+		known := false
+		for _, m := range n.members {
+			if m.ID == id {
+				known = true
+				break
+			}
+		}
+		n.mu.Unlock()
+		if role != RoleLeader {
+			return ErrNotLeader
+		}
+		if !known {
+			return fmt.Errorf("%w: %s", ErrUnknownMember, id)
+		}
+		if id == n.id || progress >= commit {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-n.done:
+			return ErrStopped
+		case <-tick.C:
+		}
 	}
 }
 
@@ -1228,12 +1792,14 @@ func (n *Node) takeSnapshot(throughIndex, throughTerm uint64) {
 		n.mu.Unlock()
 		return
 	}
+	members := append([]Member(nil), n.members...)
 	n.mu.Unlock()
 
 	if err := n.storage.saveSnapshot(persistedSnapshot{
 		LastIncludedIndex: throughIndex,
 		LastIncludedTerm:  throughTerm,
 		Data:              data,
+		Members:           members,
 	}); err != nil {
 		n.log.Warn("写入快照文件失败", "index", throughIndex, "err", err)
 		return

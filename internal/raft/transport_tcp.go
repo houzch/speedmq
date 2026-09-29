@@ -167,6 +167,40 @@ func (t *tcpTransport) serveConn(conn net.Conn) {
 	}
 }
 
+// RegisterPeer 运行期注册/更新一个成员的地址（成员变更用）。
+//
+// 空地址会被忽略：地址信息来自 ConfChange，而进程内网络与"仅知道 ID"的场景
+// 都不需要地址，不该因此把已有映射清掉。
+func (t *tcpTransport) RegisterPeer(id, addr string) {
+	if id == "" || addr == "" {
+		return
+	}
+	t.mu.Lock()
+	if t.addrs == nil {
+		t.addrs = make(map[string]string)
+	}
+	old, existed := t.addrs[id]
+	t.addrs[id] = addr
+	t.mu.Unlock()
+	if !existed || old != addr {
+		t.log.Info("已注册集群成员地址", "id", id, "addr", addr)
+	}
+}
+
+// UnregisterPeer 注销一个成员的地址（成员被移除时调用）。
+//
+// 只删地址、不影响既有连接：成员被移除不代表它的进程立刻消失，
+// 保留"能连但不再被调用"的状态比强行断开更安全。
+func (t *tcpTransport) UnregisterPeer(id string) {
+	t.mu.Lock()
+	_, existed := t.addrs[id]
+	delete(t.addrs, id)
+	t.mu.Unlock()
+	if existed {
+		t.log.Info("已注销集群成员地址", "id", id)
+	}
+}
+
 // Call 向 to 发起一次 RPC。
 func (t *tcpTransport) Call(ctx context.Context, to, method string, payload []byte) ([]byte, error) {
 	if ctx == nil {

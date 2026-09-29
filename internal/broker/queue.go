@@ -68,8 +68,9 @@ type queue struct {
 	autoDelete bool
 	owner      string // 独占队列归属的会话标识；空表示非独占
 	// remote 表示该队列的消息数据不在本节点（集群里由别的节点持有）。
-	// 本期没有跨节点转发，因此对它的消息操作一律返回 NOT_IMPLEMENTED。
+	// nodeOwner 是数据所在节点（remote 为 true 时非空），跨节点转发要按它寻址。
 	remote    bool
+	nodeOwner string
 	arguments map[string]any
 	args      queueArgs
 	log       *slog.Logger
@@ -81,6 +82,9 @@ type queue struct {
 	// storeSeq 是持久化序号分配器（只在 store 非 nil 时使用）。
 	store    *store.QueueStore
 	storeSeq uint64
+	// quorum 非 nil 表示这是一条仲裁队列：消息经 Raft 复制到多数派后才确认，
+	// 因此没有 store（Raft 日志本身就是持久化），语义由 quorum.go 实现。
+	quorum *quorumGroup
 
 	mu          sync.Mutex
 	ready       []*queuedMsg
@@ -117,6 +121,16 @@ func newQueue(name string, durable, exclusive, autoDelete bool, owner string,
 	}
 }
 
+// queueType 返回队列类型（与 RabbitMQ 管理 API 的 `type` 字段一致）。
+func (q *queue) queueType() string {
+	if q.quorum != nil {
+		return queueTypeQuorum
+	}
+	return queueTypeClassic
+}
+
+func (q *queue) isQuorum() bool { return q.quorum != nil }
+
 // clusterManaged 表示该队列是否由集群元数据托管（durable 且非 exclusive）。
 // 它的生命周期变更必须经元数据层提交，本地不得单独增删。
 func (q *queue) clusterManaged() bool { return q.durable && !q.exclusive }
@@ -141,12 +155,18 @@ func (q *queue) stats() (ready, consumers uint32) {
 // 字段刻意与 RabbitMQ Management API 的队列对象同名，让"复用现有运维工具"
 // 这件事停留在字段映射，而不是语义翻译。
 type QueueSnapshot struct {
-	VHost                string
-	Name                 string
-	Durable              bool
-	AutoDelete           bool
-	Exclusive            bool
-	Arguments            map[string]any
+	VHost      string
+	Name       string
+	Durable    bool
+	AutoDelete bool
+	Exclusive  bool
+	Arguments  map[string]any
+	// Remote 表示队列数据不在本节点；Owner 是数据所在节点（仅集群模式、且为远端时有值）。
+	// 运维必须能一眼看出"这个队列的深度/消费者"是从别的节点取来的，否则容易误读。
+	Remote bool
+	Owner  string
+	// QueueType 是队列类型：classic / quorum。
+	QueueType            string
 	Ready                int
 	Unacked              int
 	ConsumerCount        int
@@ -172,6 +192,7 @@ func (q *queue) snapshot(vhostName string) QueueSnapshot {
 		AutoDelete: q.autoDelete,
 		Exclusive:  q.exclusive,
 		Arguments:  q.arguments,
+		QueueType:  q.queueType(),
 		Published:  q.published.Load(),
 		Delivered:  q.delivered.Load(),
 		Gotten:     q.gotten.Load(),
@@ -234,9 +255,23 @@ func (q *queue) touchLocked() { q.lastUsed = time.Now() }
 
 // publish 把消息入队并触发一次投递。
 //
-// 返回值 accepted 为 false 表示被长度限制拒绝或持久化失败；
-// commit 非 nil 表示该消息需要落盘，调用方（协议层）应等待它后再回 confirm。
-func (q *queue) publish(msg *plugin.Message) (accepted bool, commit *store.Commit) {
+// accepted=false 表示被长度限制拒绝（overflow=reject-publish）；
+// err 非 nil 表示本次发布根本无法受理（例如仲裁队列的 leader 不在本节点）；
+// wait 非 nil 时，调用方必须等它返回后才能向客户端确认 ——
+// 持久消息等落盘、仲裁队列等复制到多数派，这是 confirm 语义的落点。
+func (q *queue) publish(msg *plugin.Message) (accepted bool, wait func() error, err error) {
+	if q.quorum != nil {
+		return q.publishQuorum(msg)
+	}
+	accepted, commit := q.publishLocal(msg)
+	if commit == nil {
+		return accepted, nil, nil
+	}
+	return accepted, func() error { return commit.Wait() }, nil
+}
+
+// publishLocal 是经典队列的入队路径：写内存 + 按需落盘。
+func (q *queue) publishLocal(msg *plugin.Message) (accepted bool, commit *store.Commit) {
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
@@ -441,6 +476,9 @@ func (q *queue) requeueByConsumerLocked(tag string) {
 
 // purge 清空就绪消息，返回清除条数（不含未确认消息，与 AMQP 语义一致）。
 func (q *queue) purge() uint32 {
+	if q.quorum != nil {
+		return q.purgeQuorum()
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	n := uint32(len(q.ready))
@@ -453,7 +491,7 @@ func (q *queue) purge() uint32 {
 	return n
 }
 
-// close 关闭队列、丢弃内存中的消息并删除其磁盘数据。
+// close 关闭队列、丢弃内存中的消息并删除其持久化数据。
 func (q *queue) close() {
 	q.mu.Lock()
 	q.closed = true
@@ -463,8 +501,14 @@ func (q *queue) close() {
 	q.consumers = nil
 	st := q.store
 	q.store = nil
+	g := q.quorum
 	q.mu.Unlock()
 
+	// 仲裁队列：停掉 Raft 组（含它的日志与快照目录），没有独立的 store。
+	if g != nil {
+		g.stop()
+		return
+	}
 	if st != nil {
 		if err := st.Remove(); err != nil {
 			q.log.Warn("删除队列存储失败", "queue", q.name, "err", err)
@@ -528,6 +572,12 @@ func (q *queue) settle(item *queuedMsg, action plugin.SettleAction) {
 	delete(q.unacked, item.seq)
 	q.decInFlightLocked(item.consumerTag)
 
+	// 仲裁队列：ack/reject 要变成一条日志命令，"把消息从队列里去掉"这件事必须被复制，
+	// 否则 leader 挂掉后新 leader 会把它再投一次（虽然只是重投，但状态会永远分叉）。
+	// 提案放到锁外做：Propose 可能阻塞到多数派应答，不能占着队列锁。
+	var confirmSeq uint64
+	isQuorum := q.quorum != nil
+
 	switch action {
 	case plugin.SettleRequeue:
 		if !q.closed {
@@ -536,13 +586,26 @@ func (q *queue) settle(item *queuedMsg, action plugin.SettleAction) {
 			q.insertFrontLocked([]*queuedMsg{item})
 		}
 	case plugin.SettleReject:
+		// 死信路由由派发器异步完成（这里只入队），因此与持锁无冲突。
 		q.deadLetterLocked(item, deathReasonRejected)
+		if isQuorum {
+			confirmSeq = item.seq
+		}
 	default:
-		// SettleAck：正常消费完成，直接丢弃（并在索引中标记，避免重启后复活）
+		// SettleAck：正常消费完成
 		q.acked.Add(1)
-		q.storeAckLocked(item)
+		if isQuorum {
+			confirmSeq = item.seq
+		} else {
+			// 经典队列在索引中标记删除，避免重启后复活
+			q.storeAckLocked(item)
+		}
 	}
 	q.mu.Unlock()
+
+	if confirmSeq != 0 {
+		q.quorum.proposeAck(confirmSeq)
+	}
 }
 
 // get 主动拉取一条消息。noAck 为 true 时投递即结算，不进入未确认集合。
@@ -567,8 +630,11 @@ func (q *queue) get(noAck bool) (*plugin.Delivery, bool) {
 		}, true
 	}
 
-	q.nextSeq++
-	item.seq = q.nextSeq
+	if !q.isQuorum() {
+		// 经典队列在这里分配"未确认标识"；仲裁队列的序号是日志条目序号，早已确定。
+		q.nextSeq++
+		item.seq = q.nextSeq
+	}
 	q.unacked[item.seq] = item
 	item.consumerTag = ""
 
@@ -610,6 +676,12 @@ func (q *queue) popLiveHeadLocked() *queuedMsg {
 
 // sweep 清理过期消息；返回队列自身是否已过期（需要被删除）。
 func (q *queue) sweep(now time.Time) (expired bool) {
+	if q.quorum != nil {
+		// 仲裁队列的过期由 leader 决定并把"确认"写进日志（见 sweepQuorum），
+		// 且 x-expires 在声明阶段就被拒绝，因此这里恒不返回"队列已过期"。
+		q.sweepQuorum(now)
+		return false
+	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
@@ -702,8 +774,11 @@ func (q *queue) selectBatchLocked() []batchItem {
 			continue
 		}
 
-		q.nextSeq++
-		item.seq = q.nextSeq
+		if !q.isQuorum() {
+			// 经典队列在这里分配"未确认标识"；仲裁队列的序号是日志条目序号，早已确定。
+			q.nextSeq++
+			item.seq = q.nextSeq
+		}
 		item.consumerTag = c.sub.Tag
 		q.unacked[item.seq] = item
 		c.inFlight++

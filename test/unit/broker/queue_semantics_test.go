@@ -297,19 +297,44 @@ func TestQueueExpires(t *testing.T) {
 	})
 }
 
-// TestUnsupportedQueueTypeRejected 确保要求未实现的队列类型时明确报错，
-// 而不是静默创建 classic 队列 —— 后者会让业务误以为自己拿到了仲裁队列的保证。
-func TestUnsupportedQueueTypeRejected(t *testing.T) {
+// TestQueueTypeValidation 覆盖队列类型的声明校验：
+// 未实现的类型必须明确报错（而不是静默建成 classic），
+// 已实现的 quorum 必须满足它的语义前提（durable / 非独占 / 非自动删除 / 有名字）。
+//
+// quorum 队列的行为本身由 test/unit/broker/quorum_test.go 在真实集群上验证。
+func TestQueueTypeValidation(t *testing.T) {
 	b := newTestBroker(t)
 	sess, _ := testSessionOf(t, b, "guest", "guest")
 
+	// stream 尚未实现：明确报 NOT_IMPLEMENTED，而不是悄悄建成 classic
 	_, err := sess.DeclareQueue(plugin.QueueDeclare{
+		Name:      "stream.q",
+		Arguments: map[string]any{"x-queue-type": "stream"},
+	})
+	if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindNotImplemented {
+		t.Fatalf("未实现的队列类型应报 KindNotImplemented，实际 %v", err)
+	}
+
+	// quorum 需要 durable：不满足时 406，而不是建成一条没有复制保证的队列
+	_, err = sess.DeclareQueue(plugin.QueueDeclare{
 		Name:      "quorum.q",
 		Arguments: map[string]any{"x-queue-type": "quorum"},
 	})
-	ke, ok := err.(*plugin.Error)
-	if !ok || ke.Kind != plugin.KindNotImplemented {
-		t.Fatalf("期望 KindNotImplemented，实际 %v", err)
+	if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindPreconditionFailed {
+		t.Fatalf("非 durable 的 quorum 队列应报 406，实际 %v", err)
+	}
+
+	// quorum 不支持的参数也要明确拒绝（x-expires / x-max-priority）
+	_, err = sess.DeclareQueue(plugin.QueueDeclare{
+		Name:    "quorum.ttl.q",
+		Durable: true,
+		Arguments: map[string]any{
+			"x-queue-type": "quorum",
+			"x-expires":    60000,
+		},
+	})
+	if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindPreconditionFailed {
+		t.Fatalf("quorum 队列的 x-expires 应报 406，实际 %v", err)
 	}
 
 	// classic 显式声明应被接受

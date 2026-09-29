@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: swiftmq:0.6.0
+    image: swiftmq:0.9.0
     container_name: swiftmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动
@@ -30,6 +30,8 @@ services:
 
     ports:
       - "5672:5672"
+      # MQTT 3.1.1（M7 起内置的第二个协议插件；可用 plugins.mqtt.enabled=false 关闭）
+      - "1883:1883"
       # 管理面：Management HTTP API + 内嵌管理 UI + /metrics
       - "15672:15672"
 

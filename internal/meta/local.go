@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/houzch/swiftmq/internal/raft"
 )
 
 // stateFileName 是单机模式快照的文件名（<Dir>/state.json）。
@@ -146,6 +148,14 @@ func (s *localStore) status() Status {
 		Users:          u,
 	}
 }
+
+// membership 返回空：单机模式没有共识成员。
+func (s *localStore) membership() raft.Membership { return raft.Membership{} }
+
+// addMember / removeMember 在单机模式下明确报错：没有 Raft 组可改。
+func (s *localStore) addMember(_ context.Context, _, _ string) error { return ErrLocalMode }
+
+func (s *localStore) removeMember(_ context.Context, _ string) error { return ErrLocalMode }
 
 // close 标记关闭并等待在途写入结束；可重复调用。
 func (s *localStore) close() error {

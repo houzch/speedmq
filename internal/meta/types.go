@@ -166,8 +166,18 @@ type Options struct {
 	Dir string
 	// Listen 是集群 RPC 监听地址（仅 ModeRaft；形如 ":25672"）。
 	Listen string
-	// Peers 是集群成员 node_id → RPC 地址（仅 ModeRaft；含本节点）。
+	// Peers 是集群**投票**成员 node_id → RPC 地址（仅 ModeRaft；含本节点）。
+	//
+	// 只在首次引导时生效：一旦本地已持久化过成员表，就以持久化的为准
+	// （否则运行期的成员变更会在重启后被打回原形）。
 	Peers map[string]string
+	// Learners 是初始的非投票成员 ID（仅 ModeRaft）：新节点以 learner 身份加入时使用。
+	Learners []string
+	// Voters 是初始的**投票**成员 ID（仅 ModeRaft）；留空时取 Peers 的全部键。
+	//
+	// 单独给一个字段是为了支持"peers（地址簿）与投票成员不一致"的场景：
+	// 新节点加入时，它的地址簿里有自己（否则连不上任何邻居），但它还不是投票成员。
+	Voters []string
 	// Transport 可注入自定义传输（测试用内存网络）；为 nil 时由本包创建 TCP 传输。
 	Transport raft.Transport
 	// Applier 由内核提供，必填。
@@ -177,6 +187,9 @@ type Options struct {
 	// ElectionTimeout / HeartbeatInterval 透传给 Raft；零值用 raft 的默认值。
 	ElectionTimeout   time.Duration
 	HeartbeatInterval time.Duration
+	// OnMembershipChange 在成员划分变化后回调（仅 ModeRaft；在 Raft 应用协程内）。
+	// 实现必须快速返回；需要重活的调用方应把成员表转交给自己的后台协程。
+	OnMembershipChange func(raft.Membership)
 }
 
 // Status 是元数据层的只读状态（管理面与 CLI 展示用）。
@@ -194,8 +207,10 @@ type Status struct {
 	// CommitIndex / LastApplied 是共识进度。
 	CommitIndex uint64
 	LastApplied uint64
-	// Peers 是集群成员 ID（含自己，已排序）。
+	// Peers 是投票成员 ID（含自己，已排序）。
 	Peers []string
+	// Learners 是非投票成员 ID（已排序；没有成员变更时为 nil）。
+	Learners []string
 	// HasQuorum 表示是否仍与多数派保持联系（单机模式恒为 true）。
 	HasQuorum bool
 	// AppliedRecords 是状态机累计应用过的变更条数（观测用）。
@@ -209,6 +224,9 @@ type Status struct {
 
 // ErrNotLeader 表示写入被拒绝且无法转发（例如 leader 未知、本节点与多数派失联）。
 var ErrNotLeader = errors.New("meta: 当前节点无法提交元数据变更（非 leader 且无法转发）")
+
+// ErrLocalMode 表示在单机模式下请求了集群专属操作（如成员变更）。
+var ErrLocalMode = errors.New("meta: 单机模式不支持集群成员变更")
 
 // Store 是元数据存储。
 type Store struct {
@@ -236,6 +254,23 @@ func (s *Store) State() State { return s.impl.state() }
 // Status 返回元数据层状态。
 func (s *Store) Status() Status { return s.impl.status() }
 
+// Membership 返回当前成员划分（单机模式为空）。
+func (s *Store) Membership() raft.Membership { return s.impl.membership() }
+
+// AddMember 把一个节点加入集群：先以 learner 身份加入、等它追平后提升为投票成员。
+//
+// 分两步（而非直接作为 voter 加入）是 Raft 的常规做法：新节点通常没有日志，
+// 直接参与表决会在它追平前拖慢（甚至短暂阻塞）集群；先 learner 后提升则不影响可用性。
+// 仅集群模式可用；非 leader 会自动转发给 leader。
+func (s *Store) AddMember(ctx context.Context, id, addr string) error {
+	return s.impl.addMember(ctx, id, addr)
+}
+
+// RemoveMember 把一个节点从集群移除（仅集群模式；非 leader 自动转发给 leader）。
+func (s *Store) RemoveMember(ctx context.Context, id string) error {
+	return s.impl.removeMember(ctx, id)
+}
+
 // Close 关闭存储（集群模式会停止 Raft 并落盘）。可重复调用。
 func (s *Store) Close() error { return s.impl.close() }
 
@@ -244,5 +279,8 @@ type storeImpl interface {
 	write(ctx context.Context, op Op, payload any) error
 	state() State
 	status() Status
+	membership() raft.Membership
+	addMember(ctx context.Context, id, addr string) error
+	removeMember(ctx context.Context, id string) error
 	close() error
 }

@@ -375,7 +375,8 @@ func (b *Broker) QueueSnapshot(vhost, name string) (QueueSnapshot, bool) {
 	if !ok {
 		return QueueSnapshot{}, false
 	}
-	return q.snapshot(vhost), true
+	// 走 vhost 的快照入口（而不是 q.snapshot）：远端队列的计数需要向 Owner 取。
+	return v.queueSnapshot(q), true
 }
 
 // ExchangeSnapshots 返回交换机快照；vhost 为空表示全部 vhost。

@@ -100,6 +100,48 @@ func (v *vhost) getQueue(name string) (*queue, bool) {
 	return q, ok
 }
 
+// queueRemote 表示该队列的数据/服务是否在别的节点上，也就是"本节点是否只做代理"。
+//
+// 经典队列看声明时的 Owner（创建后不变）；仲裁队列看它 Raft 组**当前**的 leader ——
+// leader 会随选举变化，因此在创建时定死是不对的。
+func (v *vhost) queueRemote(q *queue) bool {
+	if q.quorum != nil {
+		return !q.quorum.isLeader()
+	}
+	return q.remote
+}
+
+// queueOwner 返回应当服务该队列的节点。
+//
+// 仲裁队列的 leader 会随选举变化，且 follower 要等一次心跳才知道新 leader；
+// 因此这里在"还不知道 leader"时短暂等一小会儿（上限 quorumLeaderWait），
+// 避免"刚声明完就在另一个节点发布"这类合法用法偶发失败。
+// 仍然拿不到时返回空串，调用方必须明确报错并让客户端重试，而不是随便挑一个节点发过去。
+func (v *vhost) queueOwner(q *queue) string {
+	if q.quorum == nil {
+		return q.nodeOwner
+	}
+	deadline := time.Now().Add(quorumLeaderWait)
+	for {
+		if leader := q.quorum.leaderNode(); leader != "" {
+			return leader
+		}
+		if !time.Now().Before(deadline) {
+			return ""
+		}
+		time.Sleep(quorumLeaderPoll)
+	}
+}
+
+// queueOwnerBestEffort 与 queueOwner 相同，但**不等待**：管理面只做展示，
+// 不能被某个队列的选主拖住。
+func (v *vhost) queueOwnerBestEffort(q *queue) string {
+	if q.quorum == nil {
+		return q.nodeOwner
+	}
+	return q.quorum.leaderNode()
+}
+
 // ---------------------------------------------------------------------------
 // 会话：绑定到某 vhost 与某个连接的 plugin.Session 实现
 // ---------------------------------------------------------------------------
@@ -405,6 +447,12 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 	if err != nil {
 		return plugin.QueueInfo{}, err
 	}
+	if args.queueType == queueTypeQuorum && !req.Passive {
+		// 被动声明只是"查一下有没有"，不该因为调用方没重复写 durable 等标志就被拒。
+		if err := checkQuorumDeclare(req); err != nil {
+			return plugin.QueueInfo{}, err
+		}
+	}
 
 	if req.Name == "" {
 		if req.Passive {
@@ -431,18 +479,13 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 	}
 
 	if q, ok := s.vh.getQueue(req.Name); ok {
-		if err := checkQueueEquivalence(q, req); err != nil {
-			return plugin.QueueInfo{}, err
-		}
-		if q.exclusive && q.owner != s.id {
-			return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
-				"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '%s' in vhost '%s'",
-				req.Name, s.vh.name)
-		}
-		ready, consumers := q.stats()
-		return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
+		return s.existingQueue(q, req)
 	}
 	if req.Passive {
+		// 队列可能刚在别的节点声明、本节点还没应用它：短暂等一下再判 404（见 lookupQueue）。
+		if q, ok := s.lookupQueue(req.Name); ok {
+			return s.existingQueue(q, req)
+		}
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", req.Name, s.vh.name)
 	}
@@ -479,16 +522,34 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 	return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
 }
 
+// existingQueue 处理"队列已存在"的声明：等价性校验、独占校验，并返回 Owner 侧的统计。
+func (s *vhostSession) existingQueue(q *queue, req plugin.QueueDeclare) (plugin.QueueInfo, error) {
+	if err := checkQueueEquivalence(q, req); err != nil {
+		return plugin.QueueInfo{}, err
+	}
+	if q.exclusive && q.owner != s.id {
+		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
+			"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '%s' in vhost '%s'",
+			req.Name, s.vh.name)
+	}
+	return s.queueInfo(q), nil
+}
+
 // declareManagedQueue 提交一次"集群级"队列声明（durable 且非 exclusive），
 // 并等待本地拓扑可见后返回统计信息。
 //
 // 声明本身由元数据层决定归属与顺序；本地对象由 ApplyMeta 建立，
 // 因此这里在提交成功后要等一下本地应用 —— follower 的应用滞后于 leader 的提交。
 func (s *vhostSession) declareManagedQueue(name string, req plugin.QueueDeclare, args queueArgs) (plugin.QueueInfo, error) {
+	owner := s.vh.broker.queueOwner()
+	if args.queueType == queueTypeQuorum {
+		// 仲裁队列没有"声明者即 Owner"这回事：服务节点是它 Raft 组**当前**的 leader。
+		owner = ""
+	}
 	rec := meta.Queue{
 		VHost: s.vh.name, Name: name, Durable: req.Durable, AutoDelete: req.AutoDelete,
 		Exclusive: req.Exclusive, Arguments: req.Arguments,
-		Owner: s.vh.broker.queueOwner(), CreatedAt: time.Now().UTC(),
+		Owner: owner, CreatedAt: time.Now().UTC(),
 	}
 	if err := s.vh.broker.submitMeta(meta.OpPutQueue, rec); err != nil {
 		return plugin.QueueInfo{}, err
@@ -525,19 +586,19 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 	if err := s.perm.allowConfigure(name); err != nil {
 		return plugin.QueueInfo{}, err
 	}
-	q, ok := s.vh.getQueue(name)
+	q, ok := s.lookupQueue(name)
 	if !ok {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", name, s.vh.name)
-	}
-	if q.remote {
-		return plugin.QueueInfo{}, remoteQueueErr(s.vh.name, name)
 	}
 	if q.exclusive && q.owner != s.id {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
 			"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '%s' in vhost '%s'", name, s.vh.name)
 	}
-	ready, consumers := q.stats()
+	// 统计信息要来自数据所在的节点：远端队列在本节点没有消息，报 0 会让 if-unused / if-empty
+	// 判断形同虚设，也会让删除响应里的计数失真。
+	info := s.queueInfo(q)
+	ready, consumers := info.MessageCount, info.ConsumerCount
 	if ifUnused && consumers > 0 {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
 			"PRECONDITION_FAILED - queue '%s' in vhost '%s' in use", name, s.vh.name)
@@ -581,16 +642,13 @@ func (s *vhostSession) BindQueue(queueName, exchangeName, routingKey string, arg
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", exchangeName, s.vh.name)
 	}
-	q, ok := s.vh.getQueue(queueName)
+	q, ok := s.lookupQueue(queueName)
 	if !ok {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", queueName, s.vh.name)
 	}
-	// 指向远端队列的绑定本期直接拒绝：消息数据不在本节点、又没有跨节点转发，
-	// 建出来的绑定只会把消息投进黑洞 —— 不如明确报错。
-	if q.remote {
-		return remoteQueueErr(s.vh.name, queueName)
-	}
+	// 绑定是拓扑，与消息数据在哪无关：指向远端队列的绑定同样成立，
+	// 发布时由本节点把消息转发给 Owner（见 forward.go）。
 	// durable 交换机 + durable 非 exclusive 队列 → 绑定属于集群级元数据。
 	if ex.durable && q.clusterManaged() {
 		rec := meta.Binding{
@@ -620,7 +678,7 @@ func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, a
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no exchange '%s' in vhost '%s'", exchangeName, s.vh.name)
 	}
-	if q, ok := s.vh.getQueue(queueName); ok && ex.durable && q.clusterManaged() {
+	if q, ok := s.lookupQueue(queueName); ok && ex.durable && q.clusterManaged() {
 		if !ex.hasQueueBinding(routingKey, queueName) {
 			return plugin.Errorf(plugin.KindNotFound,
 				"NOT_FOUND - no binding '%s' between exchange '%s' and queue '%s'",
@@ -652,13 +710,13 @@ func (s *vhostSession) PurgeQueue(name string) (uint32, error) {
 	if err := s.perm.allowConfigure(name); err != nil {
 		return 0, err
 	}
-	q, ok := s.vh.getQueue(name)
+	q, ok := s.lookupQueue(name)
 	if !ok {
 		return 0, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", name, s.vh.name)
 	}
-	if q.remote {
-		return 0, remoteQueueErr(s.vh.name, name)
+	if s.vh.queueRemote(q) {
+		return s.vh.broker.forwardPurge(s.vh.name, name, s.vh.queueOwner(q))
 	}
 	return q.purge(), nil
 }
@@ -704,52 +762,74 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		if !ok {
 			return res, nil
 		}
-		if q.remote {
-			return res, remoteQueueErr(s.vh.name, routingKey)
+		if s.vh.queueRemote(q) {
+			routed, rejected, err := s.vh.broker.forwardPublish(s.vh.name, routingKey, s.vh.queueOwner(q), msg)
+			if err != nil {
+				return res, err
+			}
+			res.Routed, res.Rejected = routed, rejected
+			// 落盘/复制的等待在服务节点完成，转发应答即代表"已按其档位持久化"。
+			return res, nil
 		}
-		accepted, commit := q.publish(cloneForQueue(msg))
+		accepted, wait, err := q.publish(cloneForQueue(msg))
+		if err != nil {
+			return res, err
+		}
 		res.Routed = true
 		res.Rejected = !accepted
-		res.Durable = waitForDurable([]*store.Commit{commit})
+		res.Durable = waitForDurable([]func() error{wait})
 		return res, nil
 	}
 
 	targets := s.vh.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{})
 	s.log.Debug("发布消息", "exchange", exchangeName, "routing_key", routingKey, "targets", len(targets))
 
-	var commits []*store.Commit
+	var waits []func() error
 	for _, name := range targets {
 		q, ok := s.vh.getQueue(name)
 		if !ok {
 			continue
 		}
-		// 命中远端队列：消息数据不在本节点，本期没有跨节点转发 —— 明确失败而不是静默丢消息。
-		if q.remote {
-			return res, remoteQueueErr(s.vh.name, name)
+		// 命中远端队列：把消息转发给服务节点（数据面在那边，本节点只做代理）。
+		if s.vh.queueRemote(q) {
+			routed, rejected, err := s.vh.broker.forwardPublish(s.vh.name, name, s.vh.queueOwner(q), msg)
+			if err != nil {
+				return res, err
+			}
+			if routed {
+				res.Routed = true
+			}
+			if rejected {
+				res.Rejected = true
+			}
+			continue
 		}
 		res.Routed = true
-		accepted, commit := q.publish(cloneForQueue(msg))
+		accepted, wait, err := q.publish(cloneForQueue(msg))
+		if err != nil {
+			return res, err
+		}
 		if !accepted {
 			res.Rejected = true
 		}
-		if commit != nil {
-			commits = append(commits, commit)
+		if wait != nil {
+			waits = append(waits, wait)
 		}
 	}
-	// 扇出到 N 个队列时必须等**全部**队列落盘：只等一个会让确认语义形同虚设
-	res.Durable = waitForDurable(commits)
+	// 扇出到 N 个队列时必须等**全部**队列持久化：只等一个会让确认语义形同虚设
+	res.Durable = waitForDurable(waits)
 	return res, nil
 }
 
-// waitForDurable 把多个队列的落盘凭据合成一个等待函数；没有任何持久化时为 nil。
+// waitForDurable 把多个队列的"可确认"凭据合成一个等待函数；都没有时返回 nil。
 //
-// 必须过滤 nil 凭据：非持久消息不会产生 Commit，若把它当成"有持久化"，
-// 协议层就会等一个不存在的落盘，甚至误判为需要等待。
-func waitForDurable(commits []*store.Commit) func() error {
-	var real []*store.Commit
-	for _, c := range commits {
-		if c != nil {
-			real = append(real, c)
+// 凭据只对"确实需要等待"的路径非 nil：经典队列的持久消息是落盘凭据，
+// 仲裁队列是"复制到多数派"凭据；非持久消息两者都没有。
+func waitForDurable(waits []func() error) func() error {
+	var real []func() error
+	for _, w := range waits {
+		if w != nil {
+			real = append(real, w)
 		}
 	}
 	if len(real) == 0 {
@@ -757,8 +837,8 @@ func waitForDurable(commits []*store.Commit) func() error {
 	}
 	return func() error {
 		var firstErr error
-		for _, c := range real {
-			if err := c.Wait(); err != nil && firstErr == nil {
+		for _, w := range real {
+			if err := w(); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -862,10 +942,51 @@ func (v *vhost) queueSnapshots() []QueueSnapshot {
 
 	out := make([]QueueSnapshot, 0, len(queues))
 	for _, q := range queues {
-		out = append(out, q.snapshot(v.name))
+		out = append(out, v.queueSnapshot(q))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// queueSnapshot 返回单个队列的只读快照；非本地服务的队列向服务节点取计数。
+//
+// 为什么不能直接报 0：运维看到 `messages: 0` 会认为队列是空的，据此做扩容或排查都会得出错误结论。
+// 取不到时保留 0 但带上 Remote/Owner 标记，让"这是别人的数据"这件事在数据里可见。
+func (v *vhost) queueSnapshot(q *queue) QueueSnapshot {
+	s := q.snapshot(v.name)
+	if q.quorum != nil {
+		// 仲裁队列的"服务节点"是它 Raft 组的 leader：leader 变更时运维必须能看出来。
+		// 展示路径不等待（见 queueOwnerBestEffort）。
+		s.Owner = v.queueOwnerBestEffort(q)
+		s.Remote = v.queueRemote(q)
+		if s.Remote {
+			v.fillRemoteStats(&s, q)
+		}
+		return s
+	}
+	if !q.remote {
+		return s
+	}
+	s.Remote = true
+	s.Owner = q.nodeOwner
+	v.fillRemoteStats(&s, q)
+	return s
+}
+
+// fillRemoteStats 用服务节点的真实计数覆盖本地（恒为 0）的计数。
+func (v *vhost) fillRemoteStats(s *QueueSnapshot, q *queue) {
+	owner := v.queueOwnerBestEffort(q)
+	if owner == "" {
+		// 仲裁队列正在选主：没有可问的对象，计数暂时不可得（Remote 标记已说明问题）。
+		return
+	}
+	if st, err := v.broker.remoteQueueStats(v.name, q.name, owner); err == nil {
+		s.Ready = int(st.Ready)
+		s.Unacked = int(st.Unacked)
+		s.ConsumerCount = int(st.Consumers)
+	} else {
+		v.log.Debug("取远端队列统计失败", "queue", q.name, "owner", owner, "err", err)
+	}
 }
 
 // exchangeSnapshots 返回本 vhost 全部交换机的快照（按名字排序）。
@@ -1014,7 +1135,20 @@ func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey stri
 		if !ok {
 			return false, false
 		}
-		accepted, _ := q.publish(cloneForQueue(msg))
+		if v.queueRemote(q) {
+			// 死信的目标队列在别的节点：同样要转发过去，否则死信就静默消失了。
+			routed, rejected, err := v.broker.forwardPublish(v.name, routingKey, v.queueOwner(q), msg)
+			if err != nil {
+				v.log.Warn("死信转发失败", "queue", routingKey, "owner", v.queueOwner(q), "err", err)
+				return false, true
+			}
+			return routed, rejected
+		}
+		accepted, _, err := q.publish(cloneForQueue(msg))
+		if err != nil {
+			v.log.Warn("死信入队失败", "queue", routingKey, "err", err)
+			return false, true
+		}
 		return true, !accepted
 	}
 
@@ -1027,9 +1161,31 @@ func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey stri
 		if !ok {
 			continue
 		}
+		if v.queueRemote(q) {
+			remoteRouted, remoteRejected, err := v.broker.forwardPublish(v.name, name, v.queueOwner(q), msg)
+			if err != nil {
+				// 死信没有生产者在前台等确认：转发失败只记账并告警，不阻塞其余目标。
+				v.log.Warn("死信转发失败", "queue", name, "owner", v.queueOwner(q), "err", err)
+				rejected = true
+				continue
+			}
+			if remoteRouted {
+				routed = true
+			}
+			if remoteRejected {
+				rejected = true
+			}
+			continue
+		}
 		routed = true
-		// 死信是异步派发，没有生产者在前台等待；落盘凭据无人等待也无妨（刷盘照常发生）
-		if accepted, _ := q.publish(cloneForQueue(msg)); !accepted {
+		// 死信是异步派发，没有生产者在前台等待：持久化凭据无人等待也无妨（落盘/复制照常发生）
+		accepted, _, err := q.publish(cloneForQueue(msg))
+		if err != nil {
+			v.log.Warn("死信入队失败", "queue", name, "err", err)
+			rejected = true
+			continue
+		}
+		if !accepted {
 			rejected = true
 		}
 	}
@@ -1063,13 +1219,10 @@ func (s *vhostSession) Consume(sub plugin.Subscription) (string, error) {
 	if err := s.perm.allowRead(sub.Queue); err != nil {
 		return "", err
 	}
-	q, ok := s.vh.getQueue(sub.Queue)
+	q, ok := s.lookupQueue(sub.Queue)
 	if !ok {
 		return "", plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", sub.Queue, s.vh.name)
-	}
-	if q.remote {
-		return "", remoteQueueErr(s.vh.name, sub.Queue)
 	}
 	if q.exclusive && q.owner != s.id {
 		return "", plugin.Errorf(plugin.KindResourceLocked,
@@ -1089,7 +1242,13 @@ func (s *vhostSession) Consume(sub plugin.Subscription) (string, error) {
 	s.vh.consumers[sub.Tag] = q
 	s.vh.mu.Unlock()
 
-	if err := q.subscribe(sub); err != nil {
+	if s.vh.queueRemote(q) {
+		// 远端队列的消费者：在服务节点注册一个代理消费者，投递由它推回来。
+		if err := s.vh.broker.remoteConsume(s, q, sub); err != nil {
+			s.forgetConsumer(sub.Tag)
+			return "", err
+		}
+	} else if err := q.subscribe(sub); err != nil {
 		s.forgetConsumer(sub.Tag)
 		return "", err
 	}
@@ -1114,6 +1273,13 @@ func (s *vhostSession) Cancel(consumerTag string) error {
 		return err
 	}
 	s.forgetConsumer(consumerTag)
+	if s.vh.queueRemote(q) {
+		// 远端队列：交给服务节点取消（是否触发自动删除也由它判断，它才是数据的持有者）。
+		if err := s.vh.broker.remoteCancel(s.vh.name, q.name, s.vh.queueOwner(q), consumerTag); err != nil {
+			s.log.Warn("取消远端消费者失败（服务节点会在租约过期后自行摘除）", "queue", q.name, "err", err)
+		}
+		return nil
+	}
 	if q.cancel(consumerTag) {
 		s.deleteQueueIfAuto(q.name)
 	}
@@ -1127,13 +1293,13 @@ func (s *vhostSession) Get(queueName string, noAck bool) (*plugin.Delivery, bool
 	if err := s.perm.allowRead(queueName); err != nil {
 		return nil, false, err
 	}
-	q, ok := s.vh.getQueue(queueName)
+	q, ok := s.lookupQueue(queueName)
 	if !ok {
 		return nil, false, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no queue '%s' in vhost '%s'", queueName, s.vh.name)
 	}
-	if q.remote {
-		return nil, false, remoteQueueErr(s.vh.name, queueName)
+	if s.vh.queueRemote(q) {
+		return s.vh.broker.forwardGet(s.vh.name, queueName, s.vh.queueOwner(q), noAck)
 	}
 	if q.exclusive && q.owner != s.id {
 		return nil, false, plugin.Errorf(plugin.KindResourceLocked,
@@ -1174,6 +1340,13 @@ func (s *vhostSession) Close() {
 			continue
 		}
 		s.forgetConsumer(tag)
+		if s.vh.queueRemote(q) {
+			// 远端队列：通知服务节点摘掉代理消费者（它未确认的消息由服务节点放回队头）。
+			if err := s.vh.broker.remoteCancel(s.vh.name, q.name, s.vh.queueOwner(q), tag); err != nil {
+				s.log.Warn("取消远端消费者失败（服务节点会在租约过期后自行摘除）", "queue", q.name, "err", err)
+			}
+			continue
+		}
 		if q.cancel(tag) {
 			s.deleteQueueIfAuto(q.name)
 		}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/internal/meta"
+	"github.com/houzch/swiftmq/internal/raft"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
 
@@ -40,6 +41,10 @@ const (
 // openMeta 打开元数据层并按模式落盘：单机用 ModeLocal（本地 state.json），
 // 集群用 ModeRaft（Raft 复制 + follower 转发 leader）。
 //
+// 集群端口由**本层**创建并注入给元数据层：这个端口不止服务共识，
+// 还要承载跨节点消息转发（见 forward.go）。先注册转发处理器、再让 Raft 起来，
+// 可以避免"邻居已能连上、方法却还没注册"的启动窗口。
+//
 // 打开过程会回调 Applier.RestoreMeta 把已有状态交给内核，因此必须在 vhost 建好之后调用。
 func (b *Broker) openMeta() error {
 	mode := meta.ModeLocal
@@ -54,15 +59,48 @@ func (b *Broker) openMeta() error {
 		Logger:  b.log,
 	}
 	if b.clusterOn {
+		transport, err := raft.NewTCPTransport(b.cfg.Cluster.Listen, b.nodeID, b.cfg.Cluster.Peers, b.log)
+		if err != nil {
+			return err
+		}
+		if err := b.serveForwardMethods(transport); err != nil {
+			_ = transport.Close()
+			return err
+		}
+		b.cluster = transport
 		opt.Listen = b.cfg.Cluster.Listen
 		opt.Peers = b.cfg.Cluster.Peers
+		opt.Transport = transport
+		// 地址簿（opt.Peers）与初始投票成员可能不同：以 learner 身份加入的节点，
+		// 地址簿里必须有自己（否则连不上邻居），但它此时还不是投票成员。
+		if b.cfg.Cluster.Join {
+			opt.Voters = votersWithout(b.cfg.Cluster.Peers, b.nodeID)
+			opt.Learners = []string{b.nodeID}
+		}
 	}
 	st, err := meta.Open(context.Background(), opt)
 	if err != nil {
+		// 元数据层不会关闭注入的传输（借用而非拥有），失败路径要在这里回收监听。
+		if b.cluster != nil {
+			_ = b.cluster.Close()
+			b.cluster = nil
+		}
 		return err
 	}
 	b.meta = st
 	return nil
+}
+
+// votersWithout 返回地址簿里除 exclude 之外的节点 ID（加入模式的初始投票成员）。
+func votersWithout(peers map[string]string, exclude string) []string {
+	out := make([]string, 0, len(peers))
+	for id := range peers {
+		if id != exclude {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ClusterStatus 返回集群/元数据层状态（管理面与 CLI 展示用）。
@@ -168,14 +206,102 @@ func (b *Broker) awaitMeta(present func() bool) error {
 	}
 }
 
-// remoteQueueErr 是"队列数据不在本节点"的统一错误。
+// ---------------------------------------------------------------------------
+// 成员变更（M6d）
+// ---------------------------------------------------------------------------
+
+// memberOpTimeout 是成员变更（含新成员追平）的上限。
 //
-// 本期只有队列 Owner 节点持有消息数据，跨节点转发尚未实现 —— 与其静默丢消息，
-// 不如明确报 NOT_IMPLEMENTED（→ 540，关连接），让调用方知道该连到 Owner 节点。
-func remoteQueueErr(vhost, queue string) error {
-	return plugin.Errorf(plugin.KindNotImplemented,
-		"NOT_IMPLEMENTED - queue '%s' in vhost '%s' 的消息数据不在本节点（集群跨节点转发尚未实现，请连接队列 Owner 节点）",
-		queue, vhost)
+// 比普通写入宽松：新节点要从零拉日志/快照，日志多时耗时不可忽略。
+const memberOpTimeout = 90 * time.Second
+
+// ClusterMembers 返回集群成员划分（单机模式为空）。
+func (b *Broker) ClusterMembers() raft.Membership {
+	if b.meta == nil {
+		return raft.Membership{}
+	}
+	return b.meta.Membership()
+}
+
+// awaitMembership 等本地成员表反映某次已提交的成员变更（尽力而为）。
+//
+// 为什么需要它：成员变更可能在**别的节点**（leader）上完成，本节点要等下一轮复制
+// 才看到结果。不等待的话，"加入成功"的应答里会带着一份**旧**成员表，运维会以为没生效。
+// 超时只告警不报错：变更本身已经提交，本地视图落后不应让调用方以为操作失败。
+func (b *Broker) awaitMembership(op string, cond func(raft.Membership) bool) {
+	deadline := time.Now().Add(metaApplyTimeout)
+	for {
+		if cond(b.ClusterMembers()) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			b.log.Warn("成员变更已提交，但本地成员表未在超时内更新", "op", op, "timeout", metaApplyTimeout)
+			return
+		}
+		time.Sleep(metaApplyPollInterval)
+	}
+}
+
+func membershipHas(m raft.Membership, id string) bool {
+	return hasVoter(m, id) || hasLearner(m, id)
+}
+
+// hasVoter 判断 id 是否为投票成员。
+//
+// 加入操作要等的是**提升完成**（而不是"已作为 learner 出现"）：否则应答里会带着
+// 一份"还是 learner"的中间态，运维会以为加入只成功了一半。
+func hasVoter(m raft.Membership, id string) bool {
+	for _, v := range m.Voters {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLearner(m raft.Membership, id string) bool {
+	for _, l := range m.Learners {
+		if l == id {
+			return true
+		}
+	}
+	return false
+}
+
+// AddClusterMember 把一个节点加入集群：先作为 learner 加入、追平后提升为投票成员。
+//
+// 非 leader 节点会自动把请求转发给 leader，因此运维在任意节点上执行都可。
+func (b *Broker) AddClusterMember(ctx context.Context, id, addr string) error {
+	if !b.clusterOn || b.meta == nil {
+		return plugin.Errorf(plugin.KindNotImplemented, "NOT_IMPLEMENTED - 单机模式没有集群成员可变更")
+	}
+	if id == "" {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 成员 ID 不能为空")
+	}
+	ctx, cancel := context.WithTimeout(ctx, memberOpTimeout)
+	defer cancel()
+	if err := b.meta.AddMember(ctx, id, addr); err != nil {
+		return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - 加入集群成员 %s 失败: %v", id, err)
+	}
+	b.awaitMembership("add_member", func(m raft.Membership) bool { return hasVoter(m, id) })
+	return nil
+}
+
+// RemoveClusterMember 把一个节点从集群移除。
+func (b *Broker) RemoveClusterMember(ctx context.Context, id string) error {
+	if !b.clusterOn || b.meta == nil {
+		return plugin.Errorf(plugin.KindNotImplemented, "NOT_IMPLEMENTED - 单机模式没有集群成员可变更")
+	}
+	if id == "" {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 成员 ID 不能为空")
+	}
+	ctx, cancel := context.WithTimeout(ctx, memberOpTimeout)
+	defer cancel()
+	if err := b.meta.RemoveMember(ctx, id); err != nil {
+		return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - 移除集群成员 %s 失败: %v", id, err)
+	}
+	b.awaitMembership("remove_member", func(m raft.Membership) bool { return !membershipHas(m, id) })
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -299,8 +425,11 @@ func (b *Broker) RestoreMeta(state meta.State) error {
 
 // applyQueuePut 在 vhost 上重建一个由元数据描述的队列（幂等）。
 //
-// Owner 是本节点时打开消息存储并恢复消息；Owner 是别的节点时只建一个"占位队列"：
-// 拓扑上可见（供管理面与绑定解析），但消息操作一律返回 NOT_IMPLEMENTED。
+// 三种形态：
+//   - 仲裁队列：每个节点都为它启动一份 Raft 组，消息由日志复制（没有独立 store）；
+//   - 经典队列且 Owner 是本节点：打开消息存储并恢复消息；
+//   - 经典队列且 Owner 是别的节点：只建"占位队列"（拓扑可见、绑定可解析），
+//     数据操作经 M6b 的转发层交给 Owner。
 func (b *Broker) applyQueuePut(v *vhost, rec meta.Queue) error {
 	if _, ok := v.getQueue(rec.Name); ok {
 		return nil
@@ -310,8 +439,21 @@ func (b *Broker) applyQueuePut(v *vhost, rec meta.Queue) error {
 		return fmt.Errorf("元数据中的队列 %s/%s 参数非法: %w", rec.VHost, rec.Name, err)
 	}
 	q := newQueue(rec.Name, rec.Durable, rec.Exclusive, rec.AutoDelete, "", rec.Arguments, args, v.log)
-	q.remote = rec.Owner != "" && rec.Owner != b.nodeID
+	q.nodeOwner = rec.Owner
+	// 仲裁队列没有固定 Owner（服务节点是 Raft leader，会变），因此不能按 Owner 判远端。
+	q.remote = args.queueType != queueTypeQuorum && rec.Owner != "" && rec.Owner != b.nodeID
 	v.wireDeadLetter(q, args)
+
+	if args.queueType == queueTypeQuorum {
+		if err := b.startQuorumGroup(v, q); err != nil {
+			return fmt.Errorf("启动仲裁队列 %s/%s 的 Raft 组失败: %w", rec.VHost, rec.Name, err)
+		}
+		if !v.addQueueObject(q, args) {
+			q.quorum.stop()
+			return nil
+		}
+		return nil
+	}
 
 	if !q.remote && v.stores != nil {
 		st, recovered, err := v.stores.Open(v.name, rec.Name, rec.Durable)
@@ -326,7 +468,8 @@ func (b *Broker) applyQueuePut(v *vhost, rec meta.Queue) error {
 		q.discardStore()
 		return nil
 	}
-	v.log.Debug("队列已按元数据建立", "queue", rec.Name, "owner", rec.Owner, "remote", q.remote)
+	v.log.Debug("队列已按元数据建立", "queue", rec.Name, "type", args.queueType,
+		"owner", rec.Owner, "remote", q.remote)
 	return nil
 }
 

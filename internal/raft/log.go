@@ -221,16 +221,26 @@ func syncDirBestEffort(dir string) {
 //
 // 该文件是**只追加**的：每次任期/投票变化追加一条，加载时取最后一条有效记录。
 // 好处是无需 rename 就能做到崩溃安全，且变更频率低（每个任期至多几次），文件不会膨胀。
+//
+// Members 也放在这里：成员表同样"取最后一条有效记录"即可，而它与任期/投票一样
+// 属于"必须在重启后原样恢复"的状态（重启后若退回配置文件的初始成员表，
+// 一次运行期变更就白做了）。
 type persistedState struct {
-	Term     uint64 `json:"term"`
-	VotedFor string `json:"voted_for"`
+	Term     uint64   `json:"term"`
+	VotedFor string   `json:"voted_for"`
+	Members  []Member `json:"members,omitempty"`
 }
 
 // persistedSnapshot 是 snapshot.json 的内容。
+//
+// Members 随快照一起走：快照压缩会丢掉日志前缀，因此日志里的配置变更条目可能
+// 不再存在 —— 落后节点安装快照时必须同时拿到成员表，否则它会用配置文件的
+// 初始成员表参与共识，算出错误的多数派。
 type persistedSnapshot struct {
-	LastIncludedIndex uint64 `json:"last_included_index"`
-	LastIncludedTerm  uint64 `json:"last_included_term"`
-	Data              []byte `json:"data"`
+	LastIncludedIndex uint64   `json:"last_included_index"`
+	LastIncludedTerm  uint64   `json:"last_included_term"`
+	Data              []byte   `json:"data"`
+	Members           []Member `json:"members,omitempty"`
 }
 
 // raftStorage 是 Raft 的持久化层，聚合任期/投票、日志条目与状态机快照。
@@ -278,12 +288,12 @@ func (s *raftStorage) loadState() (persistedState, error) {
 	return out, nil
 }
 
-// saveState 追加并 fsync 任期/投票。
+// saveState 追加并 fsync 任期/投票/成员表。
 //
 // 必须是"先 fsync 再对外应答"：否则崩溃后本节点可能在同一任期投出第二票，
 // 破坏"同任期只投一次"这一选举安全性的根基。
-func (s *raftStorage) saveState(term uint64, votedFor string) error {
-	b, err := json.Marshal(persistedState{Term: term, VotedFor: votedFor})
+func (s *raftStorage) saveState(term uint64, votedFor string, members []Member) error {
+	b, err := json.Marshal(persistedState{Term: term, VotedFor: votedFor, Members: members})
 	if err != nil {
 		return err
 	}

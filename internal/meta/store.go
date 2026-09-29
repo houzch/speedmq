@@ -19,6 +19,19 @@ import (
 // 元数据转发只是它的第二个使用者。名字刻意不带 raft. 前缀 —— 那是共识内部方法的保留前缀。
 const methodMetaPropose = "meta.propose"
 
+// 成员变更的转发方法名：与 meta.propose 同源，但走的是"leader 上的成员变更流程"
+// （含 learner 追平等待），不是一个普通的状态机命令。
+const (
+	methodMetaMemberAdd    = "meta.member_add"
+	methodMetaMemberRemove = "meta.member_remove"
+)
+
+// memberRequest 是成员变更转发请求体。
+type memberRequest struct {
+	ID   string `json:"id"`
+	Addr string `json:"addr,omitempty"`
+}
+
 // 等待 leader 的两档参数：选举窗口内 Leader() 本就短暂为空，
 // 短轮询能把这几百毫秒里的写请求接住，而不是立刻把 ErrNotLeader 甩给上层让它重试。
 const (
@@ -107,17 +120,24 @@ func openCluster(opt Options) (*clusterStore, error) {
 	}
 
 	f := newFSM(opt.Applier, opt.Logger)
-	peers := sortedPeerIDs(opt.Peers)
+	voters := append([]string(nil), opt.Voters...)
+	if len(voters) == 0 {
+		voters = sortedPeerIDs(opt.Peers)
+	} else {
+		sort.Strings(voters)
+	}
 	c := &clusterStore{opt: opt, fsm: f, transport: transport, logger: opt.Logger, ownTransport: ownTransport}
 	node, err := raft.New(raft.Options{
-		ID:                opt.NodeID,
-		Peers:             peers,
-		Dir:               opt.Dir,
-		Transport:         transport,
-		FSM:               f,
-		ElectionTimeout:   opt.ElectionTimeout,
-		HeartbeatInterval: opt.HeartbeatInterval,
-		Logger:            opt.Logger,
+		ID:                 opt.NodeID,
+		Peers:              voters,
+		Learners:           append([]string(nil), opt.Learners...),
+		Dir:                opt.Dir,
+		Transport:          transport,
+		FSM:                f,
+		ElectionTimeout:    opt.ElectionTimeout,
+		HeartbeatInterval:  opt.HeartbeatInterval,
+		Logger:             opt.Logger,
+		OnMembershipChange: opt.OnMembershipChange,
 	})
 	if err != nil {
 		c.abort()
@@ -128,6 +148,14 @@ func openCluster(opt Options) (*clusterStore, error) {
 	if err := transport.Serve(methodMetaPropose, c.servePropose); err != nil {
 		c.abort()
 		return nil, fmt.Errorf("注册元数据转发处理器 %s 失败: %w", methodMetaPropose, err)
+	}
+	if err := transport.Serve(methodMetaMemberAdd, c.serveMemberAdd); err != nil {
+		c.abort()
+		return nil, fmt.Errorf("注册成员变更处理器 %s 失败: %w", methodMetaMemberAdd, err)
+	}
+	if err := transport.Serve(methodMetaMemberRemove, c.serveMemberRemove); err != nil {
+		c.abort()
+		return nil, fmt.Errorf("注册成员变更处理器 %s 失败: %w", methodMetaMemberRemove, err)
 	}
 
 	// 先把完整状态交给内核，再 Start：Start 之后的重放会逐条 ApplyMeta，
@@ -143,7 +171,8 @@ func openCluster(opt Options) (*clusterStore, error) {
 
 	q, e, b, u := counts(f.state())
 	opt.Logger.Info("元数据层已打开", "mode", ModeRaft.String(), "node_id", opt.NodeID, "dir", opt.Dir,
-		"peers", len(peers), "queues", q, "exchanges", e, "bindings", b, "users", u)
+		"voters", len(voters), "learners", len(opt.Learners),
+		"queues", q, "exchanges", e, "bindings", b, "users", u)
 	return c, nil
 }
 
@@ -277,6 +306,9 @@ func (c *clusterStore) convertProposeErr(op Op, err error) error {
 // state 返回本节点当前的状态机快照。
 func (c *clusterStore) state() State { return c.fsm.state() }
 
+// membership 返回元数据组的成员划分。
+func (c *clusterStore) membership() raft.Membership { return c.node.Membership() }
+
 // status 返回集群侧共识进度 + 状态机规模。
 func (c *clusterStore) status() Status {
 	rs := c.node.Status()
@@ -290,6 +322,7 @@ func (c *clusterStore) status() Status {
 		CommitIndex:    rs.CommitIndex,
 		LastApplied:    rs.LastApplied,
 		Peers:          rs.Peers,
+		Learners:       rs.Learners,
 		HasQuorum:      c.node.HasQuorum(),
 		AppliedRecords: c.fsm.appliedRecords(),
 		Queues:         q,
@@ -303,6 +336,141 @@ func (c *clusterStore) status() Status {
 func (c *clusterStore) close() error {
 	c.closeOnce.Do(func() { c.closeErr = c.shutdown() })
 	return c.closeErr
+}
+
+// ---------------------------------------------------------------------------
+// 成员变更（M6d）
+// ---------------------------------------------------------------------------
+
+// catchUpTimeout 是"等新成员追平"的上限。
+//
+// 比普通写入宽松得多：新节点要从零拉日志/快照，日志多时耗时不可忽略；
+// 调用方（管理 API）通常把 HTTP 超时设得更长。
+const catchUpTimeout = 60 * time.Second
+
+// addMember 把节点加入集群：learner → 等追平 → 提升为 voter。
+func (c *clusterStore) addMember(ctx context.Context, id, addr string) error {
+	if id == "" {
+		return errors.New("meta: 成员 ID 不能为空")
+	}
+	if c.node.IsLeader() {
+		return c.addMemberLocal(ctx, id, addr)
+	}
+	return c.forwardMember(ctx, methodMetaMemberAdd, memberRequest{ID: id, Addr: addr})
+}
+
+// removeMember 把节点从集群移除。
+func (c *clusterStore) removeMember(ctx context.Context, id string) error {
+	if id == "" {
+		return errors.New("meta: 成员 ID 不能为空")
+	}
+	if c.node.IsLeader() {
+		return c.removeMemberLocal(ctx, id)
+	}
+	return c.forwardMember(ctx, methodMetaMemberRemove, memberRequest{ID: id})
+}
+
+// addMemberLocal 在 leader 上执行完整的加入流程（幂等：重复调用不会报错）。
+func (c *clusterStore) addMemberLocal(ctx context.Context, id, addr string) error {
+	err := c.node.ChangeMembership(ctx, raft.ConfChange{Op: raft.ConfAddLearner, ID: id, Addr: addr})
+	if err != nil && !errors.Is(err, raft.ErrMemberExists) {
+		return fmt.Errorf("把 %s 作为 learner 加入失败: %w", id, err)
+	}
+
+	// 等它把日志/快照拉过去再提升：否则短暂的"投票成员但日志落后"会降低集群可用性。
+	catchUpCtx, cancel := context.WithTimeout(ctx, catchUpTimeout)
+	defer cancel()
+	if err := c.node.AwaitCatchUp(catchUpCtx, id); err != nil {
+		return fmt.Errorf("等待新成员 %s 追平失败: %w", id, err)
+	}
+
+	err = c.node.ChangeMembership(ctx, raft.ConfChange{Op: raft.ConfPromote, ID: id})
+	if err != nil && !errors.Is(err, raft.ErrNotLearner) {
+		// ErrNotLearner = 它已经是投票成员（重复调用的幂等路径）。
+		return fmt.Errorf("把 %s 提升为投票成员失败: %w", id, err)
+	}
+	c.logger.Info("集群成员已加入", "id", id, "addr", addr)
+	return nil
+}
+
+// removeMemberLocal 在 leader 上移除成员（幂等：目标已不是成员时视为成功）。
+func (c *clusterStore) removeMemberLocal(ctx context.Context, id string) error {
+	err := c.node.ChangeMembership(ctx, raft.ConfChange{Op: raft.ConfRemove, ID: id})
+	if err != nil {
+		if errors.Is(err, raft.ErrUnknownMember) {
+			return nil
+		}
+		return fmt.Errorf("移除成员 %s 失败: %w", id, err)
+	}
+	c.logger.Info("集群成员已移除", "id", id)
+	return nil
+}
+
+// forwardMember 把成员变更请求转给当前 leader。
+func (c *clusterStore) forwardMember(ctx context.Context, method string, req memberRequest) error {
+	leader, err := c.waitLeader(ctx)
+	if err != nil {
+		return err
+	}
+	if leader == "" {
+		return fmt.Errorf("%w: %s 内未获知 leader（%s）", ErrNotLeader, leaderWaitTimeout, method)
+	}
+	if leader == c.opt.NodeID {
+		// 已知 leader 是自己但 IsLeader() 尚未翻转：直接本地执行。
+		if method == methodMetaMemberAdd {
+			return c.addMemberLocal(ctx, req.ID, req.Addr)
+		}
+		return c.removeMemberLocal(ctx, req.ID)
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("编码 %s 请求失败: %w", method, err)
+	}
+	resp, err := c.transport.Call(ctx, leader, method, payload)
+	if err != nil {
+		return fmt.Errorf("%w: 向 leader %s 转发 %s 失败: %v", ErrNotLeader, leader, method, err)
+	}
+	var r proposeResponse
+	if err := json.Unmarshal(resp, &r); err != nil {
+		return fmt.Errorf("%w: leader %s 对 %s 的应答无法解析: %v", ErrNotLeader, leader, method, err)
+	}
+	if r.Err != "" {
+		return fmt.Errorf("%w: leader %s 拒绝 %s: %s", ErrNotLeader, leader, method, r.Err)
+	}
+	if !r.OK {
+		return fmt.Errorf("%w: leader %s 对 %s 未返回成功标记", ErrNotLeader, leader, method)
+	}
+	return nil
+}
+
+// serveMemberAdd 是 meta.member_add 的处理器（在 leader 侧执行）。
+func (c *clusterStore) serveMemberAdd(ctx context.Context, from string, payload []byte) ([]byte, error) {
+	var req memberRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("解析 %s 请求失败 (from=%s): %w", methodMetaMemberAdd, from, err)
+	}
+	if !c.node.IsLeader() {
+		return encodeProposeResponse(false, "本节点已不是 leader")
+	}
+	if err := c.addMemberLocal(ctx, req.ID, req.Addr); err != nil {
+		return encodeProposeResponse(false, err.Error())
+	}
+	return encodeProposeResponse(true, "")
+}
+
+// serveMemberRemove 是 meta.member_remove 的处理器（在 leader 侧执行）。
+func (c *clusterStore) serveMemberRemove(ctx context.Context, from string, payload []byte) ([]byte, error) {
+	var req memberRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("解析 %s 请求失败 (from=%s): %w", methodMetaMemberRemove, from, err)
+	}
+	if !c.node.IsLeader() {
+		return encodeProposeResponse(false, "本节点已不是 leader")
+	}
+	if err := c.removeMemberLocal(ctx, req.ID); err != nil {
+		return encodeProposeResponse(false, err.Error())
+	}
+	return encodeProposeResponse(true, "")
 }
 
 // encodeProposeResponse 编码 meta.propose 的应答体。

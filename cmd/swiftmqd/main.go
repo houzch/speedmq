@@ -19,6 +19,8 @@ import (
 	"github.com/houzch/swiftmq/internal/management"
 	pluginkit "github.com/houzch/swiftmq/internal/plugin"
 	"github.com/houzch/swiftmq/internal/protocol/amqp091"
+	"github.com/houzch/swiftmq/internal/protocol/mqtt"
+	"github.com/houzch/swiftmq/internal/protocol/spec"
 	"github.com/houzch/swiftmq/internal/transport"
 	"github.com/houzch/swiftmq/web"
 )
@@ -50,6 +52,11 @@ func run() error {
 
 	startedAt := time.Now()
 	nodeName := nodeName()
+	if cfg.Cluster.Enabled && cfg.Cluster.NodeID != "" {
+		// 集群模式下以集群身份作为节点名：否则同一个节点会同时出现在
+		// `/api/cluster`（cluster.node_id）与 `/api/nodes`（本机名派生）里两个名字下，运维对不上号。
+		nodeName = cfg.Cluster.NodeID
+	}
 	log.Info("SwiftMQ 启动中",
 		"version", broker.Version,
 		"node", nodeName,
@@ -61,6 +68,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// 跨节点转发需要把整条消息搬到队列数据所在的节点：属性值的类型体系由协议决定
+	// （AMQP 是 field-table），因此编解码器由协议侧提供，在这里显式装配。
+	// 单机部署下它不会被用到；集群模式下缺少它会让转发明确报错而不是静默丢消息。
+	kernel.SetMessageCodec(spec.NewMessageCodec())
 	// 停止 TTL 扫描、死信派发、水位检查，并收尾刷盘
 	defer kernel.Close()
 
@@ -73,7 +84,9 @@ func run() error {
 	server := transport.New(log, manager.EnabledProtocols, kernel.NewSession)
 	// 监听器控制器：让"插件热启用/停用"落到真实的端口起停上（见设计 10.10）。
 	manager.SetListenerController(pluginkit.NewListenerController(ctx, server, registry, cfg))
-	if err := manager.Load(ctx, amqp091.New()); err != nil {
+	// M7 的插件化验证：MQTT 3.1.1 是内核内置的第二个协议插件。
+	// 新增协议对内核的改动**只有这里的一行**（协议自身全部落在 internal/protocol/mqtt）。
+	if err := manager.Load(ctx, amqp091.New(), mqtt.New()); err != nil {
 		return err
 	}
 

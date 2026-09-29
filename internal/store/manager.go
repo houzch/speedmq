@@ -101,6 +101,12 @@ func removeDir(dir string) error {
 	return nil
 }
 
+// SafeDirName 把 vhost / 队列名编码成安全的目录名。
+//
+// 导出它是为了让"与消息存储同规则"的其它持久化目录复用（例如仲裁队列的 Raft 日志目录）：
+// 目录名不直接采用用户输入这条约束只在存储层实现一次，别处再抄一遍迟早会漏。
+func SafeDirName(name string) string { return safeDirName(name) }
+
 // safeDirName 把 vhost / 队列名编码成安全的目录名。
 //
 // 目录名一律不直接采用用户输入（设计 5.3.2）：避免路径穿越、非法字符与超长文件名。

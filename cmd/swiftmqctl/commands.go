@@ -62,6 +62,7 @@ type clusterStatus struct {
 	HasQuorum      bool     `json:"has_quorum"`
 	Paused         bool     `json:"paused"`
 	Peers          []string `json:"peers"`
+	Learners       []string `json:"learners"`
 	CommitIndex    uint64   `json:"commit_index"`
 	LastApplied    uint64   `json:"last_applied"`
 	AppliedRecords uint64   `json:"applied_records"`
@@ -269,6 +270,21 @@ func dispatch(c *client, cmd string, args []string) error {
 			return err
 		}
 		return cmdClusterStatus(c)
+	case "add_member":
+		if err := wantArgs(args, 2, "add_member <node_id> <rpc_addr>"); err != nil {
+			return err
+		}
+		return cmdAddMember(c, args[0], args[1])
+	case "remove_member":
+		if err := wantArgs(args, 1, "remove_member <node_id>"); err != nil {
+			return err
+		}
+		return cmdRemoveMember(c, args[0])
+	case "list_members":
+		if err := wantArgs(args, 0, "list_members"); err != nil {
+			return err
+		}
+		return cmdListMembers(c)
 	case "list_queues":
 		vhost, has, err := optionalArg(args, "list_queues [vhost]")
 		if err != nil {
@@ -424,6 +440,10 @@ func cmdClusterStatus(c *client) error {
 	if len(cl.Peers) > 0 {
 		peers = strings.Join(cl.Peers, ", ")
 	}
+	learners := "（无）"
+	if len(cl.Learners) > 0 {
+		learners = strings.Join(cl.Learners, ", ")
+	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "模式\t%s\n", mode)
@@ -431,7 +451,8 @@ func cmdClusterStatus(c *client) error {
 	fmt.Fprintf(w, "角色\t%s\n", cl.Role)
 	fmt.Fprintf(w, "任期\t%d\n", cl.Term)
 	fmt.Fprintf(w, "领导者\t%s\n", leader)
-	fmt.Fprintf(w, "成员\t%s\n", peers)
+	fmt.Fprintf(w, "投票成员\t%s\n", peers)
+	fmt.Fprintf(w, "非投票成员\t%s\n", learners)
 	fmt.Fprintf(w, "拥有多数派\t%s\n", quorum)
 	fmt.Fprintf(w, "服务状态\t%s\n", paused)
 	fmt.Fprintf(w, "共识进度\t提交 %d  已应用 %d  累计 %d 条\n",
@@ -439,6 +460,81 @@ func cmdClusterStatus(c *client) error {
 	fmt.Fprintf(w, "元数据规模\t队列 %d  交换机 %d  绑定 %d  用户 %d\n",
 		cl.ObjectTotals.Queues, cl.ObjectTotals.Exchanges,
 		cl.ObjectTotals.Bindings, cl.ObjectTotals.Users)
+	return w.Flush()
+}
+
+// ---------- 2b. 集群成员变更（M6d） ----------
+
+// clusterMembers 是 GET /api/cluster/members 的响应。
+type clusterMembers struct {
+	Voters   []string `json:"voters"`
+	Learners []string `json:"learners"`
+}
+
+// memberOpMinTimeout 是成员变更命令的最小 HTTP 超时。
+//
+// 加入一个新成员要等它把日志/快照拉过去，可能远超 CLI 默认的 10s；
+// 用默认超时会表现为"命令超时但服务端仍在继续"，让人误以为失败。
+const memberOpMinTimeout = 90 * time.Second
+
+// cmdAddMember 把节点加入集群（learner → 追平 → 提升为投票成员）。
+//
+// 这个命令可能耗时几十秒（等新节点把日志/快照拉过去），因此 CLI 的超时要留足。
+func cmdAddMember(c *client, id, addr string) error {
+	if c.http.Timeout < memberOpMinTimeout {
+		c.http.Timeout = memberOpMinTimeout
+	}
+	data, err := c.put("/api/cluster/members/"+url.PathEscape(id), nil, map[string]any{"addr": addr})
+	if err != nil {
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+	fmt.Printf("已加入集群成员 %s（%s）\n", id, addr)
+	return printMembers(data)
+}
+
+// cmdRemoveMember 把节点移出集群。
+func cmdRemoveMember(c *client, id string) error {
+	data, err := c.delete("/api/cluster/members/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+	fmt.Printf("已移除集群成员 %s\n", id)
+	return printMembers(data)
+}
+
+// cmdListMembers 展示当前成员划分。
+func cmdListMembers(c *client) error {
+	data, err := c.get("/api/cluster/members", nil)
+	if err != nil {
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+	return printMembers(data)
+}
+
+func printMembers(data []byte) error {
+	var m clusterMembers
+	if err := decodeJSON(data, &m); err != nil {
+		return err
+	}
+	voters, learners := "（无）", "（无）"
+	if len(m.Voters) > 0 {
+		voters = strings.Join(m.Voters, ", ")
+	}
+	if len(m.Learners) > 0 {
+		learners = strings.Join(m.Learners, ", ")
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintf(w, "投票成员\t%s\n", voters)
+	fmt.Fprintf(w, "非投票成员\t%s\n", learners)
 	return w.Flush()
 }
 

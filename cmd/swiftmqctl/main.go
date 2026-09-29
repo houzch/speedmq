@@ -90,6 +90,9 @@ func printUsage() {
 命令:
   status                                                     查看节点概览（节点、版本、运行时长、对象统计、内存/磁盘）
   cluster_status                                             查看集群状态（模式、角色、领导者、成员、共识进度）
+  list_members                                               列出集群成员（投票成员 / 非投票成员）
+  add_member <node_id> <rpc_addr>                            把节点加入集群（先作 learner 追平，再提升为投票成员）
+  remove_member <node_id>                                    把节点移出集群（无需改配置文件与重启）
   list_queues [vhost]                                        列出队列
   list_connections                                           列出连接
   list_exchanges [vhost]                                     列出交换机

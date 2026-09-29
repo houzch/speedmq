@@ -388,6 +388,12 @@ func writeKernelError(w http.ResponseWriter, err error) {
 	switch {
 	case strings.Contains(text, "ACCESS_REFUSED"), strings.Contains(text, "缺少管理面所需"):
 		writeError(w, http.StatusForbidden, "Access refused", text)
+	case strings.Contains(text, "NOT_IMPLEMENTED"):
+		writeError(w, http.StatusNotImplemented, "Not Implemented", text)
+	case strings.Contains(text, "无法提交"), strings.Contains(text, "无法转发"),
+		strings.Contains(text, "未获知 leader"), strings.Contains(text, "已不是 leader"):
+		// 集群暂时没有 leader（选主中 / 与多数派失联）：让客户端换节点重试，而不是当成参数错误。
+		writeError(w, http.StatusServiceUnavailable, "Service Unavailable", text)
 	case strings.Contains(text, "NOT_FOUND"), strings.Contains(text, "不存在"), strings.Contains(text, "not found"):
 		writeError(w, http.StatusNotFound, "Object Not Found", text)
 	case strings.Contains(text, "PRECONDITION_FAILED"), strings.Contains(text, "不能为空"), strings.Contains(text, "非法"):

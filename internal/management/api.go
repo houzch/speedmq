@@ -35,6 +35,14 @@ func (s *Server) registerRoutes() {
 	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
 	s.handle(http.MethodGet, "/api/cluster", s.getCluster)
 	s.handle(http.MethodGet, "/api/cluster/name", s.getClusterName)
+	// 成员变更（M6d）：把节点加入/移出集群的运行期操作。
+	// RabbitMQ 用 `rabbitmqctl join_cluster`（在被加入的节点上执行），这里反过来
+	// 由集群侧发起（`PUT /api/cluster/members/{node_id}`），因为新节点是以 learner
+	// 身份启动、被动等待被纳入；两种方向的语义等价，但集群侧发起更容易与 Raft 的
+	// "只有 leader 能改配置"对齐。
+	s.handle(http.MethodGet, "/api/cluster/members", s.getClusterMembers)
+	s.handle(http.MethodPut, "/api/cluster/members/{name}", s.putClusterMember)
+	s.handle(http.MethodDelete, "/api/cluster/members/{name}", s.deleteClusterMember)
 
 	// ---- vhost ----
 	s.handle(http.MethodGet, "/api/vhosts", s.getVHosts)
@@ -282,6 +290,11 @@ func (s *Server) clusterObject() map[string]any {
 	if peers == nil {
 		peers = []string{}
 	}
+	learners := st.Learners
+	if learners == nil {
+		learners = []string{}
+	}
+	fwd := s.deps.Broker.ForwardStatus()
 	return map[string]any{
 		"enabled":         s.deps.Broker.ClusterEnabled(),
 		"mode":            st.Mode,
@@ -292,6 +305,7 @@ func (s *Server) clusterObject() map[string]any {
 		"has_quorum":      st.HasQuorum,
 		"paused":          s.deps.Broker.ClusterPaused(),
 		"peers":           peers,
+		"learners":        learners,
 		"commit_index":    st.CommitIndex,
 		"last_applied":    st.LastApplied,
 		"applied_records": st.AppliedRecords,
@@ -299,7 +313,91 @@ func (s *Server) clusterObject() map[string]any {
 			"queues": st.Queues, "exchanges": st.Exchanges,
 			"bindings": st.Bindings, "users": st.Users,
 		},
+		// 跨节点转发的运行态：代理消费者数、持有中的投递、转发进出计数。
+		"forwarding": map[string]any{
+			"proxy_consumers":  fwd.ProxyConsumers,
+			"remote_consumers": fwd.RemoteConsumers,
+			"held_deliveries":  fwd.HeldDeliveries,
+			"forwarded_out":    fwd.ForwardedOut,
+			"forwarded_in":     fwd.ForwardedIn,
+			"deliveries":       fwd.Deliveries,
+		},
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 集群成员变更（M6d）
+// ---------------------------------------------------------------------------
+
+// memberRequest 是 PUT /api/cluster/members/{name} 的请求体。
+type memberRequest struct {
+	// Addr 是该节点可达的集群 RPC 地址（形如 "10.0.0.4:25672"）。
+	// 必填：新节点的地址需要随配置变更复制到全体成员，才能被联系上。
+	Addr string `json:"addr"`
+}
+
+// clusterMembersObject 组装成员划分视图。
+func (s *Server) clusterMembersObject() map[string]any {
+	m := s.deps.Broker.ClusterMembers()
+	voters, learners := m.Voters, m.Learners
+	if voters == nil {
+		voters = []string{}
+	}
+	if learners == nil {
+		learners = []string{}
+	}
+	return map[string]any{"voters": voters, "learners": learners}
+}
+
+// getClusterMembers 返回成员划分（GET /api/cluster/members）。
+func (s *Server) getClusterMembers(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.clusterMembersObject())
+}
+
+// putClusterMember 把一个节点加入集群（PUT /api/cluster/members/{node_id}）。
+//
+// 语义是"加入并提升为投票成员"：内部先以 learner 加入、等它追平（最长几十秒，
+// 取决于它要拉多少日志/快照），再提升为投票成员 —— 因此这个请求可能耗时较长。
+func (s *Server) putClusterMember(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	id := p["name"]
+	var req memberRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	if req.Addr == "" {
+		writeError(w, http.StatusBadRequest, "Bad Request", "缺少 addr：新成员的集群 RPC 地址必须提供")
+		return
+	}
+	if err := s.deps.Broker.AddClusterMember(r.Context(), id, req.Addr); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面加入集群成员", "actor", au.Name, "node", id, "addr", req.Addr)
+	writeJSON(w, http.StatusOK, s.clusterMembersObject())
+}
+
+// deleteClusterMember 把一个节点移出集群（DELETE /api/cluster/members/{node_id}）。
+func (s *Server) deleteClusterMember(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	id := p["name"]
+	if err := s.deps.Broker.RemoveClusterMember(r.Context(), id); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面移除集群成员", "actor", au.Name, "node", id)
+	writeJSON(w, http.StatusOK, s.clusterMembersObject())
 }
 
 func (s *Server) enabledPlugins() []string {
@@ -439,14 +537,26 @@ func queueObject(node string, q broker.QueueSnapshot) map[string]any {
 	if q.ExclusiveConsumerTag != "" {
 		exclusiveConsumer = q.ExclusiveConsumerTag
 	}
+	// `node` 是队列数据的所在节点（对齐 RabbitMQ 的"队列 master 节点"语义）。
+	// 快照给了 Owner 就用它（远端经典队列与仲裁队列都会给），否则用本节点名 ——
+	// 这样同一个节点在管理面里只会有一个名字，运维不会对不上号。
+	owner := node
+	if q.Owner != "" {
+		owner = q.Owner
+	}
+	// 队列类型：classic / quorum（quorum 的消息复制到多数派，见 README 的集群一节）。
+	queueType := q.QueueType
+	if queueType == "" {
+		queueType = "classic"
+	}
 	return map[string]any{
 		"name":                            q.Name,
 		"vhost":                           q.VHost,
 		"durable":                         q.Durable,
 		"auto_delete":                     q.AutoDelete,
 		"exclusive":                       q.Exclusive,
-		"type":                            "classic",
-		"node":                            node,
+		"type":                            queueType,
+		"node":                            owner,
 		"state":                           "running",
 		"arguments":                       emptyMapIfNil(q.Arguments),
 		"consumers":                       q.ConsumerCount,
