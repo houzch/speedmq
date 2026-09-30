@@ -24,7 +24,7 @@ import (
 )
 
 // Version 是内核版本。
-const Version = "0.9.0"
+const Version = "0.10.0"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。

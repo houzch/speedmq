@@ -3,7 +3,8 @@
   "default_vhost": "/",
   "vhosts": ["/"],
   "listeners": {
-    "amqp091": [{ "addr": ":5672" }]
+    "amqp091": [{ "addr": ":5672" }],
+    "mqtt": [{ "addr": ":1883" }]
   },
   "users": {
     "guest": {
@@ -33,6 +34,14 @@
       "builtin": true,
       "enabled": true,
       "required": true
+    },
+    "mqtt": {
+      "builtin": true,
+      "enabled": true,
+      "required": false,
+      "exchange": "amq.topic",
+      "max_packet_size": 8388608,
+      "prefetch": 32
     }
   }
 }

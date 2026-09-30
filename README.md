@@ -6,9 +6,9 @@
 
 ***
 
-## ⚠️ 当前状态：M6d（动态成员变更），**仍不可用于生产**
+## ⚠️ 当前状态：M7（MQTT 3.1.1 协议插件），**仍不可用于生产**
 
-处于早期开发阶段。M6 交付了集群地基（自研 Raft + 元数据复制），M6b 补齐**跨节点消息转发**（客户端连任意节点都能发布与消费），M6c 交付**仲裁队列**（每条队列一个 Raft 组，消息复制到多数派后才确认），M6d 让**集群成员可以在运行期增删**（新节点先以 learner 追平再提升为投票成员，无需改配置、无需重启）。
+处于早期开发阶段。M6 交付了集群地基（自研 Raft + 元数据复制），M6b 补齐**跨节点消息转发**，M6c 交付**仲裁队列**（每条队列一个 Raft 组，消息复制到多数派后才确认），M6d 让**集群成员可以在运行期增删**。M7 转入**插件化验证**：MQTT 3.1.1 作为内核内置的**第二个协议插件**落地，用于验证"新增一种协议不改动内核任何代码"这一主张（外部进程插件宿主与性能打磨仍在本轮后续批次）。
 
 **已实现**
 
@@ -42,6 +42,7 @@
 - **仲裁队列的 leader 变更（M6c）**：组 leader 变化时，旧 leader 上的消费者会被服务端取消（`CONSUMER_CANCELLED`），未确认消息由新 leader 重投 —— 语义为**至少一次**，客户端应做好重连与幂等
 - **动态成员变更（M6d）**：集群成员可在**运行期**增删（`swiftmqctl add_member` / `remove_member` 或管理 API），**不需要改配置文件、也不需要重启任何节点**。新节点先以 learner 身份加入（只复制日志、不投票、不竞选），追平后再提升为投票成员；成员表随 Raft 日志与快照持久化，重启后不会退回配置文件里的初始成员表
 - **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
+- **MQTT 3.1.1 协议插件（M7）**：内核内置的**第二个**协议插件（`internal/protocol/mqtt`，只依赖 `pkg/plugin` 与标准库）。CONNECT/CONNACK、PUBLISH/PUBACK、SUBSCRIBE/SUBACK、UNSUBSCRIBE/UNSUBACK、PINGREQ/PINGRESP、DISCONNECT；QoS 0/1（订阅 QoS2 按规范降级授予 1，入站 QoS2 完整走完四步握手）；Clean Session 映射到内核队列的 durable/autoDelete（持久会话重连后继续投递）；保留消息与遗嘱消息；Keep Alive。**MQTT 主题复用内核的 `amq.topic` 交换机**，因此路由、死信、TTL、持久化、权限对两个协议完全同一套
 - 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
 
 **尚未实现**
@@ -53,7 +54,10 @@
 - 策略（policies）接口：`/api/policies` 返回空数组，功能未实现
 - 段文件的轮转与磁盘回收（当前每队列单段，删除仅标记）
 - 流队列与 Stream 协议
-- AMQP 1.0 / MQTT / STOMP（计划以插件形态提供）
+- AMQP 1.0 / STOMP（计划以插件形态提供）；MQTT 3.1.1 已落地（见上文）
+- **外部进程（B 形态）插件宿主**：插件目前必须是编译进内核的 Go 包；进程级隔离与 sidecar 通信在本轮后续批次
+- **MQTT 的已知边界**：保留消息存在插件内存（重启丢失）；QoS2 按"至少一次"处理（不做去重）；`x-mqtt-topic` 之外的跨协议主题映射按"."↔"/"反推，主题本身含点号时有歧义（与 RabbitMQ 的 MQTT 插件同）
+- 性能打磨：压测基准（吞吐 / P99）、大消息路径、连接规模、7×24 soak 与混沌测试（M7 后续批次）
 - YAML 配置（当前支持 JSON 文件 + `SWIFTMQ_*` 环境变量；YAML 需要引入解析依赖，暂缓）
 
 完整路线图见下文「路线图」一节。
@@ -73,7 +77,7 @@ docker compose ps          # 状态应显示 Up (healthy)
 docker compose logs -f     # 跟随日志
 ```
 
-默认监听 `5672`（AMQP 0-9-1）与 `15672`（管理 UI / HTTP API / 指标）。
+默认监听 `5672`（AMQP 0-9-1）、`1883`（MQTT 3.1.1）与 `15672`（管理 UI / HTTP API / 指标）。
 
 ### 方式二：本地构建
 
@@ -91,9 +95,11 @@ go build -o bin/swiftmqctl ./cmd/swiftmqctl
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.9.0 data_dir=data vhost=/ fsync=os
+msg="SwiftMQ 启动中" version=0.10.0 data_dir=data vhost=/ fsync=os
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
+msg="MQTT 插件已初始化" plugin=mqtt exchange=amq.topic max_packet_size=8388608 prefetch=32
+msg="监听已启动" protocol=mqtt listener=mqtt addr=[::]:1883
 msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview ui=/
 ```
 
@@ -183,8 +189,34 @@ PASS  M4 服务端如实声明 connection.blocked 能力
 全部通过（21/21）
 ```
 
-> 崩溃恢复需要重启 broker，无法在探针里覆盖；它由内核单测（`internal/broker/m4_test.go`）
-> 与 `internal/store` 的恢复用例验证，含"强杀进程后重启仍能取回已确认消息"的手工验证。
+> 崩溃恢复需要重启 broker，无法在探针里覆盖；它由内核单测（`test/unit/broker/`）
+> 与 `test/unit/store` 的恢复用例验证，含"强杀进程后重启仍能取回已确认消息"的手工验证。
+
+MQTT 也有一个同样的真实探针（**手写的 MQTT 3.1.1 客户端，零第三方依赖**），覆盖连接鉴权、通配订阅、QoS0/1/2、保留消息、遗嘱、退订、心跳与畸形报文：
+
+```bash
+cd test/integration/mqttprobe
+go run . -addr 127.0.0.1:1883
+```
+
+期望输出（12 个用例）：
+
+```
+PASS  连接 + CONNACK（含鉴权）
+PASS  错误口令被拒（CONNACK 0x04）
+PASS  协议版本不符被拒（CONNACK 0x01）
+PASS  订阅 + SUBACK（QoS1）
+PASS  QoS0 发布 → 订阅者收到（含 + 通配）
+PASS  QoS1 发布/投递/确认闭环
+PASS  QoS2 订阅降级为 QoS1 并完成四步握手
+PASS  保留消息：订阅即收到，清空后不再收到
+PASS  遗嘱消息：异常断开时下发
+PASS  退订后不再投递
+PASS  PINGREQ → PINGRESP
+PASS  畸形报文（SUBSCRIBE 标志位非法）断开连接
+
+全部通过（12/12）
+```
 
 ### 其他语言的客户端测试
 
@@ -237,7 +269,8 @@ conn.close()
   "default_vhost": "/",
   "vhosts": ["/"],
   "listeners": {
-    "amqp091": [{ "addr": ":5672" }]
+    "amqp091": [{ "addr": ":5672" }],
+    "mqtt": [{ "addr": ":1883" }]
   },
   "users": {
     "guest": { "password": "guest", "tags": ["administrator"], "remote_access": true }
@@ -264,7 +297,14 @@ conn.close()
     }
   },
   "plugins": {
-    "amqp091": { "builtin": true, "enabled": true }
+    "amqp091": { "builtin": true, "enabled": true, "required": true },
+    "mqtt": {
+      "builtin": true,
+      "enabled": true,
+      "exchange": "amq.topic",
+      "max_packet_size": 8388608,
+      "prefetch": 32
+    }
   }
 }
 ```
@@ -479,6 +519,43 @@ swiftmqctl list_members                                       # 成员划分（M
 
 ***
 
+## MQTT 3.1.1（M7）
+
+MQTT 是内核里的**第二个协议插件**（`internal/protocol/mqtt`）。它的意义不只是"多支持一个协议"，而是把插件边界真正压到极限：
+**它只 import `pkg/plugin` 与标准库，内核没有任何功能性改动**（除版本号常量外，`internal/broker`、`internal/transport`、`internal/plugin`、`pkg/plugin` 一行未改）—— 新增协议对本项目的落地方式就是"新增一个包 + 在组装处多注册一行"。
+
+```bash
+# 默认监听 1883（可用 listeners.mqtt 覆盖），与 AMQP 5672 同一进程、同一份队列与权限
+mosquitto_sub -h 127.0.0.1 -p 1883 -u guest -P guest -t 'sensors/#' -q 1
+mosquitto_pub -h 127.0.0.1 -p 1883 -u guest -P guest -t 'sensors/room1/temp' -m 21.5 -q 1
+```
+
+**主题怎么落到内核**（这是整个插件最需要解释的一处设计）
+
+MQTT 的"主题"直接复用内核的 **`amq.topic` 交换机**，而不是另造一套路由：
+
+| MQTT | 内核 |
+| --- | --- |
+| 主题 `sensors/room1/temp` | routing key `sensors.room1.temp` |
+| 通配 `+`（单层） | `*`（单段） |
+| 通配 `#`（多层，含父级） | `#`（零到多段） |
+| 订阅（Client ID + QoS） | 一条队列 `mqtt-subscription-q<QoS>-<ClientID>` + 每个过滤器一条绑定 |
+| Clean Session=1 | 队列 `durable=false, auto-delete=true`（断开即回收） |
+| Clean Session=0 | 队列 `durable=true`（重连后继续投递积压消息） |
+
+这样做的直接后果是**语义不会分裂**：MQTT 消息进的是同一个队列，吃同一套死信 / TTL / 长度限制 / 持久化 / 权限规则，管理面也看到同一份连接、消费者与队列统计。反过来，别的协议发到 `amq.topic` 的消息，MQTT 订阅者同样能收到（主题按 routing key 反推）。
+
+**验证**：`test/unit/mqtt`（真实内核上跑手写 MQTT 客户端，覆盖握手/鉴权、订阅通配、QoS0/1/2、保留消息、遗嘱、退订、持久会话重投、跨协议互通、管理面可见性，以及一个 8 订阅者并发压测）；`test/integration/mqttprobe`（独立 module、**零第三方依赖**的手写 MQTT 客户端，12 项用例，见下）。
+
+**已知边界（有意为之）**
+
+- 保留消息存在**插件内存**，重启丢失（普通消息不受影响，它们在内核队列里）；
+- 订阅 QoS2 按规范**降级授予 QoS1**；入站 QoS2 的握手完整，但语义为"至少一次"（不去重）；
+- MQTT 没有 vhost 概念，一律使用内核的**默认 vhost**；
+- Clean Session=0 的"持久会话"是用 durable 队列近似实现的：重连能拿到积压消息，但 MQTT 5.0 才有的"会话过期/离线队列上限"等细节不涉及。
+
+***
+
 ## 设计要点
 
 ### 兼容性优先
@@ -526,7 +603,8 @@ swiftmq/
 │   ├── protocol/
 │   │   ├── codec/           # 基础类型、field-table、帧编解码
 │   │   ├── spec/            # 类/方法标识、错误码、软硬错误作用域
-│   │   └── amqp091/         # AMQP 0-9-1 协议插件
+│   │   ├── amqp091/         # AMQP 0-9-1 协议插件
+│   │   └── mqtt/            # MQTT 3.1.1 协议插件（只依赖 pkg/plugin 与标准库）
 │   ├── transport/           # 监听、TLS、协议嗅探、按插件热启停监听
 │   ├── plugin/              # 插件注册中心、生命周期与治理、Host 句柄
 │   ├── broker/              # 内核：vhost、路由模型、队列、死信、水位流控、管理面视图
@@ -539,8 +617,8 @@ swiftmq/
 ├── pkg/plugin/              # 对外稳定插件 API
 ├── web/                     # 管理 UI 前端工程（Vue 3 + Vite）；dist 由构建生成并经 go:embed 嵌入
 ├── test/
-│   ├── unit/               # 仓库内单测（外部测试包，只依赖被测包的导出 API）
-│   └── integration/        # 真实客户端集成验证（独立 module）
+│   ├── unit/               # 仓库内单测（外部测试包，只依赖被测包的导出 API；含 mqtt/）
+│   └── integration/        # 真实客户端集成验证（独立 module：amqp091probe / mqttprobe）
 ├── configs/                 # 示例配置
 └── Dockerfile / docker-compose.yml
 ```
@@ -571,7 +649,7 @@ npm run type-check    # TypeScript 严格模式检查
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.9.0 .
+docker build -t swiftmq:0.10.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -591,7 +669,9 @@ docker build -t swiftmq:0.9.0 .
 | 二期 | M6b | 跨节点消息转发：任意节点可发布/消费/拉取，代理消费者与自愈 | ✅ 已完成 |
 | 二期 | M6c | 仲裁队列（Quorum Queue）：每队列一个 Raft 组、多数派确认、leader 变更重投 | ✅ 已完成 |
 | 二期 | M6d | 动态成员变更：learner 加入 → 追平 → 提升、运行期移除成员、成员表持久化            | ✅ 已完成 |
-| 二期 | M7  | 性能打磨、插件化验证（MQTT / AMQP 1.0）                          | 规划中   |
+| 二期 | M7a | 插件化验证（协议）：MQTT 3.1.1 作为第二个协议插件落地，内核零改动      | ✅ 已完成 |
+| 二期 | M7b | 插件化验证（隔离）：外部进程（sidecar）插件宿主、崩溃隔离与健康上报       | 规划中   |
+| 二期 | M7c | 性能打磨：压测基准、大消息、连接规模、soak 与混沌测试                    | 规划中   |
 
 每个里程碑的完成标准是"**真实客户端跑通 + 与 RabbitMQ 行为一致**"，而非"代码写完"。
 
