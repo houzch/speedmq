@@ -123,6 +123,9 @@ type plugin struct {
 	Capabilities []string `json:"capabilities"`
 	Dependencies []string `json:"dependencies"`
 	Description  string   `json:"description"`
+	// RuntimeNote 是插件自报的运行期状态原因（如外部进程插件 down 的原因、
+	// 被隔离的失败原因）；为空表示无特别说明。
+	RuntimeNote string `json:"runtime_note"`
 }
 
 // ---------- 输出辅助 ----------
@@ -822,10 +825,24 @@ func cmdPluginsList(c *client) error {
 
 	rows := make([][]string, 0, len(plugins))
 	for _, p := range plugins {
-		rows = append(rows, []string{p.Name, p.Version, p.APIVersion, p.State})
+		rows = append(rows, []string{p.Name, p.Version, p.APIVersion, p.State, shortNote(p.RuntimeNote)})
 	}
-	writeTable([]string{"name", "version", "api_version", "state"}, rows)
+	writeTable([]string{"name", "version", "api_version", "state", "note"}, rows)
 	return nil
+}
+
+// shortNote 把状态原因压到一行、限制长度：list 是总览视图，完整原因用 `plugins show` 看。
+func shortNote(note string) string {
+	if note == "" {
+		return "-"
+	}
+	note = strings.ReplaceAll(note, "\n", " ")
+	const max = 70
+	r := []rune(note)
+	if len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return note
 }
 
 func cmdPluginsShow(c *client, name string) error {
@@ -854,6 +871,9 @@ func cmdPluginsShow(c *client, name string) error {
 	fmt.Fprintf(w, "capabilities\t%s\n", joinOrNone(p.Capabilities))
 	fmt.Fprintf(w, "dependencies\t%s\n", joinOrNone(p.Dependencies))
 	fmt.Fprintf(w, "description\t%s\n", p.Description)
+	if p.RuntimeNote != "" {
+		fmt.Fprintf(w, "runtime_note\t%s\n", p.RuntimeNote)
+	}
 	return w.Flush()
 }
 

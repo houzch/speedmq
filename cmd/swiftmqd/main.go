@@ -18,10 +18,12 @@ import (
 	"github.com/houzch/swiftmq/internal/config"
 	"github.com/houzch/swiftmq/internal/management"
 	pluginkit "github.com/houzch/swiftmq/internal/plugin"
+	sidecarplugin "github.com/houzch/swiftmq/internal/plugin/sidecar"
 	"github.com/houzch/swiftmq/internal/protocol/amqp091"
 	"github.com/houzch/swiftmq/internal/protocol/mqtt"
 	"github.com/houzch/swiftmq/internal/protocol/spec"
 	"github.com/houzch/swiftmq/internal/transport"
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 	"github.com/houzch/swiftmq/web"
 )
 
@@ -86,7 +88,14 @@ func run() error {
 	manager.SetListenerController(pluginkit.NewListenerController(ctx, server, registry, cfg))
 	// M7 的插件化验证：MQTT 3.1.1 是内核内置的第二个协议插件。
 	// 新增协议对内核的改动**只有这里的一行**（协议自身全部落在 internal/protocol/mqtt）。
-	if err := manager.Load(ctx, amqp091.New(), mqtt.New()); err != nil {
+	//
+	// 外部进程插件（B 形态）由配置声明、内核按声明托管：
+	// 这一层完全走配置，不需要为每个外部插件改代码（见 internal/plugin/sidecar）。
+	sidecars, err := sidecarplugin.FromConfig(cfg, log, broker.Version)
+	if err != nil {
+		return err
+	}
+	if err := manager.Load(ctx, append([]sdk.Plugin{amqp091.New(), mqtt.New()}, sidecars...)...); err != nil {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -74,9 +75,11 @@ func (m *Manager) SetListenerController(lc ListenerController) { m.listeners = l
 
 // Load 登记并启动插件。
 //
-// 失败隔离：单个插件 Init / Start 失败只标记该插件为 failed，
-// 内核与其余插件继续运行；只有"重名 / API 版本不匹配 / 依赖缺失或成环"这类
-// 内核级契约错误才让 Load 直接返回错误。
+// 失败隔离（对齐设计 10.10：错误影响面仅限出问题的插件）：
+//   - "重名"这类无法二选一的问题仍由 Add 直接报错（内核级，必须人工修配置）；
+//   - API 版本不匹配、依赖缺失、依赖成环，以及单个插件 Init/Start 失败，
+//     都只把**该插件（及其依赖者）**标记为 failed 并记录原因，内核与其余插件继续运行。
+//
 // 例外：配置里声明 required: true 的插件失败会阻塞启动（仅限官方核心插件使用）。
 func (m *Manager) Load(ctx context.Context, plugins ...sdk.Plugin) error {
 	m.mu.Lock()
@@ -90,13 +93,21 @@ func (m *Manager) Load(ctx context.Context, plugins ...sdk.Plugin) error {
 		m.plugins[p.Name()] = p
 		m.hosts[p.Name()] = newHost(m.reg, m.cfg, m.log, p)
 	}
-	order, err := m.reg.Resolve()
-	if err != nil {
-		return err
-	}
+	order, broken := m.reg.Resolve()
 	// 能力审计：把每个插件申请的权限显式打出来，避免静默授权。
 	for _, line := range m.reg.Audit() {
 		m.log.Info(line)
+	}
+
+	// 先处理被契约问题隔离的插件：不启动，但状态与原因必须在管理面可见（留痕）。
+	for _, name := range sortedNames(broken) {
+		err := broken[name]
+		m.state[name] = sdk.StateFailed
+		m.failed[name] = err
+		m.log.Error("插件已被隔离，内核与其余插件不受影响", "plugin", name, "err", err)
+		if _, required, _ := m.cfg.PluginFlags(name); required {
+			return fmt.Errorf("必需的插件 %s 被隔离: %w", name, err)
+		}
 	}
 
 	for _, p := range order {
@@ -119,7 +130,29 @@ func (m *Manager) Load(ctx context.Context, plugins ...sdk.Plugin) error {
 		}
 		m.log.Info("插件已启动", "plugin", p.Name(), "version", p.Version())
 	}
+	// 被隔离的插件排在最后：运维看到的先后顺序仍是"能用的在前"。
+	m.order = append(m.order, sortedNames(broken)...)
 	return nil
+}
+
+// sortedNames 返回 map 的键并按字典序排序，保证输出稳定（便于复现与比对）。
+func sortedNames(m map[string]error) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isContractError 判断一个失败原因是否属于"插件与内核之间的契约问题"。
+//
+// 这类问题在 Load 阶段就被发现并隔离，且**不能**通过热启用绕过；
+// 而 Init/Start 的偶发失败（如端口被占用）留给运维用热启用重试是合理的。
+func isContractError(err error) bool {
+	return errors.Is(err, ErrAPIVersionMismatch) ||
+		errors.Is(err, ErrMissingDependency) ||
+		errors.Is(err, ErrDependencyCycle)
 }
 
 // startLocked 完成一次"Init → Start → 起监听"，并把状态置为 enabled。调用方需持有 m.mu。
@@ -162,6 +195,11 @@ func (m *Manager) Enable(name string) error {
 	}
 	if m.state[name] == sdk.StateEnabled {
 		return nil
+	}
+	// 契约问题（API 版本不符 / 依赖缺失 / 依赖成环）不能靠"再启一次"解决：
+	// 这类插件在 Load 阶段就被隔离了，热启用只会让它带着坏契约跑起来。
+	if err := m.failed[name]; err != nil && isContractError(err) {
+		return fmt.Errorf("插件 %s 处于隔离状态（契约问题），无法热启用: %w", name, err)
 	}
 	// 之前被停用（或启动失败）的插件可能没有 Init 过：这里补一次完整启动。
 	if err := m.startLocked(p); err != nil {
@@ -273,6 +311,22 @@ func (m *Manager) infoLocked(name string) sdk.Info {
 	if state == "" {
 		state = sdk.StateDisabled
 	}
+	note := ""
+	// 运行期状态由插件自报（拉模式，见 sdk.StateReporter）。
+	// 只在"内核认为它正在服务"时才采纳：运维显式停用/停止的插件不该被自报状态覆盖。
+	if state == sdk.StateEnabled {
+		if r, ok := p.(sdk.StateReporter); ok {
+			if runtimeState, reason := r.ReportState(); runtimeState != "" {
+				state = runtimeState
+				note = reason
+			}
+		}
+	} else if state == sdk.StateFailed {
+		// 失败/被隔离的原因也要"留痕"：否则运维只能看到 failed，不知道改哪里。
+		if err := m.failed[name]; err != nil {
+			note = err.Error()
+		}
+	}
 	caps := make([]string, 0, len(p.Capabilities()))
 	for _, c := range p.Capabilities() {
 		caps = append(caps, string(c))
@@ -295,5 +349,6 @@ func (m *Manager) infoLocked(name string) sdk.Info {
 		Capabilities: caps,
 		Dependencies: deps,
 		Description:  desc,
+		RuntimeNote:  note,
 	}
 }

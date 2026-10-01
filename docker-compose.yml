@@ -22,7 +22,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: swiftmq:0.10.0
+    image: swiftmq:0.11.0
     container_name: swiftmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动

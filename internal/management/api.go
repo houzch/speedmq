@@ -1527,6 +1527,9 @@ func pluginObject(info sdk.Info) map[string]any {
 		"capabilities": emptyIfNil(info.Capabilities),
 		"dependencies": emptyIfNil(info.Dependencies),
 		"description":  info.Description,
+		// runtime_note 是插件自报运行期状态的原因（如外部进程插件 down 的原因）：
+		// 没有它，运维只能看到状态变成了 down，却不知道为什么。
+		"runtime_note": info.RuntimeNote,
 	}
 }
 

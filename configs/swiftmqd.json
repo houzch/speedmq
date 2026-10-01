@@ -42,6 +42,23 @@
       "exchange": "amq.topic",
       "max_packet_size": 8388608,
       "prefetch": 32
+    },
+    "echo-sidecar": {
+      "builtin": false,
+      "enabled": false,
+      "required": false,
+      "sidecar": {
+        "address": "tcp://127.0.0.1:19001",
+        "spawn": [],
+        "restart": "always",
+        "protocols": [
+          {
+            "name": "echo",
+            "prefix": "ECHO",
+            "listeners": [{ "name": "echo", "addr": ":1885" }]
+          }
+        ]
+      }
     }
   }
 }

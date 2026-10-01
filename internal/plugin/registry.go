@@ -49,14 +49,13 @@ func NewRegistry(log *slog.Logger) *Registry {
 }
 
 // Add 登记一个插件（只登记，不启动）。
+//
+// 这里只拦"无法二选一"的问题（空名、重名）；API 版本不匹配等**可隔离**的问题
+// 留到 Resolve 阶段处理，这样才能做到"错误影响面仅限该插件"（对齐设计 10.10）。
 func (r *Registry) Add(p sdk.Plugin) error {
 	name := p.Name()
 	if name == "" {
 		return errors.New("插件名不能为空")
-	}
-	if v := p.APIVersion(); v != "" && v != sdk.APIVersion {
-		return fmt.Errorf("%w: 插件 %s 声明 %s，内核支持 %s",
-			ErrAPIVersionMismatch, name, v, sdk.APIVersion)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -67,56 +66,124 @@ func (r *Registry) Add(p sdk.Plugin) error {
 	return nil
 }
 
-// Resolve 返回按依赖顺序排列的插件列表（被依赖者在前），并做环检测。
+// Resolve 返回"可加载的插件顺序"（被依赖者在前）以及**被隔离的插件及其原因**。
 //
-// 顺序确定性：依赖名与被遍历的插件名均排序，保证相同输入产生相同顺序，便于复现问题。
-func (r *Registry) Resolve() ([]sdk.Plugin, error) {
+// 与"直接返回 error"的关键差别：API 版本不匹配、依赖缺失、依赖成环都**不再**让内核
+// 拒绝启动，而是把受影响的那部分插件摘出去（对齐设计 10.10：错误信息明确且影响面仅限该插件）。
+// 隔离会沿依赖链传播：A 被隔离后，所有（直接或间接）依赖 A 的插件也随之隔离 ——
+// 否则它们会在运行期踩到"依赖不在"的空指针，那才是真正的影响外溢。
+//
+// 顺序确定性：依赖名与待遍历的插件名均排序，保证相同输入产生相同顺序。
+func (r *Registry) Resolve() (order []sdk.Plugin, broken map[string]error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	const (
-		unvisited = 0
-		visiting  = 1
-		done      = 2
-	)
-	state := make(map[string]int, len(r.plugins))
-	order := make([]sdk.Plugin, 0, len(r.plugins))
-
-	var visit func(name string, path []string) error
-	visit = func(name string, path []string) error {
-		switch state[name] {
-		case done:
-			return nil
-		case visiting:
-			return fmt.Errorf("%w: %s", ErrDependencyCycle,
-				strings.Join(append(path, name), " -> "))
-		}
-		p, ok := r.plugins[name]
-		if !ok {
-			return fmt.Errorf("%w: %s（被 %s 依赖）",
-				ErrMissingDependency, name, strings.Join(path, " -> "))
-		}
-		state[name] = visiting
-		deps := append([]string(nil), p.Requires()...)
-		sort.Strings(deps)
-		for _, dep := range deps {
-			if err := visit(dep, append(path, name)); err != nil {
-				return err
-			}
-		}
-		state[name] = done
-		order = append(order, p)
-		return nil
-	}
-
+	broken = map[string]error{}
 	names := make([]string, 0, len(r.plugins))
 	for n := range r.plugins {
 		names = append(names, n)
 	}
 	sort.Strings(names)
+
+	// 1) API 版本不匹配：只隔离该插件。
 	for _, n := range names {
-		if err := visit(n, nil); err != nil {
-			return nil, err
+		if v := r.plugins[n].APIVersion(); v != "" && v != sdk.APIVersion {
+			broken[n] = fmt.Errorf("%w: 插件 %s 声明 %s，内核支持 %s",
+				ErrAPIVersionMismatch, n, v, sdk.APIVersion)
+		}
+	}
+
+	for {
+		// 2) 依赖缺失 / 依赖已被隔离 → 隔离该插件，沿依赖链收敛到不动点。
+		for changed := true; changed; {
+			changed = false
+			for _, n := range names {
+				if _, bad := broken[n]; bad {
+					continue
+				}
+				for _, dep := range r.plugins[n].Requires() {
+					if _, ok := r.plugins[dep]; !ok {
+						broken[n] = fmt.Errorf("%w: %s（被 %s 依赖）", ErrMissingDependency, dep, n)
+						changed = true
+						break
+					}
+					if depErr, bad := broken[dep]; bad {
+						broken[n] = fmt.Errorf("依赖的插件 %s 已被隔离: %w", dep, depErr)
+						changed = true
+						break
+					}
+				}
+			}
+		}
+
+		healthy := make([]string, 0, len(names))
+		for _, n := range names {
+			if _, bad := broken[n]; !bad {
+				healthy = append(healthy, n)
+			}
+		}
+
+		// 3) 健康子集上做拓扑排序；发现环就把环上的插件整体隔离，再回到步骤 2。
+		ordered, cycle := topoOrder(r.plugins, healthy)
+		if cycle == nil {
+			return ordered, broken
+		}
+		path := append(append([]string(nil), cycle...), cycle[0])
+		msg := strings.Join(path, " -> ")
+		for _, n := range cycle {
+			broken[n] = fmt.Errorf("%w: %s", ErrDependencyCycle, msg)
+		}
+	}
+}
+
+// topoOrder 对给定（已经健康的）插件名做拓扑排序，返回被依赖者在前的顺序。
+//
+// 发现环时返回环上的节点（按环序），调用方据此隔离。
+func topoOrder(plugins map[string]sdk.Plugin, names []string) ([]sdk.Plugin, []string) {
+	const (
+		unvisited = 0
+		visiting  = 1
+		done      = 2
+	)
+	state := make(map[string]int, len(names))
+	order := make([]sdk.Plugin, 0, len(names))
+	var stack []string
+
+	var visit func(n string) []string
+	visit = func(n string) []string {
+		switch state[n] {
+		case done:
+			return nil
+		case visiting:
+			for i, s := range stack {
+				if s == n {
+					return append([]string(nil), stack[i:]...)
+				}
+			}
+			return []string{n}
+		}
+		state[n] = visiting
+		stack = append(stack, n)
+		deps := append([]string(nil), plugins[n].Requires()...)
+		sort.Strings(deps)
+		for _, dep := range deps {
+			if _, ok := plugins[dep]; !ok {
+				// 缺失依赖的插件已在收敛阶段被隔离，健康子集里不会出现；这里只是防御。
+				continue
+			}
+			if cycle := visit(dep); cycle != nil {
+				return cycle
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[n] = done
+		order = append(order, plugins[n])
+		return nil
+	}
+
+	for _, n := range names {
+		if cycle := visit(n); cycle != nil {
+			return nil, cycle
 		}
 	}
 	return order, nil

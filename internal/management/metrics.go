@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // getMetrics 输出 Prometheus 的文本暴露格式（/metrics）。
@@ -87,9 +89,19 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 
 	sb.WriteString("# HELP swiftmq_plugin_info 插件元数据（value 恒为 1，状态见 state 标签）\n")
 	sb.WriteString("# TYPE swiftmq_plugin_info gauge\n")
+	sb.WriteString("# HELP swiftmq_plugin_up 插件是否在服务（1=enabled，0=其它状态：disabled/failed/down）\n")
+	sb.WriteString("# TYPE swiftmq_plugin_up gauge\n")
 	for _, p := range s.deps.Plugins.Plugins() {
 		fmt.Fprintf(&sb, "swiftmq_plugin_info{name=%q,version=%q,api_version=%q,state=%q} 1\n",
 			escapeLabel(p.Name), escapeLabel(p.Version), escapeLabel(p.APIVersion), escapeLabel(string(p.State)))
+		// up 单独给一条：用 state 标签做告警要写 "!= enabled"，
+		// 而按惯例 `swiftmq_plugin_up == 0` 才是最好写、最不容易写错的形式。
+		up := 0
+		if p.State == sdk.StateEnabled {
+			up = 1
+		}
+		fmt.Fprintf(&sb, "swiftmq_plugin_up{name=%q,state=%q} %d\n",
+			escapeLabel(p.Name), escapeLabel(string(p.State)), up)
 	}
 
 	body := sb.String()

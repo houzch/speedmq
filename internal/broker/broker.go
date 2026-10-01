@@ -24,7 +24,7 @@ import (
 )
 
 // Version 是内核版本。
-const Version = "0.10.0"
+const Version = "0.11.0"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -238,44 +238,48 @@ func (b *Broker) background(ctx context.Context) {
 // 水位触发时"阻塞生产者"而不是"丢弃消息"：丢弃会让业务在不知情的情况下丢数据，
 // 阻塞则把压力交还给客户端（读循环停读 → TCP 背压），与 RabbitMQ 的做法一致。
 type flowGate struct {
-	mu      sync.Mutex
-	blocked bool
+	// blocked 用**原子变量**而不是放进互斥锁里：
+	// 每条消息发布前都要问一次"现在能不能发"，把锁竞争强加到热路径上是不必要的开销。
+	// 只有真正处于阻塞状态（罕见）时才需要拿锁去取等待通道。
+	blocked atomic.Bool
+
+	mu sync.Mutex
 	// ch 在 blocked 为 true 时有效，解除阻塞时被关闭。
 	ch chan struct{}
 }
 
 func newFlowGate() *flowGate { return &flowGate{ch: make(chan struct{})} }
 
-func (g *flowGate) isBlocked() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.blocked
-}
+func (g *flowGate) isBlocked() bool { return g.blocked.Load() }
 
 // set 更新阻塞状态，返回状态是否发生了变化。
 func (g *flowGate) set(blocked bool) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.blocked == blocked {
+	if g.blocked.Load() == blocked {
 		return false
 	}
-	g.blocked = blocked
 	if blocked {
+		// 先备好新的等待通道再置位：这样任何"看到 blocked=true 的等待者"
+		// 都能拿到与之配套的通道（它在锁内读 ch，必然读到已换好的这个）。
 		g.ch = make(chan struct{})
+		g.blocked.Store(true)
 	} else {
+		// 先清位再关闭：等待者要么在 select 上被唤醒后重新检查并返回，
+		// 要么在检查时已看到未阻塞而直接返回，两种情况都不会漏唤醒。
+		g.blocked.Store(false)
 		close(g.ch)
 	}
 	return true
 }
 
-// wait 在阻塞期间等待，解除或内核停止时返回。
+// wait 在阻塞期间等待，解除或内核停止时返回。未阻塞时是一次原子读，无锁。
 func (g *flowGate) wait(stop <-chan struct{}) error {
 	for {
-		g.mu.Lock()
-		if !g.blocked {
-			g.mu.Unlock()
+		if !g.blocked.Load() {
 			return nil
 		}
+		g.mu.Lock()
 		ch := g.ch
 		g.mu.Unlock()
 

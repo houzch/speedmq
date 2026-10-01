@@ -49,7 +49,24 @@ const (
 	StateFailed State = "failed"
 	// StateStopped 插件已停止（内核正在退出）。
 	StateStopped State = "stopped"
+	// StateDown 插件在**运行期**失联（外部进程插件崩溃、连接断开且尚未恢复）。
+	//
+	// 与 StateFailed 的区别：failed 是"启动就没起来"（配置/契约问题，重启内核才会重试），
+	// down 是"起来过、现在不在"（外部进程没了；内核照常运行，等它回来）。
+	// 这个区分对运维很关键：看到 down 应该去拉起插件进程，而不是改配置。
+	StateDown State = "down"
 )
+
+// StateReporter 由插件**可选**实现：向管理面报告运行期状态。
+//
+// 为什么是"拉"而不是"推"：状态只被管理面/指标按需读取，推模式要在内核里再加一条
+// 状态变更通道与相应的并发处理；拉模式让插件在自己内部维护状态，内核零改动。
+// 返回的 state 优先于内核记录的静态状态，但内核已判定为 disabled/stopped 时仍以内核为准
+// （运维显式停用的插件不该显示成 down）。
+type StateReporter interface {
+	// ReportState 返回当前状态与一句话原因（原因可为空）。
+	ReportState() (State, string)
+}
 
 // Info 是插件元数据与运行状态的快照。
 //
@@ -74,6 +91,8 @@ type Info struct {
 	Dependencies []string
 	// Description 是一句话说明。
 	Description string
+	// RuntimeNote 是插件自报的运行期状态原因（StateReporter 给出；可为空）。
+	RuntimeNote string
 }
 
 // Describer 由插件可选实现，向管理面提供一句话描述。
