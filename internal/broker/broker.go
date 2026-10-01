@@ -67,6 +67,9 @@ type Broker struct {
 	dlxCh  chan deadLetterEntry
 	cancel context.CancelFunc
 	done   chan struct{}
+	// bg 收纳随内核生命周期的辅助协程（当前是首次引导的账号播种）。
+	// Close 必须等它们退出：否则清理过程中它们还可能去写已经关掉的元数据层。
+	bg sync.WaitGroup
 
 	// ---- 集群（M6）----
 
@@ -153,6 +156,11 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	b.cancel = cancel
+	b.bg.Add(1)
+	go func() {
+		defer b.bg.Done()
+		b.bootstrapUsers(ctx)
+	}()
 	go b.background(ctx)
 	return b, nil
 }
@@ -178,6 +186,8 @@ func (b *Broker) Close() {
 	b.cancel()
 	b.cancel = nil
 	<-b.done
+	// 辅助协程（账号播种）可能在重试等待中：等它退出再关元数据层，否则它会写到一个已关闭的存储上。
+	b.bg.Wait()
 	// 先停元数据层（集群模式会停 Raft），再停各仲裁队列的 Raft 组，
 	// 最后关集群端口与队列存储：端口是它们共用的，必须最后关。
 	if b.meta != nil {

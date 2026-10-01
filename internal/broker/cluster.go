@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -383,8 +384,44 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 		// vhost 集合由配置驱动（见本文件顶部说明）：元数据层里的 vhost 记录只做展示，
 		// 不在本地增删 vhost —— 否则一个错误记录就能把正在服务的 vhost 摘掉。
 
-	case meta.OpPutUser, meta.OpDeleteUser, meta.OpPutPermission, meta.OpDeletePermission:
-		// 账号与权限本期仍由本地 auth.Store 承载（不回写元数据），见 M6 交付说明的"未完成项"。
+	case meta.OpPutUser:
+		rec, err := decodeMeta[meta.User](op, payload)
+		if err != nil {
+			return err
+		}
+		return b.auth.ApplyUser(rec.Name, config.User{
+			Password:     rec.Password,
+			Tags:         append([]string(nil), rec.Tags...),
+			RemoteAccess: rec.RemoteAccess,
+		})
+
+	case meta.OpDeleteUser:
+		rec, err := decodeMeta[meta.User](op, payload)
+		if err != nil {
+			return err
+		}
+		b.auth.ApplyDeleteUser(rec.Name)
+
+	case meta.OpPutPermission:
+		rec, err := decodeMeta[meta.Permission](op, payload)
+		if err != nil {
+			return err
+		}
+		if !b.auth.ApplyPermission(rec.User, rec.VHost, config.Permission{
+			Configure: rec.Configure, Write: rec.Write, Read: rec.Read,
+		}) {
+			// 用户还不存在：跳过而不是报错。返回错误会让 Raft 反复重放这条日志，
+			// 而"先给权限、后建用户"在重放与快照恢复里都是合法顺序。
+			b.log.Warn("元数据中的权限引用了不存在的用户，已跳过",
+				"user", rec.User, "vhost", rec.VHost)
+		}
+
+	case meta.OpDeletePermission:
+		rec, err := decodeMeta[meta.Permission](op, payload)
+		if err != nil {
+			return err
+		}
+		b.auth.ApplyDeletePermission(rec.User, rec.VHost)
 
 	default:
 		return fmt.Errorf("未知的元数据操作 %q", op)
@@ -394,9 +431,17 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 
 // RestoreMeta 用完整快照重建本地拓扑。
 //
-// 只做**增量补齐**、不删除本地已有实体：transient / exclusive 队列不属于元数据，
+// 拓扑只做**增量补齐**、不删除本地已有实体：transient / exclusive 队列不属于元数据，
 // 按快照删除会把它们连同会话状态一起抹掉。启动时本地为空，因此"补齐"等价于"重建"。
+//
+// 账号与权限不同：它们在元数据里是**唯一权威**，因此按快照**整体替换** ——
+// 不替换的话，运行期删掉的账号会在重启后从配置里"复活"。
+// 唯一的例外是空快照：单机新装 / 新集群首次启动时元数据里本来就没有账号，
+// 此时保留配置带来的初始账号，由 bootstrapUsers 把它们写进元数据。
 func (b *Broker) RestoreMeta(state meta.State) error {
+	if len(state.Users) > 0 {
+		b.auth.ReplaceUsers(restoredUsers(state))
+	}
 	for _, rec := range sortedExchanges(state) {
 		v, err := b.vhostForMeta(rec.VHost)
 		if err != nil {
@@ -542,6 +587,117 @@ func decodeMeta[T any](op meta.Op, payload []byte) (T, error) {
 		return rec, fmt.Errorf("解析 %s 的记录失败: %w", op, err)
 	}
 	return rec, nil
+}
+
+// restoredUsers 把快照里的用户与权限拼回 auth.Store 的记录形态。
+//
+// 元数据里"用户"与"权限"是两组平铺记录，而 auth.Store 把权限挂在用户记录下；
+// 在这里合回一层，是为了不让 auth 再维护一份"权限属于谁"的映射（两处存储必然两处不一致）。
+func restoredUsers(state meta.State) map[string]config.User {
+	out := make(map[string]config.User, len(state.Users))
+	for name, u := range state.Users {
+		out[name] = config.User{
+			Password:     u.Password,
+			Tags:         append([]string(nil), u.Tags...),
+			RemoteAccess: u.RemoteAccess,
+			Permissions:  map[string]config.Permission{},
+		}
+	}
+	for _, p := range state.Permissions {
+		u, ok := out[p.User]
+		if !ok {
+			continue // 权限引用了不存在的用户：删用户时权限记录会被一并清掉
+		}
+		u.Permissions[p.VHost] = config.Permission{
+			Configure: p.Configure, Write: p.Write, Read: p.Read,
+		}
+		out[p.User] = u
+	}
+	return out
+}
+
+// userBootstrapRetry 是首次引导播种账号的重试间隔。
+//
+// 比普通写入宽松：集群刚起来时可能还没选出 leader，重试几次比让启动失败更好 ——
+// 一个"等 2 秒没把 guest 写进去"的启动错误，会把新集群永久卡在无人能登录的状态。
+const userBootstrapRetry = time.Second
+
+// userSeedMark 是"初始账号已处理过"的标记文件（<data_dir>/meta/users.seeded）。
+//
+// 判据**不能**是"元数据里有没有账号"：集群模式下启动后的日志重放是**异步**的，
+// 刚起来的那一瞬间元数据看起来就是空的 —— 拿配置去播种，会把运行期删掉的账号写回日志尾部，
+// 等于让删除失效。标记文件把"本节点是否做过首次引导"变成一个与重放进度无关的确定事实。
+//
+// 它只影响**引导**：删掉这个文件，下次启动会重新把配置里的账号补齐到元数据（幂等）。
+const userSeedMark = "users.seeded"
+
+// bootstrapUsers 把配置里的初始账号写进元数据，随后退出。
+//
+// 与 cluster.peers 同一约定：**配置文件只负责首次引导**，此后账号以元数据为准 ——
+// 否则改密码要靠改配置文件 + 重启，而且各节点配置漂移时会各说各话。
+func (b *Broker) bootstrapUsers(ctx context.Context) {
+	if b.meta == nil {
+		return
+	}
+	mark := filepath.Join(b.cfg.DataDir, "meta", userSeedMark)
+	if _, err := os.Stat(mark); err == nil {
+		return // 本节点已引导过：此后账号以元数据为准
+	}
+	if b.cfg.Cluster.Join {
+		// 以 learner 身份加入既有集群：账号由 leader 的日志/快照带过来，
+		// 本地配置不参与播种（各节点配置漂移时，播种会覆盖集群里已有的口令）。
+		b.log.Info("以 learner 身份加入既有集群，账号由集群元数据接管，不播种本地配置")
+		b.writeSeedMark(mark)
+		return
+	}
+	for {
+		if err := b.seedConfigUsers(); err != nil {
+			b.log.Warn("初始账号写入元数据失败，稍后重试", "err", err, "retry_in", userBootstrapRetry)
+		} else {
+			b.log.Info("已把配置里的初始账号写入元数据（此后账号以元数据为准）",
+				"users", len(b.cfg.Users))
+			b.writeSeedMark(mark)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(userBootstrapRetry):
+		}
+	}
+}
+
+// writeSeedMark 写下引导标记。失败只告警：下次启动会重新播种一遍（幂等），
+// 因此不值得为此让内核启动失败。
+func (b *Broker) writeSeedMark(path string) {
+	if err := os.WriteFile(path, []byte("已按配置完成一次初始账号引导\n"), 0o600); err != nil {
+		b.log.Warn("写入账号引导标记失败（下次启动会重新引导一次）", "path", path, "err", err)
+	}
+}
+
+// seedConfigUsers 提交配置里的全部账号（幂等：重复提交同一份记录不改变最终状态）。
+func (b *Broker) seedConfigUsers() error {
+	for name, u := range b.cfg.Users {
+		rec := meta.User{
+			Name:         name,
+			Password:     u.Password,
+			Tags:         append([]string(nil), u.Tags...),
+			RemoteAccess: u.RemoteAccess,
+		}
+		if err := b.submitMeta(meta.OpPutUser, rec); err != nil {
+			return err
+		}
+		// 配置文件里的权限也一并播种：否则首次启动后"配置里写了权限"与"实际生效"不一致。
+		for vhost, p := range u.Permissions {
+			if err := b.submitMeta(meta.OpPutPermission, meta.Permission{
+				User: name, VHost: vhost,
+				Configure: p.Configure, Write: p.Write, Read: p.Read,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

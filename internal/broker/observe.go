@@ -10,9 +10,11 @@ import (
 	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/swiftmq/internal/meta"
 	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -604,12 +606,65 @@ func (b *Broker) VerifyUser(user, password string, remote net.Addr) (UserSnapsho
 }
 
 // UpsertUser 新建或更新用户。
+//
+// 走元数据层提交（M8-4）：集群下经 Raft 复制到全体节点，单机下落到 meta/state.json，
+// 因此"改了密码/加了账号"不再随进程退出而丢失。
 func (b *Broker) UpsertUser(name, password string, tags []string) error {
-	return b.auth.UpsertUser(name, password, tags)
+	if strings.TrimSpace(name) == "" {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 用户名不能为空")
+	}
+	rec := meta.User{
+		Name:     name,
+		Password: password,
+		Tags:     append([]string(nil), tags...),
+		// 管理 API 创建的账号一律允许远端登录：它是运维显式创建的，默认只允许本机会让它形同虚设
+		// （配置文件里的 guest 仍按配置的 remote_access 生效）。
+		RemoteAccess: true,
+	}
+	if err := b.submitMeta(meta.OpPutUser, rec); err != nil {
+		return err
+	}
+	return b.awaitMeta(func() bool { _, ok := b.auth.User(name); return ok })
 }
 
-// DeleteUser 删除用户。返回是否命中。
-func (b *Broker) DeleteUser(name string) (bool, error) { return b.auth.DeleteUser(name) }
+// DeleteUser 删除用户（连同其权限记录）。返回是否命中。
+//
+// 权限必须显式逐条删除：元数据里的 delete 不级联（见 meta/fsm.go 的 applyToState），
+// 而权限是独立记录 —— 只删用户会在元数据里留下悬空的权限记录。
+func (b *Broker) DeleteUser(name string) (bool, error) {
+	if _, ok := b.auth.User(name); !ok {
+		return false, nil
+	}
+	for _, rec := range b.metaPermissionsOf(name) {
+		if err := b.submitMeta(meta.OpDeletePermission, meta.Permission{User: name, VHost: rec.VHost}); err != nil {
+			return false, err
+		}
+	}
+	if err := b.submitMeta(meta.OpDeleteUser, meta.User{Name: name}); err != nil {
+		return false, err
+	}
+	if err := b.awaitMeta(func() bool { _, ok := b.auth.User(name); return !ok }); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// metaPermissionsOf 返回元数据里某用户的全部权限记录。
+//
+// 以**元数据状态**而不是本地 auth 视图为准：后者可能因复制延迟而少几条，
+// 少删的那几条会在快照恢复时变成悬空记录（引用了已不存在的用户）。
+func (b *Broker) metaPermissionsOf(user string) []meta.Permission {
+	if b.meta == nil {
+		return nil
+	}
+	var out []meta.Permission
+	for _, rec := range b.meta.State().Permissions {
+		if rec.User == user {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
 
 // PermissionSnapshots 返回全部权限记录。
 func (b *Broker) PermissionSnapshots() []PermissionSnapshot {
@@ -656,17 +711,39 @@ func (b *Broker) VHostPermissions(vhost string) []PermissionSnapshot {
 }
 
 // SetPermission 设置权限。正则非法时返回错误（避免"配了却永远拒绝"的静默故障）。
+//
+// 校验在**提交之前**做：非法正则会跟着日志复制到全集群，事后没法收回，
+// 只能靠再写一条正确记录覆盖。
 func (b *Broker) SetPermission(user, vhost, configure, write, read string) error {
 	perm := config.Permission{Configure: configure, Write: write, Read: read}
 	if err := validatePermission(perm); err != nil {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - %v", err)
+	}
+	if _, ok := b.auth.User(user); !ok {
+		return plugin.Errorf(plugin.KindNotFound, "NOT_FOUND - 用户 %s 不存在", user)
+	}
+	rec := meta.Permission{User: user, VHost: vhost, Configure: configure, Write: write, Read: read}
+	if err := b.submitMeta(meta.OpPutPermission, rec); err != nil {
 		return err
 	}
-	return b.auth.SetPermission(user, vhost, perm)
+	return b.awaitMeta(func() bool {
+		p, ok := b.auth.Permissions(user, vhost)
+		return ok && p == perm
+	})
 }
 
 // DeletePermission 删除权限。返回是否命中。
 func (b *Broker) DeletePermission(user, vhost string) (bool, error) {
-	return b.auth.DeletePermission(user, vhost)
+	if _, ok := b.auth.Permissions(user, vhost); !ok {
+		return false, nil
+	}
+	if err := b.submitMeta(meta.OpDeletePermission, meta.Permission{User: user, VHost: vhost}); err != nil {
+		return false, err
+	}
+	if err := b.awaitMeta(func() bool { _, ok := b.auth.Permissions(user, vhost); return !ok }); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // validatePermission 预编译权限正则，提前暴露写错的模式。

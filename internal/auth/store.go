@@ -103,6 +103,90 @@ func (s *Store) DeleteUser(name string) (bool, error) {
 	return true, nil
 }
 
+// ---------------------------------------------------------------------------
+// 元数据应用路径（M8-4）
+//
+// 下面这组方法与 UpsertUser / SetPermission 的区别是**语义**而不是实现：
+// 写路径（管理 API）表达的是"运维想做什么"，要校验、要报错、要返回是否命中；
+// 应用路径（元数据/Raft 日志）表达的是"已经决定要变成什么样"，必须**幂等且不失败** ——
+// 返回错误会让 Raft 反复重放同一条日志，把整个节点卡住。
+// ---------------------------------------------------------------------------
+
+// ApplyUser 覆盖式写入一条来自元数据的用户记录。
+//
+// 与 UpsertUser 的差别在 RemoteAccess：这里按记录给的值走，因此配置文件里的 guest
+// （remote_access=false）在元数据里往返一趟之后仍然只允许本机登录；
+// UpsertUser 是"管理 API 创建账号"的语义，一律允许远端登录。
+func (s *Store) ApplyUser(name string, u config.User) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("元数据中的用户缺少用户名")
+	}
+	rec := u
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// 权限在本包里挂在用户记录下，而元数据里用户与权限是两组独立记录：
+	// 覆盖用户字段时保留已应用的权限，否则"先写权限、后写用户"的顺序会把权限抹掉。
+	if old, ok := s.users[name]; ok {
+		rec.Permissions = old.Permissions
+	}
+	if rec.Permissions == nil {
+		rec.Permissions = map[string]config.Permission{}
+	}
+	s.users[name] = rec
+	return nil
+}
+
+// ApplyDeleteUser 删除用户；不存在时静默成功（日志重放必须幂等）。
+func (s *Store) ApplyDeleteUser(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.users, name)
+}
+
+// ApplyPermission 覆盖式写入一条权限记录；用户不存在时返回 false 且不做任何改动。
+//
+// 不返回 error 是刻意的：调用方（内核）只据此记一条告警。"先给权限、后建用户"
+// 以及快照中权限记录先于用户记录应用都是合法顺序，为此让 Raft 停机会因小失大。
+func (s *Store) ApplyPermission(user, vhost string, p config.Permission) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.users[user]
+	if !ok {
+		return false
+	}
+	if rec.Permissions == nil {
+		rec.Permissions = map[string]config.Permission{}
+	}
+	rec.Permissions[vhost] = p
+	s.users[user] = rec
+	return true
+}
+
+// ApplyDeletePermission 删除一条权限记录；用户或权限不存在时静默成功。
+func (s *Store) ApplyDeletePermission(user, vhost string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.users[user]
+	if !ok {
+		return
+	}
+	delete(rec.Permissions, vhost)
+	s.users[user] = rec
+}
+
+// ReplaceUsers 用一组用户记录整体替换用户表（元数据快照恢复用）。
+//
+// 传入的 map 会被拷贝，调用方随后修改它不会影响本表。
+func (s *Store) ReplaceUsers(users map[string]config.User) {
+	cp := make(map[string]config.User, len(users))
+	for k, v := range users {
+		cp[k] = v
+	}
+	s.mu.Lock()
+	s.users = cp
+	s.mu.Unlock()
+}
+
 // UserPermission 是"某用户在某 vhost 上的权限"的扁平快照。
 type UserPermission struct {
 	User      string
