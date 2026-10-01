@@ -39,6 +39,8 @@ type User struct {
 type Listener struct {
 	// Addr 形如 ":5672"。
 	Addr string `json:"addr"`
+	// TLS 提供证书时，该监听走 TLS（证书在启动时读取并校验）。
+	TLS *TLS `json:"tls,omitempty"`
 }
 
 // Storage 是存储与资源流控配置（M4 起生效）。
@@ -64,6 +66,8 @@ type Management struct {
 	Enabled bool `json:"enabled"`
 	// Addr 是管理面的监听地址，默认 ":15672"（对齐 RabbitMQ 管理插件端口）。
 	Addr string `json:"addr"`
+	// TLS 提供证书时管理面走 HTTPS（字段与协议监听完全一致）。
+	TLS *TLS `json:"tls,omitempty"`
 }
 
 // Cluster 是集群配置（二期 M6）。
@@ -220,6 +224,9 @@ func Load(path string) (*Config, error) {
 	if err := normalizeManagement(&cfg.Management); err != nil {
 		return nil, err
 	}
+	if err := normalizeListeners(cfg.Listeners); err != nil {
+		return nil, err
+	}
 	if err := normalizeCluster(&cfg.Cluster); err != nil {
 		return nil, err
 	}
@@ -335,6 +342,21 @@ func normalizeManagement(m *Management) error {
 	}
 	if _, _, err := net.SplitHostPort(m.Addr); err != nil {
 		return fmt.Errorf("management.addr 取值非法: %q（应形如 :15672 或 127.0.0.1:15672）", m.Addr)
+	}
+	return m.TLS.normalize("management")
+}
+
+// normalizeListeners 校验各协议监听的 TLS 配置。
+//
+// 逐个监听校验（而不是只看插件级），是因为一个插件可能同时开明文与 TLS 两个端口 ——
+// 这正是迁移期的常态，错误信息也必须能定位到具体那个监听。
+func normalizeListeners(listeners map[string][]Listener) error {
+	for pluginName, list := range listeners {
+		for i := range list {
+			if err := list[i].TLS.normalize(fmt.Sprintf("listeners.%s[%d]", pluginName, i)); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

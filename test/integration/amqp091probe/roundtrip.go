@@ -30,7 +30,7 @@ func m2Cases() []testCase {
 
 // withChannel 建立连接与通道，执行 fn，最后清理。
 func withChannel(fn func(*amqp.Channel) error) error {
-	conn, err := amqp.Dial(url(""))
+	conn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("拨号失败: %w", err)
 	}

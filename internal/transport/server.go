@@ -103,6 +103,9 @@ func (s *Server) Start(ctx context.Context, bindings []Binding) error {
 }
 
 func (s *Server) startOne(ctx context.Context, b Binding) error {
+	// 先建明文 TCP 监听，下面再用 tls.NewListener 包一层（接入层原本就是这样）。
+	// 注意别在这里直接 tls.Listen：那会变成双层 TLS —— 外层握手成功，但协议层看到的是
+	// 客户端被解出来的 ClientHello，表现为握手后立刻 EOF。这个坑实测踩过一次。
 	ln, err := net.Listen("tcp", b.Spec.Addr)
 	if err != nil {
 		return fmt.Errorf("监听 %s（协议 %s）失败: %w", b.Spec.Addr, b.Protocol.Name(), err)
@@ -116,7 +119,8 @@ func (s *Server) startOne(ctx context.Context, b Binding) error {
 		boundListener{spec: b.Spec, ln: ln})
 	s.mu.Unlock()
 
-	s.log.Info("监听已启动", "protocol", b.Protocol.Name(), "listener", b.Spec.Name, "addr", ln.Addr().String())
+	s.log.Info("监听已启动", "protocol", b.Protocol.Name(), "listener", b.Spec.Name,
+		"addr", ln.Addr().String(), "tls", b.Spec.TLS != nil)
 	s.wg.Add(1)
 	go s.acceptLoop(ctx, ln, name)
 	return nil

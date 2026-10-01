@@ -1,7 +1,7 @@
 {
   "name": "swiftmq-web",
   "private": true,
-  "version": "0.11.0",
+  "version": "0.13.0",
   "type": "module",
   "description": "SwiftMQ 管理后台前端（Vue 3 + Vite + TypeScript + Element Plus）",
   "scripts": {

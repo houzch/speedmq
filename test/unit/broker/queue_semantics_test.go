@@ -31,13 +31,29 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool)
 	t.Fatalf("等待超时：%s", desc)
 }
 
+// asSessionQueue 把"瞬时（non-durable）非独占"的声明补成一个合法的**会话私有队列**。
+//
+// 背景：RabbitMQ 4.x 默认禁止声明"非持久且非独占"的队列（硬错误 541，**auto_delete 不豁免**），
+// 本项目已对齐该语义（见 TestTransientNonexclusiveQueueRejected）。
+// 这些用例想要的只是"一个普通的临时队列"，补成 exclusive 最贴近原意：
+// 既不落盘、也不进集群元数据，生命周期与会话一致。
+//
+// 传入了 Passive 的探测请求同样要补：exclusive 只影响"新建"，但探测一个已存在的队列时，
+// 请求里的 exclusive 必须与它一致，否则会被判成 405（无法获得独占访问）。
+func asSessionQueue(req plugin.QueueDeclare) plugin.QueueDeclare {
+	if !req.Durable && !req.Exclusive {
+		req.Exclusive = true
+	}
+	return req
+}
+
 // queueCount 通过被动声明读取队列中的就绪消息数。
 //
 // 必须把队列的 x-* 参数原样带上：RabbitMQ 的等价性检查对被动声明同样生效，
 // 参数不一致会直接 406，读到的就永远是 0。
 func queueCount(t *testing.T, sess plugin.Session, name string, args map[string]any) (uint32, bool) {
 	t.Helper()
-	info, err := sess.DeclareQueue(plugin.QueueDeclare{Name: name, Passive: true, Arguments: args})
+	info, err := sess.DeclareQueue(asSessionQueue(plugin.QueueDeclare{Name: name, Passive: true, Arguments: args}))
 	if err != nil {
 		return 0, false
 	}
@@ -63,7 +79,7 @@ func declareDLX(t *testing.T, sess plugin.Session, dlx, dlq string) {
 	if err := sess.DeclareExchange(plugin.ExchangeDeclare{Name: dlx, Type: plugin.ExchangeDirect}); err != nil {
 		t.Fatalf("声明死信交换机失败: %v", err)
 	}
-	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: dlq}); err != nil {
+	if _, err := sess.DeclareQueue(asSessionQueue(plugin.QueueDeclare{Name: dlq})); err != nil {
 		t.Fatalf("声明死信队列失败: %v", err)
 	}
 	if err := sess.BindQueue(dlq, dlx, dlq, nil); err != nil {
@@ -292,9 +308,94 @@ func TestQueueExpires(t *testing.T) {
 	})
 
 	waitFor(t, 3*time.Second, "空闲队列按 x-expires 被删除", func() bool {
-		_, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "expiring.q", Passive: true})
+		_, err := sess.DeclareQueue(asSessionQueue(plugin.QueueDeclare{Name: "expiring.q", Passive: true}))
 		return err != nil // 已不存在 → 被动声明报 404
 	})
+}
+
+// TestTransientNonexclusiveQueueRejected 覆盖：瞬时（non-durable）非独占队列必须被拒绝。
+//
+// 对齐 RabbitMQ 4.x：`transient_nonexcl_queues` 特性自 4.0 起默认禁用，
+// 声明这类队列会以**硬错误**（541 INTERNAL_ERROR）关闭连接。
+// 这条用例来自双跑对照（swiftmq-test 的 transient_nonexcl）：
+// 在此之前本实现会接受它，与 README 声明的"不保留瞬时队列"兼容基线直接冲突。
+func TestTransientNonexclusiveQueueRejected(t *testing.T) {
+	sess := newTestSession(t, newTestBroker(t))
+
+	// auto_delete **不豁免**：RabbitMQ 禁用的是"非持久且非独占"，与 auto_delete 无关（实测确认）。
+	rejected := []struct {
+		desc string
+		req  plugin.QueueDeclare
+	}{
+		{"瞬时非独占", plugin.QueueDeclare{Name: "bad.plain.q"}},
+		{"瞬时非独占 + auto_delete", plugin.QueueDeclare{Name: "bad.autodel.q", AutoDelete: true}},
+	}
+	for _, c := range rejected {
+		_, err := sess.DeclareQueue(c.req)
+		if ke, ok := err.(*plugin.Error); !ok || ke.Kind != plugin.KindInternal {
+			t.Fatalf("%s 应报 KindInternal（541 INTERNAL_ERROR），实际 %v", c.desc, err)
+		}
+	}
+
+	// 对照：其余组合都合法，新校验不能误伤。
+	accepted := []struct {
+		desc string
+		req  plugin.QueueDeclare
+	}{
+		{"durable 非独占", plugin.QueueDeclare{Name: "ok.durable.q", Durable: true}},
+		{"瞬时独占", plugin.QueueDeclare{Name: "ok.excl.q", Exclusive: true}},
+		{"瞬时独占 + auto_delete", plugin.QueueDeclare{Name: "ok.excl.autodel.q", Exclusive: true, AutoDelete: true}},
+		{"durable + auto_delete 非独占", plugin.QueueDeclare{Name: "ok.dur.autodel.q", Durable: true, AutoDelete: true}},
+	}
+	for _, c := range accepted {
+		if _, err := sess.DeclareQueue(c.req); err != nil {
+			t.Fatalf("%s 的队列应被接受，实际 %v", c.desc, err)
+		}
+	}
+}
+
+// TestQueueRedeclareEquivalence 覆盖"重声明一个已存在队列"的完整等价性规则。
+//
+// 每条断言都对应 RabbitMQ 的实测行为（见设计文档 M8-5b 的探测记录）：
+// exclusive 不一致是 405（不是 406）、exclusive 队列不比较 durable、auto_delete 与 arguments 正常比较。
+func TestQueueRedeclareEquivalence(t *testing.T) {
+	sess := newTestSession(t, newTestBroker(t))
+
+	// —— 独占队列 ——
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.excl.q", Exclusive: true}); err != nil {
+		t.Fatalf("首次声明独占队列失败: %v", err)
+	}
+	// 换 durable 重声明应被接受：RabbitMQ 不比较 exclusive 队列的 durable（M8-5b）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.excl.q", Durable: true, Exclusive: true}); err != nil {
+		t.Fatalf("独占队列换 durable 重声明应被接受，实际 %v", err)
+	}
+	// 但 auto_delete 不一致仍要 406。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.excl.q", Exclusive: true, AutoDelete: true}); !isKind(err, plugin.KindPreconditionFailed) {
+		t.Fatalf("独占队列 auto_delete 不一致应 406，实际 %v", err)
+	}
+	// arguments 不一致同样要 406。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{
+		Name: "r.excl.q", Exclusive: true, Arguments: map[string]any{"x-max-length": 5},
+	}); !isKind(err, plugin.KindPreconditionFailed) {
+		t.Fatalf("独占队列 arguments 不一致应 406，实际 %v", err)
+	}
+	// 改成非独占声明 → 405（不是 406）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.excl.q", Durable: true}); !isKind(err, plugin.KindResourceLocked) {
+		t.Fatalf("独占队列被非独占重声明应 405，实际 %v", err)
+	}
+
+	// —— 非独占队列 ——
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.plain.q", Durable: true}); err != nil {
+		t.Fatalf("首次声明 durable 非独占队列失败: %v", err)
+	}
+	// 要求独占 → 405（反向也一致）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.plain.q", Durable: true, Exclusive: true}); !isKind(err, plugin.KindResourceLocked) {
+		t.Fatalf("非独占队列被要求独占应 405，实际 %v", err)
+	}
+	// durable 不一致 → 406（非独占队列要比 durable）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "r.plain.q"}); !isKind(err, plugin.KindPreconditionFailed) {
+		t.Fatalf("非独占队列 durable 不一致应 406，实际 %v", err)
+	}
 }
 
 // TestQueueTypeValidation 覆盖队列类型的声明校验：
@@ -338,10 +439,10 @@ func TestQueueTypeValidation(t *testing.T) {
 	}
 
 	// classic 显式声明应被接受
-	if _, err := sess.DeclareQueue(plugin.QueueDeclare{
+	if _, err := sess.DeclareQueue(asSessionQueue(plugin.QueueDeclare{
 		Name:      "classic.q",
 		Arguments: map[string]any{"x-queue-type": "classic"},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("classic 队列应被接受: %v", err)
 	}
 }
@@ -372,7 +473,7 @@ func TestPermissionEnforcement(t *testing.T) {
 	if err := sess.DeclareExchange(plugin.ExchangeDeclare{Name: "app.ex", Type: plugin.ExchangeDirect}); err != nil {
 		t.Fatalf("声明 app.ex 应被允许: %v", err)
 	}
-	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "app.q"}); err != nil {
+	if _, err := sess.DeclareQueue(asSessionQueue(plugin.QueueDeclare{Name: "app.q"})); err != nil {
 		t.Fatalf("声明 app.q 应被允许: %v", err)
 	}
 	if err := sess.BindQueue("app.q", "app.ex", "app.q", nil); err != nil {

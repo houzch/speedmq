@@ -26,7 +26,7 @@ const quorumProbeCount = 3
 // confirm 在仲裁队列上的含义是"已复制到多数派"，因此全部 confirm 到齐就等价于
 // "这些消息已经在多数派落盘" —— 这正是后面杀 leader 验证的前提。
 func runQuorumProduce() error {
-	conn, err := amqp.Dial(url(""))
+	conn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("连接 %s 失败: %w", *addr, err)
 	}
@@ -70,7 +70,7 @@ func runQuorumProduce() error {
 
 // runQuorumVerify 在（幸存）节点上把消息取回来并核对条数。
 func runQuorumVerify() error {
-	conn, err := amqp.Dial(url(""))
+	conn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("连接 %s 失败: %w", *addr, err)
 	}

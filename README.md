@@ -45,8 +45,12 @@
 - **插件隔离与留痕（M7c）**：API 版本不匹配、依赖缺失、依赖成环**不再阻塞内核启动** —— 只隔离出问题的那部分插件（隔离沿依赖链传播），内核与其余插件照常运行；失败原因通过管理 API 的 `runtime_note`、`swiftmqctl plugins list/show` 与 `/metrics` 对外可见；插件调用了未声明的能力（如没申请 `net.listen` 却注册协议）会被拒绝且同样留痕
 - **性能基线与优化（M7d）**：`test/unit/broker/bench_test.go` 提供可复现基准（小消息发布→消费闭环、1 MiB 大消息、会话建立成本）；据此定位并优化了两处热路径：水位闸门由"每消息加锁"改为**原子快路径**，权限检查对 `.*` 这类"允许一切"的规则**跳过正则引擎**（本机 windows/386 上发布路径 ns/op 下降约 20%，会话建立下降约 38%）
 - **错误语义**：`404 / 406 / 403 / 405 / 402 / 540 / 504` 与 RabbitMQ 对齐（软错误只关 Channel，硬错误关连接）
+- **声明合法性对齐 RabbitMQ 4.x**：拒绝声明"**非持久且非独占**"的队列（`541 INTERNAL_ERROR`，对应 RabbitMQ 4.x 起默认禁用的 `transient_nonexcl_queues`，`auto_delete` **不豁免**）；队列重声明的等价性规则也按实测对齐 —— `exclusive` 不一致回 **405 RESOURCE_LOCKED**（两个方向都是），exclusive 队列**不比较** `durable`，`auto_delete` / `arguments` 不一致回 406。这些语义都是**双跑对照测试发现并补齐**的 —— 此前实现与本节声明的"不保留瞬时队列"基线不符
 - **MQTT 3.1.1 协议插件（M7）**：内核内置的**第二个**协议插件（`internal/protocol/mqtt`，只依赖 `pkg/plugin` 与标准库）。CONNECT/CONNACK、PUBLISH/PUBACK、SUBSCRIBE/SUBACK、UNSUBSCRIBE/UNSUBACK、PINGREQ/PINGRESP、DISCONNECT；QoS 0/1（订阅 QoS2 按规范降级授予 1，入站 QoS2 完整走完四步握手）；Clean Session 映射到内核队列的 durable/autoDelete（持久会话重连后继续投递）；保留消息与遗嘱消息；Keep Alive。**MQTT 主题复用内核的 `amq.topic` 交换机**，因此路由、死信、TTL、持久化、权限对两个协议完全同一套
 - 插件框架：注册中心、依赖 DAG 排序、能力审计、失败隔离；AMQP 0-9-1 是**第一个协议插件**（内核不含任何 AMQP 知识）
+- **段轮转与磁盘回收（M8-1）**：消息按大小分段（默认 8 MiB），段内消息**全部确认后整段删除**，索引随之压缩重写 —— 磁盘占用不再只增不减（此前每队列单段、删除仅标记）。旧格式索引（无段号）可原样读取，**不需要迁移**
+- **AMQP 事务（M8-2）**：`tx.select / tx.commit / tx.rollback` 完整可用；事务在**协议层缓冲**实现（内核零改动），提交前对外不可见、回滚即丢弃，且与发布确认互斥（406）
+- **TLS（M8-3）**：协议监听与管理面都可走 TLS，配置项 `cert_file` / `key_file` / `ca_file` / `client_auth` / `min_version`（`client_auth: require_and_verify` 即双向认证）；证书在**启动时**读取校验 —— 配错了内核直接拒绝启动，而不是等客户端连上来才暴露
 
 **尚未实现**
 
@@ -55,7 +59,6 @@
 - 用户 / 权限 / vhost 的集群复制（当前只在本地生效；本期复制的是 durable 拓扑）
 - vhost 的动态增删
 - 策略（policies）接口：`/api/policies` 返回空数组，功能未实现
-- 段文件的轮转与磁盘回收（当前每队列单段，删除仅标记）
 - 流队列与 Stream 协议
 - AMQP 1.0 / STOMP（计划以插件形态提供）；MQTT 3.1.1 已落地（见上文）
 - **外部进程插件的已知边界（M7b/M7c）**：外部协议插件拿到的是**原始字节流**，目前还**不能调用内核语义**（队列 / 路由 / 权限）—— 把 `plugin.Session` 桥成 RPC 是后续步骤；因此现阶段它适合做"接入 / 转换类"插件，而不是"需要内核存储与路由"的协议。另外数据面走本机连接**代理转发**（没有文件描述符传递，这是跨平台与零依赖之间的取舍），每次转发多一次内存拷贝。`swiftmqctl` 目前只能通过管理 API 观测外部插件，**不能**代为拉起进程（拉起只能由内核按配置 `spawn`）
@@ -98,7 +101,7 @@ go build -o bin/swiftmqctl ./cmd/swiftmqctl
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.11.0 data_dir=data vhost=/ fsync=os
+msg="SwiftMQ 启动中" version=0.13.0 data_dir=data vhost=/ fsync=os
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 msg="MQTT 插件已初始化" plugin=mqtt exchange=amq.topic max_packet_size=8388608 prefetch=32
@@ -272,7 +275,10 @@ conn.close()
   "default_vhost": "/",
   "vhosts": ["/"],
   "listeners": {
-    "amqp091": [{ "addr": ":5672" }],
+    "amqp091": [
+      { "addr": ":5672" },
+      { "addr": ":5671", "tls": { "cert_file": "/etc/swiftmq/cert.pem", "key_file": "/etc/swiftmq/key.pem" } }
+    ],
     "mqtt": [{ "addr": ":1883" }]
   },
   "users": {
@@ -286,7 +292,14 @@ conn.close()
   },
   "management": {
     "enabled": true,
-    "addr": ":15672"
+    "addr": ":15672",
+    "tls": {
+      "cert_file": "/etc/swiftmq/cert.pem",
+      "key_file": "/etc/swiftmq/key.pem",
+      "ca_file": "/etc/swiftmq/ca.pem",
+      "client_auth": "verify",
+      "min_version": "1.2"
+    }
   },
   "cluster": {
     "enabled": false,
@@ -316,12 +329,26 @@ conn.close()
 | ----------- | ------------------------------------------------------- |
 | `data_dir`  | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
 | `vhosts`    | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上                |
-| `listeners` | 按**插件名**覆盖监听地址                                          |
+| `listeners` | 按**插件名**声明监听清单：第 i 项沿用该插件第 i 个默认监听的名字，多出来的项是**新增**监听（于是"同一插件明文 + TLS 并存"只要列两个 `addr` 即可） |
 | `users`     | 内置用户表；**默认内置 `guest` / `guest`（标签 `administrator`）**，`remote_access: false` 时仅允许本机登录（管理面同样受限） |
 | `plugins`   | 各插件的配置段；内核只读其中的治理开关（`enabled` / `required` / `builtin`），其余原样交给插件 |
 | `storage`   | 存储与流控配置段（M4 起生效）                                        |
 | `management`| 管理面配置段（M5 起生效）：`enabled` 关闭后不监听任何管理端口                   |
 | `cluster`   | 集群配置段（M6 起生效）：`enabled` 为 `true` 时才走 Raft，默认关闭时是单机语义                     |
+
+`listeners.<插件>[].tls` 与 `management.tls` 共用同一套 `tls` 字段（M8-3 起）：
+
+| 字段            | 默认值      | 说明                                                                                                   |
+| ------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `cert_file`   | 空        | 服务端证书链（PEM）。**与 `key_file` 同给**才算开启 TLS；只给其一即启动报错                                                        |
+| `key_file`    | 空        | 服务端私钥（PEM）                                                                                           |
+| `ca_file`     | 空        | 校验**客户端**证书用的 CA（PEM）；双向认证时必给                                                                            |
+| `client_auth` | `none`   | 客户端证书策略：`none` / `request` / `require` / `verify_if_given` / `require_and_verify`。后两者要求同时提供 `ca_file` |
+| `min_version` | `1.2`    | 最低 TLS 版本：`1.2` / `1.3`                                                                                |
+
+> 证书在**启动时**读取并解析：配置写错立刻拒绝启动，而不是等第一个客户端连上来才暴露。
+> 明文与 TLS **可以并存**（同一插件下给多个 `addr`，各带各的 `tls` 即可），默认不开启 TLS。
+
 
 `storage` 字段：
 
@@ -737,7 +764,7 @@ npm run type-check    # TypeScript 严格模式检查
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.11.0 .
+docker build -t swiftmq:0.13.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -762,11 +789,13 @@ docker build -t swiftmq:0.11.0 .
 | 二期 | M7c | 插件 DoD 收口：错误影响面仅限该插件、越权拒绝留痕、依赖边界可验证             | ✅ 已完成 |
 | 二期 | M7d | 性能打磨：可复现基准、大消息与连接规模、一处数据驱动优化、短时混沌              | ✅ 已完成 |
 
-| 三期 | M8 | **生产就绪**：段文件回收、AMQP 事务、TLS、权限集群复制、双跑对照、长稳与性能达标（清单与优先级见设计文档 M8 章节） | 规划中 |
+| 三期 | M8 | **生产就绪**：M8-1 段回收 ✅、M8-2 AMQP 事务 ✅、M8-3 TLS ✅、M8-5 双跑对照 ✅；余下 M8-4 权限集群复制、M8-6~M8-10（清单与优先级见设计文档 M8 章节） | 进行中 |
 
 每个里程碑的完成标准是"**真实客户端跑通 + 与 RabbitMQ 行为一致**"，而非"代码写完"。
 
-> 二期（M6 / M7）已全部完成，但**这还不等于可用于生产**。M8 是"生产就绪"这一期：在它完成之前，README 顶部会一直保留"不可用于生产"的声明。M8 的出口条件 = 磁盘回收、AMQP 事务、TLS、用户/权限集群复制这四类**硬缺口**补齐，且双跑对照与长稳压测给出可复现证据。
+> 二期（M6 / M7）已全部完成，三期（M8）进行中，但**这还不等于可用于生产**。在 M8 完成之前，README 顶部会一直保留"不可用于生产"的声明。M8 的出口条件 = **磁盘回收 ✅、AMQP 事务 ✅**、TLS、用户/权限集群复制这四类硬缺口补齐，且**双跑对照 ✅**与长稳压测给出可复现证据；当前剩下的是 TLS、权限集群复制与长稳/性能验证。
+>
+> 其中「与 RabbitMQ 双跑对照」的编排（两个 broker 同编排 + 各语言用例容器）与"已知差异"清单在配套工程 **`swiftmq-test/`**（独立于本仓库，含 `compare.py` 一键运行器），落地方式与判定口径见设计文档 §13.3。
 
 ***
 

@@ -186,6 +186,20 @@ func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.
 // 死信走"异步入队 + 内核后台派发"，而不是在队列持锁时同步路由 ——
 // 后者在"死信目标恰好是本队列"时会自锁死。
 func (s *vhostSession) newQueueIn(name string, req plugin.QueueDeclare, args queueArgs) (*queue, error) {
+	// 拒绝"瞬时（non-durable）非独占队列"，对齐 RabbitMQ 4.x：
+	// 4.0 起 `transient_nonexcl_queues` 特性默认禁用，声明这类队列会以硬错误（541 INTERNAL_ERROR）
+	// 关闭连接。本项目的兼容基线（见 README）本身就写着"不保留瞬时队列"，
+	// 这里把那条声明落到实现上 —— 双跑对照正是靠这条用例发现了"实现与声明不符"。
+	//
+	// 判定条件就是"非持久且非独占"：**auto_delete 不豁免**（实测确认，见 M8-5b 的探测记录）。
+	// 只拦"新建"这一条路径：队列若已存在，由等价性检查（406）负责，不能改判成硬错误。
+	if !req.Durable && !req.Exclusive {
+		return nil, plugin.Errorf(plugin.KindInternal,
+			"INTERNAL_ERROR - cannot declare transient non-exclusive queue '%s' in vhost '%s': "+
+				"the deprecated 'transient_nonexcl_queues' feature is disabled (RabbitMQ 4.x semantics)",
+			name, s.vh.name)
+	}
+
 	q := newQueue(name, req.Durable, req.Exclusive, req.AutoDelete,
 		s.ownerOf(req.Exclusive), map[string]any(req.Arguments), args, s.vh.log)
 	s.vh.wireDeadLetter(q, args)
@@ -524,6 +538,14 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 
 // existingQueue 处理"队列已存在"的声明：等价性校验、独占校验，并返回 Owner 侧的统计。
 func (s *vhostSession) existingQueue(q *queue, req plugin.QueueDeclare) (plugin.QueueInfo, error) {
+	// exclusive 标志不一致一律 405（**两个方向都是**）：RabbitMQ 把它归为"无法获得独占访问"。
+	// 实测（M8-5b 探测）：exclusive→非 exclusive 是 405、非 exclusive→exclusive 也是 405。
+	// 注意 exclusive **不参与**等价性比较（见 checkQueueEquivalence），否则这里会先被判成 406。
+	if q.exclusive != req.Exclusive {
+		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
+			"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '%s' in vhost '%s'",
+			q.name, s.vh.name)
+	}
 	if err := checkQueueEquivalence(q, req); err != nil {
 		return plugin.QueueInfo{}, err
 	}
@@ -1451,11 +1473,22 @@ func checkExchangeEquivalence(ex *exchange, req plugin.ExchangeDeclare) error {
 	return nil
 }
 
+// checkQueueEquivalence 比较"已存在队列"与本次声明是否等价。
+//
+// 两处与直觉不同、但都是 RabbitMQ 的实测行为（见设计文档 M8-5b 的探测记录）：
+//   - **不比较 exclusive**：exclusive 不一致由 existingQueue 判成 405（而不是 406）；
+//   - **exclusive 队列不比较 durable**：它的生命周期绑在声明连接上，durable 没有实际意义，
+//     RabbitMQ 对此跳过检查（用不同 durable 重声明一个 exclusive 队列会被接受）。
 func checkQueueEquivalence(q *queue, req plugin.QueueDeclare) error {
-	if q.durable != req.Durable || q.exclusive != req.Exclusive || q.autoDelete != req.AutoDelete {
+	if !q.exclusive && q.durable != req.Durable {
 		return plugin.Errorf(plugin.KindPreconditionFailed,
-			"PRECONDITION_FAILED - inequivalent arg for queue '%s': declared as durable=%t exclusive=%t auto_delete=%t",
-			req.Name, q.durable, q.exclusive, q.autoDelete)
+			"PRECONDITION_FAILED - inequivalent arg 'durable' for queue '%s': received %t, current is %t",
+			req.Name, req.Durable, q.durable)
+	}
+	if q.autoDelete != req.AutoDelete {
+		return plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - inequivalent arg 'auto_delete' for queue '%s': received %t, current is %t",
+			req.Name, req.AutoDelete, q.autoDelete)
 	}
 	if !argsEquivalent(q.arguments, req.Arguments) {
 		return plugin.Errorf(plugin.KindPreconditionFailed,

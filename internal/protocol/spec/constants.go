@@ -97,6 +97,16 @@ const (
 	MethodConfirmSelectOk uint16 = 11
 )
 
+// Tx (90) 方法标识。事务与 Confirm 互斥（同一通道二选一），见 amqp091 的 channel。
+const (
+	MethodTxSelect     uint16 = 10
+	MethodTxSelectOk   uint16 = 11
+	MethodTxCommit     uint16 = 20
+	MethodTxCommitOk   uint16 = 21
+	MethodTxRollback   uint16 = 30
+	MethodTxRollbackOk uint16 = 31
+)
+
 // 错误码。这些值决定客户端"关 Channel 还是关连接"，属兼容性高危区，不可随意改动。
 const (
 	ReplySuccess       uint16 = 200

@@ -10,6 +10,7 @@ package management
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,6 +44,8 @@ type PluginController interface {
 type Deps struct {
 	// Addr 是监听地址，如 ":15672"。
 	Addr string
+	// TLS 非空时管理面走 HTTPS（由 cmd 从配置构造，证书在启动时校验）。
+	TLS *tls.Config
 	// Broker 提供对象视图与运行期管理操作。
 	Broker *broker.Broker
 	// Plugins 提供插件治理能力。
@@ -86,7 +89,15 @@ func New(log *slog.Logger, deps Deps) (*Server, error) {
 
 // Start 开始监听并提供服务。
 func (s *Server) Start() error {
-	ln, err := net.Listen("tcp", s.deps.Addr)
+	var (
+		ln  net.Listener
+		err error
+	)
+	if s.deps.TLS != nil {
+		ln, err = tls.Listen("tcp", s.deps.Addr, s.deps.TLS)
+	} else {
+		ln, err = net.Listen("tcp", s.deps.Addr)
+	}
 	if err != nil {
 		return fmt.Errorf("管理面监听 %s 失败: %w", s.deps.Addr, err)
 	}

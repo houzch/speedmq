@@ -526,6 +526,9 @@ func (c *conn) ensureQueue(qos byte) (*qosQueue, error) {
 		Name:       name,
 		Durable:    !c.cleanSession,
 		AutoDelete: c.cleanSession,
+		// Clean Session=1 的队列必须独占：RabbitMQ 4.x 禁止"瞬时（non-durable）非独占队列"（541），
+		// 而独占恰好是它的真实语义 —— 队列只服务这一个 MQTT 连接，随连接关闭一起回收。
+		Exclusive: c.cleanSession,
 	}); err != nil {
 		return nil, fmt.Errorf("声明订阅队列 %s 失败: %w", name, err)
 	}

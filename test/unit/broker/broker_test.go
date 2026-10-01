@@ -70,7 +70,8 @@ func newTestSession(t *testing.T, b *broker.Broker) plugin.Session {
 
 func mustDeclareQueue(t *testing.T, sess plugin.Session, req plugin.QueueDeclare) plugin.QueueInfo {
 	t.Helper()
-	info, err := sess.DeclareQueue(req)
+	// 测试里要的"普通临时队列"补成会话私有队列：瞬时非独占队列已被禁止（见 asSessionQueue）。
+	info, err := sess.DeclareQueue(asSessionQueue(req))
 	if err != nil {
 		t.Fatalf("声明队列失败: %v", err)
 	}

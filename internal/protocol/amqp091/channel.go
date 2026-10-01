@@ -33,10 +33,39 @@ type channel struct {
 	// （与 delivery-tag 是两套独立的编号空间）。
 	confirm    bool
 	publishSeq uint64
+	// tx 为 true 时通道处于事务模式（Tx.Select）；txOps 是事务缓冲。
+	// 事务完全在协议层实现 —— 内核 Session 不需要知道事务的存在：
+	// 缓冲里的 publish 在 commit 时才真正投递，ack 在 commit 时才真正结算。
+	tx    bool
+	txOps []txOp
 	// pending 是正在组装的内容（basic.publish 之后等 header 与 body 帧）
 	pending *pendingContent
 	// closing 表示已因软错误关闭，等待客户端的 Channel.Close-Ok
 	closing bool
+}
+
+// txOpKind 区分事务缓冲里的一项操作。
+type txOpKind uint8
+
+const (
+	txOpPublish txOpKind = iota
+	txOpSettle
+)
+
+// txOp 是事务缓冲里的一项操作（publish 或 ack/nack/reject）。
+//
+// 两者放在**同一个有序切片**里，是为了让 commit 严格按客户端的调用顺序应用 ——
+// 一个事务里"先 ack 再 publish"与"先 publish 再 ack"的结果可能不同
+// （例如队列长度限制 / 溢出策略），保持顺序才不会让客户端遇到意外的语义。
+type txOp struct {
+	kind txOpKind
+	// publish 用：消息本体与 mandatory 标志。
+	msg       *plugin.Message
+	mandatory bool
+	// settle 用：投递标签、是否批量、结算动作。
+	tag      uint64
+	multiple bool
+	action   plugin.SettleAction
 }
 
 // consumerEntry 的定义见 channel_methods.go：它带有"就绪闸门"，用于保证
@@ -129,6 +158,14 @@ func (ch *channel) finishPublish() error {
 		Properties: p.header.Properties,
 		Body:       p.body,
 	}
+
+	// 事务模式：先缓冲，等 Tx.Commit 再真正投递给内核。
+	// 缓冲期间这条消息对任何队列都不可见 —— 这正是"提交前不可见"的事务语义。
+	if ch.inTx() {
+		ch.bufferPublish(msg, p.pub.Mandatory)
+		return nil
+	}
+
 	sess := ch.con.sessionOrNil()
 	if sess == nil {
 		return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - vhost 会话未打开")
@@ -169,10 +206,107 @@ func (ch *channel) finishPublish() error {
 }
 
 // enableConfirm 打开本通道的发布确认模式。
-func (ch *channel) enableConfirm() {
+//
+// 与事务互斥：同一通道上先 tx.select 再 confirm.select 会回 406（反向亦然，见 enableTx）。
+func (ch *channel) enableConfirm() error {
 	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.tx {
+		return plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - cannot switch from tx to confirm mode")
+	}
 	ch.confirm = true
 	ch.publishSeq = 0
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// 事务（Tx.Select / Tx.Commit / Tx.Rollback）
+// ---------------------------------------------------------------------------
+
+// inTx 返回本通道是否处于事务模式。
+func (ch *channel) inTx() bool {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	return ch.tx
+}
+
+// enableTx 打开事务模式（Tx.Select）。与 Confirm 互斥。
+//
+// 重复 tx.select 是幂等的（RabbitMQ 亦然）：既不清空缓冲，也不报错。
+func (ch *channel) enableTx() error {
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	if ch.confirm {
+		return plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - cannot switch from confirm to tx mode")
+	}
+	ch.tx = true
+	return nil
+}
+
+// bufferPublish 在事务模式下缓冲一条发布。
+func (ch *channel) bufferPublish(msg *plugin.Message, mandatory bool) {
+	ch.mu.Lock()
+	ch.txOps = append(ch.txOps, txOp{kind: txOpPublish, msg: msg, mandatory: mandatory})
+	ch.mu.Unlock()
+}
+
+// bufferSettle 在事务模式下缓冲一次结算（ack / nack / reject）。
+//
+// 缓冲期间**不动** unacked 集合：事务未提交前这些消息仍是未确认的，
+// 因此 rollback 之后客户端可以重新 ack；这也让"通道关闭 → 未确认消息重新入队"
+// 这条既有保证依然成立。
+func (ch *channel) bufferSettle(action plugin.SettleAction, tag uint64, multiple bool) {
+	ch.mu.Lock()
+	ch.txOps = append(ch.txOps, txOp{kind: txOpSettle, tag: tag, multiple: multiple, action: action})
+	ch.mu.Unlock()
+}
+
+// commitTx 提交事务：按客户端调用顺序把缓冲里的操作应用到内核。
+//
+// 任一步失败即中止并返回错误（协议层据此回 channel 级错误）。
+// 已经应用过的部分**不回滚**：RabbitMQ 的事务也不是跨队列的原子提交，
+// 它给出的保证是"提交前对外不可见"，而不是"要么全做要么全不做"。
+func (ch *channel) commitTx(sess plugin.Session) error {
+	ch.mu.Lock()
+	ops := ch.txOps
+	ch.txOps = nil
+	ch.mu.Unlock()
+
+	for _, op := range ops {
+		switch op.kind {
+		case txOpPublish:
+			res, err := sess.Publish(op.msg, op.msg.Exchange, op.msg.RoutingKey, op.mandatory)
+			if err != nil {
+				return err
+			}
+			if !res.Routed && op.mandatory {
+				if err := ch.sendReturn(uint16(spec.NoRoute), "NO_ROUTE", op.msg); err != nil {
+					return err
+				}
+			}
+			// 提交必须等落盘：客户端把 Commit-Ok 当作"这批消息已经生效"的依据，
+			// 持久消息只在内存里就回 Ok 会违背这条约定。
+			if res.Durable != nil {
+				if err := res.Durable(); err != nil {
+					return plugin.Errorf(plugin.KindInternal,
+						"INTERNAL_ERROR - 事务提交时持久化失败: %v", err)
+				}
+			}
+		case txOpSettle:
+			if err := ch.settle(op.action, op.tag, op.multiple); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// rollbackTx 回滚事务：丢弃缓冲。未提交的 ack 随之作废（消息仍处于未确认状态）。
+func (ch *channel) rollbackTx() {
+	ch.mu.Lock()
+	ch.txOps = nil
 	ch.mu.Unlock()
 }
 
@@ -382,27 +516,33 @@ func (ch *channel) discardUnacked(tag uint64) {
 // 确认
 // ---------------------------------------------------------------------------
 
-// ack 处理 basic.ack（正常消费完成）。
+// ack 处理 basic.ack（正常消费完成）。事务模式下只缓冲，commit 时才真正生效。
 func (ch *channel) ack(tag uint64, multiple bool) error {
-	targets, err := ch.takeUnacked(tag, multiple)
-	if err != nil {
-		return err
+	if ch.inTx() {
+		ch.bufferSettle(plugin.SettleAck, tag, multiple)
+		return nil
 	}
-	for _, d := range targets {
-		d.Settle(plugin.SettleAck)
-	}
-	return nil
+	return ch.settle(plugin.SettleAck, tag, multiple)
 }
 
-// nack 处理 basic.nack / basic.reject。
+// nack 处理 basic.nack / basic.reject。事务模式下只缓冲，commit 时才真正生效。
 func (ch *channel) nack(tag uint64, multiple, requeue bool) error {
-	targets, err := ch.takeUnacked(tag, multiple)
-	if err != nil {
-		return err
-	}
 	action := plugin.SettleReject
 	if requeue {
 		action = plugin.SettleRequeue
+	}
+	if ch.inTx() {
+		ch.bufferSettle(action, tag, multiple)
+		return nil
+	}
+	return ch.settle(action, tag, multiple)
+}
+
+// settle 应用一次结算：取出未确认投递，并把动作交给内核。
+func (ch *channel) settle(action plugin.SettleAction, tag uint64, multiple bool) error {
+	targets, err := ch.takeUnacked(tag, multiple)
+	if err != nil {
+		return err
 	}
 	for _, d := range targets {
 		d.Settle(action)

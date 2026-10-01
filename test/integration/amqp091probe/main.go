@@ -35,6 +35,15 @@ type testCase struct {
 func main() {
 	flag.Parse()
 
+	if *gcert != "" {
+		if err := generateCert(*gcert); err != nil {
+			fmt.Fprintf(os.Stderr, "生成证书失败: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Printf("OK    已生成证书: %s/{cert.pem,key.pem}\n", *gcert)
+		return
+	}
+
 	if *declareDurable != "" {
 		if err := declareDurableQueue(*declareDurable); err != nil {
 			fmt.Printf("FAIL  声明 durable 队列 %s: %v\n", *declareDurable, err)
@@ -80,6 +89,7 @@ func main() {
 	cases = append(cases, m2Cases()...)
 	cases = append(cases, m3Cases()...)
 	cases = append(cases, m4Cases()...)
+	cases = append(cases, m8Cases()...)
 
 	var failed int
 	for _, tc := range cases {
@@ -115,7 +125,7 @@ func declareDurableQueue(name string) error {
 
 // testHappyPath 覆盖 M1 的核心路径。
 func testHappyPath() error {
-	conn, err := amqp.Dial(url(""))
+	conn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("拨号失败: %w", err)
 	}
@@ -156,7 +166,7 @@ func testHappyPath() error {
 }
 
 func testBadPassword() error {
-	conn, err := amqp.Dial(fmt.Sprintf("amqp://%s:%s@%s/", *user, "wrong-password", *addr))
+	conn, err := dial(fmt.Sprintf("amqp://%s:%s@%s/", *user, "wrong-password", *addr))
 	if err == nil {
 		conn.Close()
 		return fmt.Errorf("期望认证失败，但连接成功了")
@@ -174,7 +184,7 @@ func testBadPassword() error {
 }
 
 func testUnknownVHost() error {
-	conn, err := amqp.Dial(url("no-such-vhost"))
+	conn, err := dial(url("no-such-vhost"))
 	if err == nil {
 		conn.Close()
 		return fmt.Errorf("期望 vhost 不存在而失败，但连接成功了")

@@ -42,7 +42,7 @@ func runClusterCheck() error {
 	}
 
 	// 2. 客户端连到非 Owner 节点，并在那里消费（内核会注册代理消费者）。
-	proxyConn, err := amqp.Dial(url(""))
+	proxyConn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("连接非 Owner 节点 %s 失败: %w", *addr, err)
 	}
@@ -108,7 +108,7 @@ func runClusterCheck() error {
 	if err := ownerCh.Publish("", queue, false, false, amqp.Publishing{Body: []byte("get-me")}); err != nil {
 		return fmt.Errorf("在 Owner 节点发布失败: %w", err)
 	}
-	getConn, err := amqp.Dial(url(""))
+	getConn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("重新连接非 Owner 节点 %s 失败: %w", *addr, err)
 	}

@@ -71,7 +71,9 @@ func setupDLX(ch *amqp.Channel, prefix string) (string, error) {
 	if err := ch.ExchangeDeclare(dlx, "direct", false, false, false, false, nil); err != nil {
 		return "", fmt.Errorf("声明死信交换机失败: %w", err)
 	}
-	if _, err := ch.QueueDeclare(dlq, false, false, false, false, nil); err != nil {
+	// durable=true：声明"非持久且非独占"的队列已被禁止（对齐 RabbitMQ 4.x，541 硬错误），
+	// 而 dlq 要跨 withChannel 的连接存活、不能用 exclusive，因此用持久队列。
+	if _, err := ch.QueueDeclare(dlq, true, false, false, false, nil); err != nil {
 		return "", fmt.Errorf("声明死信队列失败: %w", err)
 	}
 	// 清掉上一次运行可能残留的消息，保证断言稳定
@@ -130,7 +132,7 @@ func testTTLToDeadLetter() error {
 			return err
 		}
 		src := "m3.ttl.src"
-		if _, err := ch.QueueDeclare(src, false, false, false, false, amqp.Table{
+		if _, err := ch.QueueDeclare(src, true, false, false, false, amqp.Table{
 			"x-message-ttl":             int32(100),
 			"x-dead-letter-exchange":    "m3.ttl.dlx",
 			"x-dead-letter-routing-key": dlq,
@@ -159,7 +161,7 @@ func testRejectToDeadLetter() error {
 			return err
 		}
 		src := "m3.rej.src"
-		if _, err := ch.QueueDeclare(src, false, false, false, false, amqp.Table{
+		if _, err := ch.QueueDeclare(src, true, false, false, false, amqp.Table{
 			"x-dead-letter-exchange":    "m3.rej.dlx",
 			"x-dead-letter-routing-key": dlq,
 		}); err != nil {
@@ -189,7 +191,7 @@ func testRejectToDeadLetter() error {
 func testRejectPublishNack() error {
 	return withChannel(func(ch *amqp.Channel) error {
 		q := "m3.lim.q"
-		if _, err := ch.QueueDeclare(q, false, false, false, false, amqp.Table{
+		if _, err := ch.QueueDeclare(q, true, false, false, false, amqp.Table{
 			"x-max-length": int32(1),
 			"x-overflow":   "reject-publish",
 		}); err != nil {

@@ -185,7 +185,9 @@ func (e *testEnv) declareQueue(t *testing.T, name string, args map[string]any) {
 		t.Fatalf("打开会话失败: %v", err)
 	}
 	defer sess.Close()
-	if _, err := sess.DeclareQueue(sdk.QueueDeclare{Name: name, Arguments: args}); err != nil {
+	// Durable：本 helper 里的会话是临时的（defer Close），队列必须跨会话存活；
+	// 而瞬时非独占队列已被禁止（对齐 RabbitMQ 4.x），exclusive 又会被会话回收。
+	if _, err := sess.DeclareQueue(sdk.QueueDeclare{Name: name, Durable: true, Arguments: args}); err != nil {
 		t.Fatalf("声明队列失败: %v", err)
 	}
 }

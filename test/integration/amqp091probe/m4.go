@@ -87,7 +87,7 @@ func testDurablePersistentPublish() error {
 //
 // 声明了就必须实现（否则客户端会走入错误分支），因此这里也顺便确认它没有被漏掉。
 func testConnectionBlockedCapability() error {
-	conn, err := amqp.Dial(url(""))
+	conn, err := dial(url(""))
 	if err != nil {
 		return fmt.Errorf("拨号失败: %w", err)
 	}

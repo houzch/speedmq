@@ -24,8 +24,9 @@ func (ch *channel) handle(m spec.Method) error {
 		return ch.handleBasic(m)
 	case spec.ClassConfirm:
 		return ch.handleConfirm(m)
+	case spec.ClassTx:
+		return ch.handleTx(m)
 	default:
-		// Tx 等尚未实现：按规范返回硬错误 540
 		return ch.con.failConnection(spec.NotImplemented,
 			fmt.Sprintf("NOT_IMPLEMENTED - 尚未支持 %s", m.Name()), m.ClassID, m.MethodID)
 	}
@@ -39,12 +40,62 @@ func (ch *channel) handleConfirm(m spec.Method) error {
 		if err != nil {
 			return ch.fail(syntaxErr("Confirm.Select", err), m.ClassID, m.MethodID)
 		}
-		ch.enableConfirm()
+		if err := ch.enableConfirm(); err != nil {
+			return ch.fail(err, m.ClassID, m.MethodID)
+		}
 		if noWait {
 			return nil
 		}
 		return ch.con.sendMethod(ch.id, spec.ClassConfirm, spec.MethodConfirmSelectOk,
 			spec.EncodeConfirmSelectOk())
+	default:
+		return ch.con.failConnection(spec.NotImplemented,
+			fmt.Sprintf("NOT_IMPLEMENTED - 尚未支持 %s", m.Name()), m.ClassID, m.MethodID)
+	}
+}
+
+// handleTx 处理事务（class 90）。
+//
+// 事务的全部语义都在协议层：publish 与 ack 先进缓冲，Tx.Commit 时按调用顺序应用，
+// Tx.Rollback 时整体丢弃。内核 Session 对此一无所知 —— 这也是它能零改动接入的原因。
+func (ch *channel) handleTx(m spec.Method) error {
+	switch m.MethodID {
+	case spec.MethodTxSelect:
+		noWait, err := spec.DecodeTxSelect(m.Args)
+		if err != nil {
+			return ch.fail(syntaxErr("Tx.Select", err), m.ClassID, m.MethodID)
+		}
+		if err := ch.enableTx(); err != nil {
+			return ch.fail(err, m.ClassID, m.MethodID)
+		}
+		if noWait {
+			return nil
+		}
+		return ch.con.sendMethod(ch.id, spec.ClassTx, spec.MethodTxSelectOk, spec.EncodeTxSelectOk())
+
+	case spec.MethodTxCommit:
+		if !ch.inTx() {
+			return ch.fail(plugin.Errorf(plugin.KindPreconditionFailed,
+				"PRECONDITION_FAILED - channel is not transactional"), m.ClassID, m.MethodID)
+		}
+		sess := ch.con.sessionOrNil()
+		if sess == nil {
+			return ch.fail(plugin.Errorf(plugin.KindInternal,
+				"INTERNAL_ERROR - vhost 会话未打开"), m.ClassID, m.MethodID)
+		}
+		if err := ch.commitTx(sess); err != nil {
+			return ch.fail(err, m.ClassID, m.MethodID)
+		}
+		return ch.con.sendMethod(ch.id, spec.ClassTx, spec.MethodTxCommitOk, spec.EncodeTxCommitOk())
+
+	case spec.MethodTxRollback:
+		if !ch.inTx() {
+			return ch.fail(plugin.Errorf(plugin.KindPreconditionFailed,
+				"PRECONDITION_FAILED - channel is not transactional"), m.ClassID, m.MethodID)
+		}
+		ch.rollbackTx()
+		return ch.con.sendMethod(ch.id, spec.ClassTx, spec.MethodTxRollbackOk, spec.EncodeTxRollbackOk())
+
 	default:
 		return ch.con.failConnection(spec.NotImplemented,
 			fmt.Sprintf("NOT_IMPLEMENTED - 尚未支持 %s", m.Name()), m.ClassID, m.MethodID)

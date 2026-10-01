@@ -103,8 +103,13 @@ func run() error {
 	// 它属于兼容性契约的一部分，因此是内建的，不做成插件（见设计 10.1）。
 	var mgmt *management.Server
 	if cfg.Management.Enabled {
+		mgmtTLS, tlsErr := cfg.Management.TLS.Config()
+		if tlsErr != nil {
+			return fmt.Errorf("管理面 TLS 配置无效: %w", tlsErr)
+		}
 		mgmt, err = management.New(log, management.Deps{
 			Addr:      cfg.Management.Addr,
+			TLS:       mgmtTLS,
 			Broker:    kernel,
 			Plugins:   manager,
 			Listeners: server.Listeners,

@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,8 +14,20 @@ import (
 // ErrClosed 表示存储已关闭。
 var ErrClosed = errors.New("队列存储已关闭")
 
-// indexEntrySize 是索引记录的长度：seq(8) + seg-offset(8) + seg-len(4) + kind(1)。
-const indexEntrySize = 21
+// indexEntrySize 是索引记录的长度：seq(8) + seg(4) + seg-offset(8) + seg-len(4) + kind(1)。
+//
+// M8-1 加了 seg 字段：段轮转之后只靠偏移无法定位消息（偏移是**段内**偏移）。
+const indexEntrySize = 25
+
+// legacyIndexEntrySize 是引入段号之前的索引记录长度（seq + offset + len + kind）。
+// 旧实现只有一个段，因此读到旧格式时等价于 seg=1，升级不需要迁移脚本。
+const legacyIndexEntrySize = 21
+
+// segmentMaxBytes 是单个段文件的大小上限，超过就封口并切到新段。
+//
+// 8 MiB 是"段不过于零碎"与"回收粒度不过粗"之间的折中：段越小回收越及时，
+// 但文件数、打开开销与索引里的段号离散度都更高。
+const segmentMaxBytes = 8 << 20
 
 // 索引记录状态。
 const (
@@ -38,6 +49,19 @@ type Options struct {
 	Fsync FsyncLevel
 	// FlushInterval 是兜底刷盘间隔，限制"消息在内存里最多待多久"。
 	FlushInterval time.Duration
+	// SegmentMaxBytes 是单个段文件的大小上限，0 表示用默认值（segmentMaxBytes）。
+	//
+	// 做成可配置主要是为了让测试能把段压到很小、从而验证轮转与回收；
+	// 生产上一般不需要调整。
+	SegmentMaxBytes int64
+}
+
+// segmentLimit 返回生效的段大小上限。
+func (s *QueueStore) segmentLimit() int64 {
+	if s.opts.SegmentMaxBytes > 0 {
+		return s.opts.SegmentMaxBytes
+	}
+	return segmentMaxBytes
 }
 
 // Commit 是一次持久化写入的完成凭据。
@@ -89,8 +113,14 @@ type QueueStore struct {
 	opts Options
 	log  *slog.Logger
 
-	seg *logFile
 	idx *logFile
+
+	// segs / activeSeg 是段管理状态：activeSeg 是当前**可写**的段，
+	// segs 里的其余段都已封口（只有封口段才可能被回收）。由 flushMu 保护。
+	segs      map[uint32]*segmentInfo
+	activeSeg uint32
+	// liveSeg 追踪"未 ack 的 seq 落在哪个段"，Ack 时据此递减该段的存活计数。
+	liveSeg map[uint64]uint32
 
 	// flushMu 串行化刷盘，避免刷盘协程与 Close 的收尾刷盘并发写同一个文件。
 	flushMu sync.Mutex
@@ -117,18 +147,15 @@ func newQueueStore(dir string, opts Options, log *slog.Logger) *QueueStore {
 // Dir 返回存储目录。
 func (s *QueueStore) Dir() string { return s.dir }
 
-// openFiles 打开段文件与索引文件（内部已做尾部截断）。
+// openFiles 只打开索引文件；段文件在 recover 里按需打开（详见 segment.go）。
 func (s *QueueStore) openFiles() error {
-	seg, err := openLogFile(indexlessPath(s.dir, "000001.seg"))
-	if err != nil {
-		return fmt.Errorf("打开消息段失败: %w", err)
-	}
 	idx, err := openLogFile(indexPath(s.dir, "000001.idx"))
 	if err != nil {
-		_ = seg.close()
 		return fmt.Errorf("打开队列索引失败: %w", err)
 	}
-	s.seg, s.idx = seg, idx
+	s.idx = idx
+	s.segs = map[uint32]*segmentInfo{}
+	s.liveSeg = map[uint64]uint32{}
 	return nil
 }
 
@@ -137,29 +164,20 @@ func (s *QueueStore) openFiles() error {
 // 依据设计 5.3.8：索引中仍处于 Publish 状态的记录说明该消息未被确认，
 // 重启后回到队头，并在下次投递时标记 redelivered。
 func (s *QueueStore) recover() ([]Recovered, error) {
-	type entry struct {
-		seq  uint64
-		off  int64
-		size uint32
-		ack  bool
-	}
-	var entries []entry
+	var entries []indexEntry
 	if err := s.idx.forEach(func(_ int64, payload []byte) error {
-		if len(payload) != indexEntrySize {
-			return fmt.Errorf("索引记录长度非法: %d", len(payload))
+		e, err := decodeIndexEntry(payload)
+		if err != nil {
+			return err
 		}
-		entries = append(entries, entry{
-			seq:  binary.BigEndian.Uint64(payload[0:8]),
-			off:  int64(binary.BigEndian.Uint64(payload[8:16])),
-			size: binary.BigEndian.Uint32(payload[16:20]),
-			ack:  payload[20] == indexAck,
-		})
+		entries = append(entries, e)
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 
-	alive := make(map[uint64]entry, len(entries))
+	// 仍存活的消息 = 最后一次 publish 之后没有对应 ack 的那些。
+	alive := make(map[uint64]indexEntry, len(entries))
 	var order []uint64
 	for _, e := range entries {
 		if e.ack {
@@ -173,10 +191,25 @@ func (s *QueueStore) recover() ([]Recovered, error) {
 	}
 	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
 
+	// 只打开"还有存活消息"的段；没有存活消息的段文件在下面统一清理。
 	out := make([]Recovered, 0, len(order))
 	for _, seq := range order {
 		e := alive[seq]
-		payload, err := s.seg.read(e.off)
+		seg, ok := s.segs[e.seg]
+		if !ok {
+			opened, err := openSegment(s.dir, e.seg)
+			if err != nil {
+				s.log.Warn("打开段失败，该段的消息将被跳过", "dir", s.dir, "segment", e.seg, "err", err)
+				s.segs[e.seg] = nil // 占位：避免对同一段反复尝试
+				continue
+			}
+			seg = opened
+			s.segs[e.seg] = seg
+		}
+		if seg == nil {
+			continue
+		}
+		payload, err := seg.file.read(e.off)
 		if err != nil {
 			s.log.Warn("恢复消息失败，已跳过", "dir", s.dir, "seq", seq, "err", err)
 			continue
@@ -190,10 +223,37 @@ func (s *QueueStore) recover() ([]Recovered, error) {
 			s.log.Warn("恢复消息解码失败，已跳过", "dir", s.dir, "seq", seq, "err", err)
 			continue
 		}
+		seg.live++
+		s.liveSeg[seq] = e.seg
 		out = append(out, Recovered{Seq: seq, Message: msg})
 	}
+
+	// 打不开的段占位项丢掉，并记下"必须保留"的段（有存活消息的）。
+	keep := make(map[uint32]struct{}, len(s.segs))
+	maxSeg := uint32(0)
+	for id, seg := range s.segs {
+		if seg == nil {
+			delete(s.segs, id)
+			continue
+		}
+		keep[id] = struct{}{}
+		if id > maxSeg {
+			maxSeg = id
+		}
+	}
+	if maxSeg == 0 {
+		maxSeg = 1
+	}
+	s.activeSeg = maxSeg
+	// 除最大段外一律封口；最大段保持可写，重启后继续往它追加，避免每次重启都产生新段。
+	for id, seg := range s.segs {
+		seg.sealed = id != maxSeg
+	}
+	// 清掉没有存活消息的段文件（上次消费空但还没来得及回收的、或被打断留下的）。
+	s.removeStaleSegments(keep)
+
 	if len(out) > 0 {
-		s.log.Info("已从磁盘恢复队列消息", "dir", s.dir, "messages", len(out))
+		s.log.Info("已从磁盘恢复队列消息", "dir", s.dir, "messages", len(out), "segments", len(s.segs))
 	}
 	return out, nil
 }
@@ -288,37 +348,104 @@ func (s *QueueStore) flush() {
 func (s *QueueStore) writeRecords(pending []*pendingRecord) error {
 	for _, p := range pending {
 		if p.ack {
-			if _, err := s.idx.append(encodeIndexEntry(p.seq, 0, 0, indexAck)); err != nil {
+			if err := s.applyAck(p.seq); err != nil {
 				return err
 			}
 			continue
 		}
-		offset, err := s.seg.append(p.payload)
-		if err != nil {
-			return err
-		}
-		if _, err := s.idx.append(encodeIndexEntry(p.seq, offset, uint32(len(p.payload)), indexPublish)); err != nil {
+		if err := s.applyPublish(p); err != nil {
 			return err
 		}
 	}
 
-	if err := s.seg.flush(); err != nil {
-		return err
-	}
+	// flush **所有**打开的段：一批 pending 里可能触发段轮转，
+	// 只 flush 活跃段会漏掉刚刚封口的那个，它的数据就迟迟不落到操作系统（崩溃即丢）。
 	if err := s.idx.flush(); err != nil {
 		return err
 	}
-	if s.opts.Fsync < FsyncBatch {
-		// none 不会走到这里（不会创建存储）；os 只写到操作系统，不 fsync
-		return nil
-	}
-	if err := s.seg.sync(); err != nil {
+	if err := s.flushSegments(func(seg *segmentInfo) error { return seg.file.flush() }); err != nil {
 		return err
 	}
-	return s.idx.sync()
+	// 索引压缩与 fsync 档位**无关**：它是"磁盘占用有界"的必要条件。
+	// 放在档位分支之前，否则 os 档位（多数生产配置）下索引会一直只增不减。
+	// 顺带一提，压缩可能会替换 s.idx，因此必须在下面的 s.idx.sync() 之前完成。
+	if err := s.maybeCompactIndex(); err != nil {
+		return err
+	}
+	if s.opts.Fsync < FsyncBatch {
+		// none 不会走到这里（不创建存储）；os 只写到操作系统，不 fsync
+		return nil
+	}
+	if err := s.idx.sync(); err != nil {
+		return err
+	}
+	return s.flushSegments(func(seg *segmentInfo) error { return seg.file.sync() })
 }
 
-// Close 停止刷盘、完成最后一次落盘并关闭文件。可重复调用。
+// flushSegments 对全部打开的段执行同一个动作（flush 或 sync）。
+func (s *QueueStore) flushSegments(fn func(*segmentInfo) error) error {
+	for _, seg := range s.segs {
+		if seg == nil {
+			continue
+		}
+		if err := fn(seg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyPublish 落一条消息：必要时先轮转段，再写段与索引。
+func (s *QueueStore) applyPublish(p *pendingRecord) error {
+	if err := s.ensureActiveSegment(); err != nil {
+		return err
+	}
+	cur := s.segs[s.activeSeg]
+	// 到达上限就封口换新段。只在段非空时轮转，否则"单条消息大于上限"会让每次写入都换段。
+	if cur.size > 0 && cur.size+int64(len(p.payload)) > s.segmentLimit() {
+		if err := s.rollSegment(); err != nil {
+			return err
+		}
+		cur = s.segs[s.activeSeg]
+	}
+	offset, err := cur.file.append(p.payload)
+	if err != nil {
+		return err
+	}
+	cur.size = cur.file.size()
+	if _, err := s.idx.append(encodeIndexEntry(indexEntry{
+		seq: p.seq, seg: s.activeSeg, off: offset, size: uint32(len(p.payload)),
+	})); err != nil {
+		return err
+	}
+	cur.live++
+	s.liveSeg[p.seq] = s.activeSeg
+	return nil
+}
+
+// applyAck 记录"该序号的消息已离开队列"，并在段被清空时回收它。
+func (s *QueueStore) applyAck(seq uint64) error {
+	if _, err := s.idx.append(encodeIndexEntry(indexEntry{seq: seq, ack: true})); err != nil {
+		return err
+	}
+	segID, ok := s.liveSeg[seq]
+	if !ok {
+		return nil // 该消息不在磁盘上（例如非持久消息），无需递减
+	}
+	delete(s.liveSeg, seq)
+	seg, ok := s.segs[segID]
+	if !ok || seg == nil {
+		return nil
+	}
+	seg.live--
+	// 只有"已封口且已清空"的段才回收：活跃段还要继续写，删掉它会丢消息。
+	if seg.live <= 0 && seg.sealed {
+		s.collectSegment(segID)
+	}
+	return nil
+}
+
+// Close 停止刷盘、完成最后一次落盘并关闭全部文件。可重复调用。
 func (s *QueueStore) Close() error {
 	s.once.Do(func() {
 		s.mu.Lock()
@@ -327,10 +454,21 @@ func (s *QueueStore) Close() error {
 		close(s.done)
 		s.flush() // 收尾刷盘（与刷盘协程通过 flushMu 串行）
 	})
-	if s.seg == nil {
+	if s.idx == nil {
 		return nil
 	}
-	return errors.Join(s.seg.close(), s.idx.close())
+	// 与刷盘互斥：避免一边关闭段文件、一边还有写入落在它上面。
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	errs := make([]error, 0, len(s.segs)+1)
+	for _, seg := range s.segs {
+		if seg != nil {
+			errs = append(errs, seg.file.close())
+		}
+	}
+	s.segs = map[uint32]*segmentInfo{}
+	errs = append(errs, s.idx.close())
+	return errors.Join(errs...)
 }
 
 // Remove 关闭存储并删除其目录（队列被删除时调用）。
@@ -339,11 +477,4 @@ func (s *QueueStore) Remove() error {
 	return removeDir(s.dir)
 }
 
-func encodeIndexEntry(seq uint64, offset int64, size uint32, kind uint8) []byte {
-	b := make([]byte, indexEntrySize)
-	binary.BigEndian.PutUint64(b[0:8], seq)
-	binary.BigEndian.PutUint64(b[8:16], uint64(offset))
-	binary.BigEndian.PutUint32(b[16:20], size)
-	b[20] = kind
-	return b
-}
+// 索引记录的编解码见 segment.go（M8-1 加了段号，编解码也随之移到那里）。
