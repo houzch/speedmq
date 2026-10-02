@@ -7,14 +7,18 @@ import type {
   ClusterMembers,
   Connection,
   Consumer,
+  DeprecatedFeature,
   Exchange,
   ExchangeDeclareRequest,
   ExchangeQuery,
+  FeatureFlag,
   GetMessage,
   GetMessagesRequest,
   NodeInfo,
   Overview,
   Permission,
+  Policy,
+  PolicyRequest,
   PublishRequest,
   PublishResult,
   QuorumView,
@@ -26,6 +30,8 @@ import type {
   UserUpsertRequest,
   CredentialsRequest,
   Vhost,
+  VHostLimit,
+  VHostLimitName,
   Whoami,
 } from './types'
 
@@ -38,6 +44,12 @@ export const api = {
   nodes: (): Promise<NodeInfo[]> => request<NodeInfo[]>('GET', '/api/nodes'),
   whoami: (): Promise<Whoami> => request<Whoami>('GET', '/api/whoami'),
   vhosts: (): Promise<Vhost[]> => request<Vhost[]>('GET', '/api/vhosts'),
+  /** 新建虚拟主机：201 新建 / 204 已存在（幂等） */
+  createVHost: (name: string): Promise<void> =>
+    request<void>('PUT', `/api/vhosts/${encodePath(name)}`),
+  /** 删除虚拟主机（连同其队列/交换机/绑定/权限/策略/限制）；默认 vhost 会被服务端拒绝 */
+  deleteVHost: (name: string): Promise<void> =>
+    request<void>('DELETE', `/api/vhosts/${encodePath(name)}`),
 
   // ---- 集群 ----
   cluster: (): Promise<Cluster> => request<Cluster>('GET', '/api/cluster'),
@@ -165,4 +177,33 @@ export const api = {
     request<void>('PUT', `/api/permissions/${encodePath(vhost)}/${encodePath(user)}`, { body }),
   deletePermission: (vhost: string, user: string): Promise<void> =>
     request<void>('DELETE', `/api/permissions/${encodePath(vhost)}/${encodePath(user)}`),
+
+  // ---- 策略 ----
+  policies: (): Promise<Policy[]> => request<Policy[]>('GET', '/api/policies'),
+  /** 新建策略返回 201、更新返回 204（两者都不需要区分处理） */
+  savePolicy: (vhost: string, name: string, body: PolicyRequest): Promise<void> =>
+    request<void>('PUT', `/api/policies/${encodePath(vhost)}/${encodePath(name)}`, { body }),
+  deletePolicy: (vhost: string, name: string): Promise<void> =>
+    request<void>('DELETE', `/api/policies/${encodePath(vhost)}/${encodePath(name)}`),
+
+  // ---- vhost 级限制 ----
+  /** 返回按 vhost 分组的限制列表；vhost 为空表示全部 */
+  vhostLimits: (vhost?: string): Promise<VHostLimit[]> =>
+    vhost === undefined
+      ? request<VHostLimit[]>('GET', '/api/vhost-limits')
+      : request<VHostLimit[]>('GET', `/api/vhost-limits/${encodePath(vhost)}`),
+  /** 设置一条限制；成功返回 204 */
+  setVHostLimit: (vhost: string, name: VHostLimitName, value: number): Promise<void> =>
+    request<void>('PUT', `/api/vhost-limits/${encodePath(vhost)}/${encodePath(name)}`, { body: { value } }),
+  /** 删除一条限制；不存在也返回 204 */
+  deleteVHostLimit: (vhost: string, name: VHostLimitName): Promise<void> =>
+    request<void>('DELETE', `/api/vhost-limits/${encodePath(vhost)}/${encodePath(name)}`),
+
+  // ---- 特性开关与弃用特性 ----
+  featureFlags: (): Promise<FeatureFlag[]> => request<FeatureFlag[]>('GET', '/api/feature-flags'),
+  setFeatureFlag: (name: string, enabled: boolean): Promise<void> =>
+    request<void>('PUT', `/api/feature-flags/${encodePath(name)}/${enabled ? 'enable' : 'disable'}`),
+  /** 弃用特性是只读清单：RabbitMQ 4.x 上没有 enable/disable 接口 */
+  deprecatedFeatures: (): Promise<DeprecatedFeature[]> =>
+    request<DeprecatedFeature[]>('GET', '/api/deprecated-features'),
 }

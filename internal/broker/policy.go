@@ -379,7 +379,11 @@ func policyEqual(a, b meta.Policy) bool {
 // metaState 返回元数据快照（b.meta 尚未打开时返回空状态，便于启动路径复用）。
 func (b *Broker) metaState() meta.State {
 	if b.meta == nil {
-		return meta.State{Policies: map[string]meta.Policy{}}
+		return meta.State{
+			Policies:     map[string]meta.Policy{},
+			Limits:       map[string]meta.VHostLimit{},
+			FeatureFlags: map[string]meta.FeatureFlag{},
+		}
 	}
 	return b.meta.State()
 }

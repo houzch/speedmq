@@ -3,7 +3,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { ArrowDown, Connection, Grid, Odometer, Postcard, Share, User } from '@element-plus/icons-vue'
+import { ArrowDown, Connection, Files, Grid, Histogram, Odometer, Postcard, SetUp, Share, SwitchButton, User, Warning } from '@element-plus/icons-vue'
 import LoginDialog from '@/components/LoginDialog.vue'
 import ForcePasswordDialog from '@/components/ForcePasswordDialog.vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
@@ -33,9 +33,14 @@ const menuItems: { index: string; label: string; icon: Component; group: string 
   { index: 'overview', label: '概览', icon: Odometer, group: 'overview' },
   { index: 'queues', label: '队列', icon: Postcard, group: 'topology' },
   { index: 'exchanges', label: '交换机', icon: Share, group: 'topology' },
-  { index: 'cluster', label: '集群', icon: Grid, group: 'cluster' },
   { index: 'connections', label: '连接', icon: Connection, group: 'connections' },
   { index: 'users', label: '账号', icon: User, group: 'accounts' },
+  { index: 'vhosts', label: '虚拟主机', icon: Files, group: 'vhosts' },
+  { index: 'policies', label: '策略', icon: SetUp, group: 'policies' },
+  { index: 'limits', label: '限制', icon: Histogram, group: 'limits' },
+  { index: 'feature-flags', label: '特性开关', icon: SwitchButton, group: 'feature_flags' },
+  { index: 'deprecated-features', label: '弃用特性', icon: Warning, group: 'feature_flags' },
+  { index: 'cluster', label: '集群', icon: Grid, group: 'cluster' },
 ]
 
 /** 路由名 → 所属功能组（详情页归到其列表页的功能组） */
@@ -48,6 +53,11 @@ const ROUTE_GROUPS: Record<string, string> = {
   cluster: 'cluster',
   connections: 'connections',
   users: 'accounts',
+  vhosts: 'vhosts',
+  policies: 'policies',
+  limits: 'limits',
+  'feature-flags': 'feature_flags',
+  'deprecated-features': 'feature_flags',
 }
 
 /** 当前路由所属的功能组；未知路由返回 null（不参与权限收窄） */
@@ -84,9 +94,9 @@ const activeMenu = computed<string>(() => {
   const name = String(route.name ?? '')
   if (name.startsWith('queue')) return 'queues'
   if (name.startsWith('exchange')) return 'exchanges'
-  if (name === 'connections') return 'connections'
-  if (name === 'users') return 'users'
-  return 'overview'
+  // 其余页面（含集群、虚拟主机、策略、限制、特性开关…）的菜单 index 就是路由名；
+  // 认不出来时退回概览，避免高亮消失。
+  return menuItems.some((item) => item.index === name) ? name : 'overview'
 })
 
 /** 当前 vhost：列表/详情路由参数优先，其次取全局状态 */

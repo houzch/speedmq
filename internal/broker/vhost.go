@@ -127,6 +127,13 @@ func (v *vhost) getQueue(name string) (*queue, bool) {
 	return q, ok
 }
 
+// queueCount 返回本 vhost 当前的队列数（max-queues 限制校验用）。
+func (v *vhost) queueCount() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return len(v.queues)
+}
+
 // queueRemote 表示该队列的数据/服务是否在别的节点上，也就是"本节点是否只做代理"。
 //
 // 经典队列看声明时的 Owner（创建后不变）；仲裁队列看它 Raft 组**当前**的 leader ——
@@ -217,12 +224,41 @@ func (s *vhostSession) newQueueWithPolicy(name string, req plugin.QueueDeclare) 
 	if err != nil {
 		return nil, queueArgs{}, err
 	}
+	if err := s.checkNewQueueAllowed(args); err != nil {
+		return nil, queueArgs{}, err
+	}
 	q, err := s.newQueueIn(name, req, args)
 	if err != nil {
 		return nil, queueArgs{}, err
 	}
 	q.applyPolicy(args, polName, polDef)
 	return q, args, nil
+}
+
+// checkNewQueueAllowed 是"新建队列"的统一闸门：特性开关与 vhost 容量限制都在这里拦。
+//
+// 两条创建路径（会话本地队列 / 集群托管队列）共用它，避免只堵住其中一条 ——
+// 那样"开关关了但 durable 队列还能建"就成了一个很难发现的漏洞。
+func (s *vhostSession) checkNewQueueAllowed(args queueArgs) error {
+	if args.queueType == queueTypeQuorum && !s.vh.broker.featureEnabled(flagQuorumQueue) {
+		return plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - queue type 'quorum' is disabled by feature flag '%s'", flagQuorumQueue)
+	}
+	return s.vh.broker.checkQueueLimit(s.vh)
+}
+
+// checkExchangeBindingsEnabled 校验交换机到交换机绑定的特性开关。
+//
+// 关掉开关时返回 NOT_IMPLEMENTED（而不是 403）：这不是权限问题，而是"这台 broker
+// 在这个配置下不提供该能力"，与 session.ServerProperties 里同步置 false 的
+// capabilities 声明是一件事的两面。
+func (s *vhostSession) checkExchangeBindingsEnabled() error {
+	if s.vh.broker.featureEnabled(flagExchangeExchangeBindings) {
+		return nil
+	}
+	return plugin.Errorf(plugin.KindNotImplemented,
+		"NOT_IMPLEMENTED - exchange-to-exchange bindings are disabled by feature flag '%s'",
+		flagExchangeExchangeBindings)
 }
 
 // newQueueIn 创建队列：接线死信派发，并为 durable 队列打开持久化存储。
@@ -434,6 +470,9 @@ func (s *vhostSession) BindExchange(destination, source, routingKey string, argu
 	if err := s.vh.broker.checkServing(); err != nil {
 		return err
 	}
+	if err := s.checkExchangeBindingsEnabled(); err != nil {
+		return err
+	}
 	if err := s.perm.allowWrite(source); err != nil {
 		return err
 	}
@@ -466,6 +505,9 @@ func (s *vhostSession) BindExchange(destination, source, routingKey string, argu
 
 func (s *vhostSession) UnbindExchange(destination, source, routingKey string, arguments map[string]any) error {
 	if err := s.vh.broker.checkServing(); err != nil {
+		return err
+	}
+	if err := s.checkExchangeBindingsEnabled(); err != nil {
 		return err
 	}
 	if err := s.perm.allowWrite(source); err != nil {
@@ -627,6 +669,9 @@ func (s *vhostSession) passiveQueueInfo(q *queue) (plugin.QueueInfo, error) {
 // 声明本身由元数据层决定归属与顺序；本地对象由 ApplyMeta 建立，
 // 因此这里在提交成功后要等一下本地应用 —— follower 的应用滞后于 leader 的提交。
 func (s *vhostSession) declareManagedQueue(name string, req plugin.QueueDeclare, args queueArgs) (plugin.QueueInfo, error) {
+	if err := s.checkNewQueueAllowed(args); err != nil {
+		return plugin.QueueInfo{}, err
+	}
 	owner := s.vh.broker.queueOwner()
 	var replicas []string
 	if args.queueType == queueTypeQuorum {

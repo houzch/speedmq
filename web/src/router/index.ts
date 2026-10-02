@@ -45,6 +45,31 @@ const routes: RouteRecordRaw[] = [
     name: 'users',
     component: () => import('@/views/UsersView.vue'),
   },
+  {
+    path: '/vhosts',
+    name: 'vhosts',
+    component: () => import('@/views/VHostsView.vue'),
+  },
+  {
+    path: '/policies',
+    name: 'policies',
+    component: () => import('@/views/PoliciesView.vue'),
+  },
+  {
+    path: '/limits',
+    name: 'limits',
+    component: () => import('@/views/LimitsView.vue'),
+  },
+  {
+    path: '/feature-flags',
+    name: 'feature-flags',
+    component: () => import('@/views/FeatureFlagsView.vue'),
+  },
+  {
+    path: '/deprecated-features',
+    name: 'deprecated-features',
+    component: () => import('@/views/DeprecatedFeaturesView.vue'),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

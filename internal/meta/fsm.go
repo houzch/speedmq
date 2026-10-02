@@ -129,13 +129,15 @@ func (f *fsm) appliedRecords() uint64 {
 // 必须在构造时就初始化 map：nil map 上的写入会 panic，而本仓库禁止任何运行期 panic 路径。
 func newState() State {
 	return State{
-		VHosts:      map[string]VHost{},
-		Exchanges:   map[string]Exchange{},
-		Queues:      map[string]Queue{},
-		Bindings:    []Binding{},
-		Users:       map[string]User{},
-		Permissions: map[string]Permission{},
-		Policies:    map[string]Policy{},
+		VHosts:       map[string]VHost{},
+		Exchanges:    map[string]Exchange{},
+		Queues:       map[string]Queue{},
+		Bindings:     []Binding{},
+		Users:        map[string]User{},
+		Permissions:  map[string]Permission{},
+		Policies:     map[string]Policy{},
+		Limits:       map[string]VHostLimit{},
+		FeatureFlags: map[string]FeatureFlag{},
 	}
 }
 
@@ -149,7 +151,7 @@ func decodeState(data []byte) (State, error) {
 	return st, nil
 }
 
-// normalizeState 让六个集合都可写，避免反序列化结果在后续 put 时踩到 nil map。
+// normalizeState 让所有集合都可写，避免反序列化结果在后续 put 时踩到 nil map。
 func normalizeState(st *State) {
 	if st.VHosts == nil {
 		st.VHosts = map[string]VHost{}
@@ -171,6 +173,12 @@ func normalizeState(st *State) {
 	}
 	if st.Policies == nil {
 		st.Policies = map[string]Policy{}
+	}
+	if st.Limits == nil {
+		st.Limits = map[string]VHostLimit{}
+	}
+	if st.FeatureFlags == nil {
+		st.FeatureFlags = map[string]FeatureFlag{}
 	}
 }
 
@@ -317,6 +325,26 @@ func applyToState(st *State, op Op, payload []byte) error {
 			return err
 		}
 		delete(st.Policies, PolicyKey(rec.VHost, rec.Name))
+
+	case OpPutVHostLimit:
+		rec, err := decodeRecord[VHostLimit](op, payload)
+		if err != nil {
+			return err
+		}
+		st.Limits[LimitKey(rec.VHost, rec.Name)] = rec
+	case OpDeleteVHostLimit:
+		rec, err := decodeRecord[VHostLimit](op, payload)
+		if err != nil {
+			return err
+		}
+		delete(st.Limits, LimitKey(rec.VHost, rec.Name))
+
+	case OpPutFeatureFlag:
+		rec, err := decodeRecord[FeatureFlag](op, payload)
+		if err != nil {
+			return err
+		}
+		st.FeatureFlags[rec.Name] = rec
 
 	default:
 		// 未知 Op 是确定性错误：所有节点会对同一条日志做同样的失败，

@@ -60,6 +60,9 @@ const (
 	OpDeletePermission Op = "permission.delete"
 	OpPutPolicy        Op = "policy.put"
 	OpDeletePolicy     Op = "policy.delete"
+	OpPutVHostLimit    Op = "vhost.limit.put"
+	OpDeleteVHostLimit Op = "vhost.limit.delete"
+	OpPutFeatureFlag   Op = "feature.flag.put"
 )
 
 // VHost 是 vhost 的元数据记录。
@@ -150,6 +153,26 @@ type Policy struct {
 	Priority int `json:"priority"`
 }
 
+// VHostLimit 是 vhost 级限制的元数据记录（对齐 RabbitMQ 的 vhost-limits）。
+//
+// Name 取 max-connections / max-queues；Value 恒为正数（0 或负数在写路径就被拒，
+// 见 broker.SetVHostLimit）—— "值为 0 / 负数"该怎么解释没有公认口径，
+// 与其自创一种，不如明确报错。
+type VHostLimit struct {
+	VHost string `json:"vhost"`
+	Name  string `json:"name"`
+	Value int    `json:"value"`
+}
+
+// FeatureFlag 是特性开关的元数据记录。
+//
+// 只持久化"被显式改过的开关"：没有记录 = 用注册表里的默认状态，
+// 于是升级时新增的开关不必回填，也不会因为快照里缺字段而被当成关闭。
+type FeatureFlag struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
 // State 是元数据的完整快照。
 //
 // 这是**只读视图**：调用方不得修改返回的 map/slice（内部需要拷贝时才拷贝，
@@ -162,6 +185,10 @@ type State struct {
 	Users       map[string]User
 	Permissions map[string]Permission
 	Policies    map[string]Policy
+	// Limits 是 vhost 级限制，键为 LimitKey(vhost, name)。
+	Limits map[string]VHostLimit
+	// FeatureFlags 是**被显式改过**的特性开关，键为开关名。
+	FeatureFlags map[string]FeatureFlag
 }
 
 // Key 生成 (vhost, name) 的复合键，用于 Exchanges / Queues 的 map。
@@ -172,6 +199,9 @@ func PermissionKey(vhost, user string) string { return vhost + "\x00" + user }
 
 // PolicyKey 生成 (vhost, policy) 的复合键。
 func PolicyKey(vhost, name string) string { return vhost + "\x00" + name }
+
+// LimitKey 生成 (vhost, 限制名) 的复合键。
+func LimitKey(vhost, name string) string { return vhost + "\x00" + name }
 
 // Applier 由内核实现：元数据变更提交后，用它更新本节点的内存拓扑。
 //

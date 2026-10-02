@@ -290,14 +290,16 @@ func (s *Server) allowedMethods(segments []string) string {
 // 授权界面要能回答"这个账号是干什么的"，所以「队列 / 交换机 / 绑定 / 消费者」
 // 合成一个 topology（同属数据面拓扑），而「账号与权限」单独成组（安全敏感）。
 const (
-	apiGroupOverview    = "overview"    // 概览、节点、谁在登录（只读观测）
-	apiGroupTopology    = "topology"    // 队列、交换机、绑定、消费者（含 purge / 删除 / 发布 / 取消息）
-	apiGroupConnections = "connections" // 连接与通道（含强制关闭连接）
-	apiGroupAccounts    = "accounts"    // 账号与权限
-	apiGroupPolicies    = "policies"    // 策略
-	apiGroupVHosts      = "vhosts"      // 虚拟主机
-	apiGroupCluster     = "cluster"     // 集群状态与成员变更
-	apiGroupPlugins     = "plugins"     // 插件治理
+	apiGroupOverview     = "overview"      // 概览、节点、谁在登录（只读观测）
+	apiGroupTopology     = "topology"      // 队列、交换机、绑定、消费者（含 purge / 删除 / 发布 / 取消息）
+	apiGroupConnections  = "connections"   // 连接与通道（含强制关闭连接）
+	apiGroupAccounts     = "accounts"      // 账号与权限
+	apiGroupPolicies     = "policies"      // 策略
+	apiGroupVHosts       = "vhosts"        // 虚拟主机
+	apiGroupCluster      = "cluster"       // 集群状态与成员变更
+	apiGroupPlugins      = "plugins"       // 插件治理
+	apiGroupLimits       = "limits"        // vhost 级限制（max-connections / max-queues）
+	apiGroupFeatureFlags = "feature_flags" // 特性开关与弃用特性
 )
 
 // groupLabel 返回功能组的中文名（用于错误提示与管理 UI）。
@@ -319,6 +321,10 @@ func groupLabel(group string) string {
 		return "集群"
 	case apiGroupPlugins:
 		return "插件"
+	case apiGroupLimits:
+		return "虚拟主机限制"
+	case apiGroupFeatureFlags:
+		return "特性开关"
 	case "":
 		// 空组表示"不参与接口权限收窄"的接口（如 whoami）：登录本身必须永远可用。
 		return "基础"

@@ -449,6 +449,23 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 		b.refreshPolicies(b.metaState())
 		b.log.Debug("策略已应用", "op", string(op), "vhost", rec.VHost, "policy", rec.Name)
 
+	case meta.OpPutVHostLimit, meta.OpDeleteVHostLimit:
+		// vhost 限制与特性开关都是**按需读取**的：判定点在 checkQueueLimit /
+		// checkConnectionLimit / featureEnabled 里直接查元数据状态，本节点没有
+		// 需要维护的派生缓存，因此应用这一步是空的（幂等性由"集合语义"天然满足）。
+		rec, err := decodeMeta[meta.VHostLimit](op, payload)
+		if err != nil {
+			return err
+		}
+		b.log.Debug("vhost 限制已应用", "op", string(op), "vhost", rec.VHost, "limit", rec.Name)
+
+	case meta.OpPutFeatureFlag:
+		rec, err := decodeMeta[meta.FeatureFlag](op, payload)
+		if err != nil {
+			return err
+		}
+		b.log.Info("特性开关已变更", "flag", rec.Name, "enabled", rec.Enabled)
+
 	default:
 		return fmt.Errorf("未知的元数据操作 %q", op)
 	}
@@ -754,6 +771,12 @@ func (b *Broker) DeleteVHost(name string) (bool, error) {
 			policies = append(policies, rec)
 		}
 	}
+	var limits []meta.VHostLimit
+	for _, rec := range st.Limits {
+		if rec.VHost == name {
+			limits = append(limits, rec)
+		}
+	}
 
 	for _, rec := range queues {
 		if err := b.submitMeta(meta.OpDeleteQueue, meta.Queue{VHost: name, Name: rec.Name}); err != nil {
@@ -777,6 +800,11 @@ func (b *Broker) DeleteVHost(name string) (bool, error) {
 	}
 	for _, rec := range policies {
 		if err := b.submitMeta(meta.OpDeletePolicy, meta.Policy{Name: rec.Name, VHost: name}); err != nil {
+			return false, err
+		}
+	}
+	for _, rec := range limits {
+		if err := b.submitMeta(meta.OpDeleteVHostLimit, meta.VHostLimit{VHost: name, Name: rec.Name}); err != nil {
 			return false, err
 		}
 	}

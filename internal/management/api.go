@@ -134,6 +134,21 @@ func (s *Server) registerRoutes() {
 	s.handle(http.MethodPut, "/api/plugins/{name}/enable", apiGroupPlugins, s.enablePlugin)
 	s.handle(http.MethodPut, "/api/plugins/{name}/disable", apiGroupPlugins, s.disablePlugin)
 
+	// ---- vhost 级限制 ----
+	// 路径与语义对齐 RabbitMQ 的 /api/vhost-limits：写入 204、删除 204（不存在也 204）、
+	// 未知 vhost 404、未知限制名 400。
+	s.handle(http.MethodGet, "/api/vhost-limits", apiGroupLimits, s.getVHostLimits)
+	s.handle(http.MethodGet, "/api/vhost-limits/{vhost}", apiGroupLimits, s.getVHostLimits)
+	s.handle(http.MethodPut, "/api/vhost-limits/{vhost}/{name}", apiGroupLimits, s.putVHostLimit)
+	s.handle(http.MethodDelete, "/api/vhost-limits/{vhost}/{name}", apiGroupLimits, s.deleteVHostLimit)
+
+	// ---- 特性开关与弃用特性 ----
+	// 这两个都是**全局**对象（不像 vhost 限制那样有 vhost 维度），因此写操作要求 administrator。
+	s.handle(http.MethodGet, "/api/feature-flags", apiGroupFeatureFlags, s.getFeatureFlags)
+	s.handle(http.MethodPut, "/api/feature-flags/{name}/enable", apiGroupFeatureFlags, s.enableFeatureFlag)
+	s.handle(http.MethodPut, "/api/feature-flags/{name}/disable", apiGroupFeatureFlags, s.disableFeatureFlag)
+	s.handle(http.MethodGet, "/api/deprecated-features", apiGroupFeatureFlags, s.getDeprecatedFeatures)
+
 	// ---- 指标 ----
 	s.handle(http.MethodGet, "/metrics", apiGroupOverview, s.getMetrics)
 	s.handle(http.MethodGet, "/api/metrics", apiGroupOverview, s.getMetrics)
@@ -1847,7 +1862,8 @@ func normalizeAPIGroups(groups []string) []string {
 func knownAPIGroup(group string) bool {
 	switch group {
 	case apiGroupOverview, apiGroupTopology, apiGroupConnections, apiGroupAccounts,
-		apiGroupPolicies, apiGroupVHosts, apiGroupCluster, apiGroupPlugins:
+		apiGroupPolicies, apiGroupVHosts, apiGroupCluster, apiGroupPlugins,
+		apiGroupLimits, apiGroupFeatureFlags:
 		return true
 	default:
 		return false
@@ -2279,6 +2295,181 @@ func policyObject(pol broker.PolicySnapshot) map[string]any {
 func policyNotFound(w http.ResponseWriter, vhost, name string) {
 	writeError(w, http.StatusNotFound, "Object Not Found",
 		fmt.Sprintf("vhost %s 上没有名为 %s 的策略", vhost, name))
+}
+
+// ---------------------------------------------------------------------------
+// vhost 级限制
+// ---------------------------------------------------------------------------
+
+// getVHostLimits 实现 GET /api/vhost-limits 与 GET /api/vhost-limits/{vhost}。
+//
+// 返回形状对齐 RabbitMQ：按 vhost 分组，值放在嵌套的 value 对象里 ——
+// `[{"vhost":"/","value":{"max-queues":10}}]`。
+func (s *Server) getVHostLimits(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost := p["vhost"]
+	if vhost != "" && !s.deps.Broker.VHostExists(vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+
+	grouped := map[string]map[string]int{}
+	order := make([]string, 0)
+	for _, item := range s.deps.Broker.VHostLimits() {
+		if vhost != "" && item.VHost != vhost {
+			continue
+		}
+		if !s.canSeeVHost(au, item.VHost) {
+			continue
+		}
+		values, ok := grouped[item.VHost]
+		if !ok {
+			values = map[string]int{}
+			grouped[item.VHost] = values
+			order = append(order, item.VHost)
+		}
+		values[item.Name] = item.Value
+	}
+	out := make([]map[string]any, 0, len(order))
+	for _, name := range order {
+		out = append(out, map[string]any{"vhost": name, "value": grouped[name]})
+	}
+	writeJSON(w, http.StatusOK, emptyIfNil(out))
+}
+
+// putVHostLimit 实现 PUT /api/vhost-limits/{vhost}/{name}，请求体 {"value": N}。
+//
+// 写成功返回 204（RabbitMQ 实测就是 204，不是 201）。
+func (s *Server) putVHostLimit(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	var req vhostLimitRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	if req.Value == nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", "请求体缺少 value 字段")
+		return
+	}
+	if !s.deps.Broker.VHostExists(p["vhost"]) {
+		vhostNotFound(w, p["vhost"])
+		return
+	}
+	if err := s.deps.Broker.SetVHostLimit(p["vhost"], p["name"], *req.Value); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面设置 vhost 限制", "actor", au.Name, "vhost", p["vhost"], "limit", p["name"], "value", *req.Value)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteVHostLimit 实现 DELETE /api/vhost-limits/{vhost}/{name}。
+//
+// 对齐 RabbitMQ：删除不存在（或本来就没设）的限制同样返回 204。
+func (s *Server) deleteVHostLimit(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	if !s.deps.Broker.VHostExists(p["vhost"]) {
+		vhostNotFound(w, p["vhost"])
+		return
+	}
+	if _, err := s.deps.Broker.DeleteVHostLimit(p["vhost"], p["name"]); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面删除 vhost 限制", "actor", au.Name, "vhost", p["vhost"], "limit", p["name"])
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// vhostLimitRequest 是 PUT /api/vhost-limits/{vhost}/{name} 的请求体。
+//
+// Value 用指针：只有"显式传了 value"才算合法请求，缺字段要报 400 而不是当成 0。
+type vhostLimitRequest struct {
+	Value *int `json:"value"`
+}
+
+// ---------------------------------------------------------------------------
+// 特性开关与弃用特性
+// ---------------------------------------------------------------------------
+
+func (s *Server) getFeatureFlags(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	flags := s.deps.Broker.FeatureFlags()
+	out := make([]map[string]any, 0, len(flags))
+	for _, f := range flags {
+		out = append(out, featureFlagObject(f))
+	}
+	writeJSON(w, http.StatusOK, emptyIfNil(out))
+}
+
+func (s *Server) enableFeatureFlag(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	s.setFeatureFlag(w, p, au, true)
+}
+
+func (s *Server) disableFeatureFlag(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	s.setFeatureFlag(w, p, au, false)
+}
+
+// setFeatureFlag 是 enable / disable 两个端点的共同实现。
+func (s *Server) setFeatureFlag(w http.ResponseWriter, p params, au authUser, enabled bool) {
+	if err := au.requireAdministrator(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	name := p["name"]
+	if _, ok := s.deps.Broker.FeatureFlag(name); !ok {
+		writeError(w, http.StatusNotFound, "Object Not Found",
+			fmt.Sprintf("未知的特性开关 %s", name))
+		return
+	}
+	if err := s.deps.Broker.SetFeatureFlag(name, enabled); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面变更特性开关", "actor", au.Name, "flag", name, "enabled", enabled)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) getDeprecatedFeatures(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	items := s.deps.Broker.DeprecatedFeatures()
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"name":              item.Name,
+			"state":             item.State,
+			"deprecation_phase": item.DeprecationPhase,
+			"desc":              item.Desc,
+			"doc_url":           item.DocURL,
+			"provided_by":       item.ProvidedBy,
+		})
+	}
+	writeJSON(w, http.StatusOK, emptyIfNil(out))
+}
+
+func featureFlagObject(f broker.FeatureFlagSnapshot) map[string]any {
+	return map[string]any{
+		"name":        f.Name,
+		"state":       f.State,
+		"stability":   f.Stability,
+		"desc":        f.Desc,
+		"doc_url":     f.DocURL,
+		"provided_by": f.ProvidedBy,
+	}
 }
 
 // ---------------------------------------------------------------------------

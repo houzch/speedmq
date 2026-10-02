@@ -405,3 +405,61 @@ export interface ExchangeDeclareRequest {
   internal: boolean
   arguments?: Record<string, unknown>
 }
+
+/** 策略对象（GET /api/policies 等） */
+export interface Policy {
+  vhost: string
+  name: string
+  /** 对象名匹配用的正则（非锚定，与 RabbitMQ 一致） */
+  pattern: string
+  /** 作用对象：queues / classic_queues / quorum_queues / exchanges / all */
+  'apply-to': string
+  /** 策略内容，键是不带 x- 前缀的形式（message-ttl / max-length / ...） */
+  definition: Record<string, unknown>
+  priority: number
+}
+
+/** PUT /api/policies/{vhost}/{name} 请求体 */
+export interface PolicyRequest {
+  pattern: string
+  'apply-to': string
+  definition: Record<string, unknown>
+  priority: number
+}
+
+/**
+ * vhost 级限制（GET /api/vhost-limits 的返回元素）。
+ *
+ * 形状对齐 RabbitMQ：同一个 vhost 的多条限制收在一个元素里，
+ * `value` 是"限制名 → 值"的映射，如 `{"max-queues": 10}`。
+ */
+export interface VHostLimit {
+  vhost: string
+  value: Record<string, number>
+}
+
+/** 支持的限制名（顺序即界面展示顺序，与后端 broker.LimitNames 一致） */
+export type VHostLimitName = 'max-connections' | 'max-queues'
+
+/** 特性开关（GET /api/feature-flags） */
+export interface FeatureFlag {
+  name: string
+  /** enabled / disabled */
+  state: string
+  stability: string
+  desc: string
+  doc_url: string
+  provided_by: string
+}
+
+/** 弃用特性（GET /api/deprecated-features，只读清单） */
+export interface DeprecatedFeature {
+  name: string
+  /** denied / permitted */
+  state: string
+  /** denied_by_default / permitted_by_default / removed */
+  deprecation_phase: string
+  desc: string
+  doc_url: string
+  provided_by: string
+}

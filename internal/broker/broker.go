@@ -533,6 +533,9 @@ func (s *session) SetDisconnectFunc(fn func(reason string)) {
 // capabilities 声明即承诺：客户端会依据它切换代码路径，
 // 因此只有真正实现的能力才允许置 true —— 声明了却没实现，比不声明更糟。
 func (s *session) ServerProperties() map[string]any {
+	// 被特性开关管着的能力要**同步收敛**：判定点拦下了操作，这里就必须把它声明为 false，
+	// 否则客户端看到 true 会继续走那条命令，然后收到一堆意料之外的错误。
+	exchangeBindings := s.broker.featureEnabled(flagExchangeExchangeBindings)
 	return map[string]any{
 		"product":     "SwiftMQ",
 		"version":     Version,
@@ -544,7 +547,7 @@ func (s *session) ServerProperties() map[string]any {
 
 			// ---- M2 已实现并声明 ----
 			// 交换机间绑定：Exchange.Bind/Unbind 参与真实路由
-			"exchange_exchange_bindings": true,
+			"exchange_exchange_bindings": exchangeBindings,
 			// basic.nack：批量拒绝并可重新入队
 			"basic.nack": true,
 			// 消费者取消通知：队列被删除时服务端主动下发 basic.cancel
@@ -600,6 +603,11 @@ func (s *session) Session(vhostName string) (plugin.Session, error) {
 			"NOT_ALLOWED - vhost %s not found", vhostName)
 	}
 	if s.vh == nil {
+		// vhost 级连接上限：只在连接**首次**打开这个 vhost 时校验。
+		// 重复调用 Session() 是同一个连接在复用会话，不该自己把自己顶掉。
+		if err := s.broker.checkConnectionLimit(vhostName); err != nil {
+			return nil, err
+		}
 		perm, err := compilePermission(s.broker.auth, s.user, vhostName)
 		if err != nil {
 			return nil, err
