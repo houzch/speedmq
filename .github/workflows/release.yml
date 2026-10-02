@@ -44,6 +44,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          # 本仓库零第三方依赖（go.mod 无 require、无 go.sum），模块缓存无意义：
+          # 关掉可避免 setup-go 因找不到 go.sum 而打 warning
+          cache: false
 
       # 纯 Go + CGO_ENABLED=0：可直接交叉编译，无需 QEMU
       - name: Build

@@ -108,6 +108,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: false   # 零第三方依赖，无 go.sum，模块缓存无意义
 
       # 纯 Go + CGO_ENABLED=0，可直接交叉编译，无需 QEMU
       - name: Build
