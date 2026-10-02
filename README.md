@@ -138,6 +138,7 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 | 用户名 | `guest` |
 | 口令 | `guest` |
 | 标签 | `administrator`（可读写所有 vhost，并可使用管理面） |
+| 身份 | **总管理员**（总账号：不可删除/禁用/降级，且只有本人能改自己） |
 
 服务起来后直接用这套凭证：
 
@@ -145,11 +146,41 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 - **AMQP 客户端**：`amqp://guest:guest@localhost:5672/`
 - **命令行**：`./bin/swiftmqctl -user guest -pass guest status`
 
+> 🔒 **首次登录必须改掉总账号**。新装实例的总账号带 `must_change_password` 标记，管理 UI
+> 登录后会**强制**弹出对话框，要求同时修改**账号名**与**口令**（默认的 `guest/guest` 必须换成
+> 你自己的），改完才能进入管理后台。也可以直接调 API 完成同一件事：
+>
+> ```bash
+> curl -u guest:guest -X POST -H 'Content-Type: application/json' \
+>   -d '{"name":"admin","password":"<新口令>"}' \
+>   http://127.0.0.1:15672/api/users/guest/credentials
+> ```
+>
+> 该调用会让**旧凭据立即失效**（`guest/guest` 从此不可用），账号名与权限记录会一并迁移。
+> 账号与权限的日常管理在管理 UI 的「账号」页，或走管理 API（`/api/users`、`/api/permissions`）。
+
 > ⚠️ **仅供本地开发与试用**。`configs/swiftmqd.json` 里把 `guest` 的 `remote_access` 设为 `true`，
 > 是为了让容器内的访问（来源地址是 Docker 网关而非 `127.0.0.1`）不被拒绝。
-> 一旦服务对外可访问，请务必更换凭证：改 `configs/swiftmqd.json` 的 `users` 段后重启，或运行期新建账号
-> `./bin/swiftmqctl add_user <用户名> <口令> administrator`，
-> 再用管理 API 删掉默认账号（`curl -u guest:guest -X DELETE http://127.0.0.1:15672/api/users/guest`）。
+> 一旦服务对外可访问，请务必更换凭证 —— 走上面的首次改密流程，或改 `configs/swiftmqd.json` 的
+> `users` 段后重启。
+>
+> 说明：**强制改密在管理 UI 层实施**，管理 HTTP API 不做自造的全局拦截，以保持与 RabbitMQ
+> Management API 的行为兼容（自动化脚本与 `rabbitmqadmin` 不受影响）。
+
+#### 账号权限的两个维度
+
+账号"能做什么"由**标签**决定，再叠加两处更细的授权。管理 UI 里都是勾选 / 选择，**不需要手写正则**。
+
+| 维度 | 管什么 | 怎么配 | 默认 |
+| --- | --- | --- | --- |
+| 标签 | 管理面的读 / 写档位（对齐 RabbitMQ） | 勾选 `administrator` / `management` / `monitoring` | 无标签 = 用不了管理面 |
+| vhost 权限 | 该账号在**某个 vhost** 里能否声明拓扑 / 发布 / 消费 | 选**权限档位**（完全管理 / 只读 / 只发布 / 只声明拓扑）+ **资源范围**（全部资源 / 指定前缀） | 不配 = 该 vhost 一律拒绝（对齐 RabbitMQ） |
+| 管理接口功能组 | 该账号能访问**哪些管理 API** | 勾选功能组：概览与节点 / 队列与交换机 / 连接与通道 / 账号与权限 / 策略 / 虚拟主机 / 集群 / 插件 | **不勾 = 不限制**（用标签允许的全部接口，既有工具与脚本行为不变） |
+
+- 越权时管理 API 回 **403**，`reason` 写明缺的是哪个功能组（例：`未被授予「队列与交换机」管理接口权限`）。
+- `GET /api/whoami` 与"改自己的凭据"（`POST /api/users/{name}/credentials`）**不受功能组限制** ——
+  否则账号连自己的初始口令都改不了。
+- 接口级字段名是 `api_groups`（数组）：空数组 = 不限制。它是标签之上的**收窄**，不替代标签。
 
 ### 管理与观测（M5）
 
@@ -157,7 +188,7 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 
 | 入口 | 地址 | 说明 |
 | --- | --- | --- |
-| 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections + 队列详情（发布测试消息 / 取消息 / purge / delete） |
+| 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections / 集群 + **队列与交换机的新增（声明）/ 删除** + 队列详情（发布测试消息 / 取消息 / purge / delete）+ **账号与权限**（建号 / 改密 / 启停 / vhost 权限按预设选 / 管理接口功能组勾选） |
 | 管理 HTTP API | <http://localhost:15672/api/overview> | RabbitMQ Management API 兼容子集，Basic Auth（默认凭证 `guest` / `guest`，见上文「默认账号」） |
 | Prometheus 指标 | <http://localhost:15672/metrics> | 文本暴露格式，同样需要 Basic Auth |
 
@@ -172,6 +203,26 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 # 直接调 API
 curl -u guest:guest http://127.0.0.1:15672/api/overview
 ```
+
+> **管理 UI 的「新增队列 / 新增交换机」不是 UI 自研功能**，而是两个**声明端点**（RabbitMQ 的 UI 也是这么做的：
+> 队列页那个「Add a new queue」就是一个 `method=PUT` 的表单）。所以脚本可以完成同样的事：
+>
+> ```bash
+> # 声明队列（仲裁队列用 arguments:{"x-queue-type":"quorum"} 表达）
+> curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
+>   -d '{"durable":true,"auto_delete":false,"arguments":{}}' \
+>   http://127.0.0.1:15672/api/queues/%2F/my.queue
+> # 声明交换机（type: direct / fanout / topic / headers）
+> curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
+>   -d '{"type":"topic","durable":true,"auto_delete":false,"internal":false}' \
+>   http://127.0.0.1:15672/api/exchanges/%2F/my.exchange
+> # 删除交换机（?if-unused=true 时仍有绑定会被拒）
+> curl -u guest:guest -X DELETE http://127.0.0.1:15672/api/exchanges/%2F/my.exchange
+> ```
+>
+> 语义与 AMQP 的 `queue.declare` / `exchange.declare` **完全一致** —— 它复用的就是同一段内核逻辑：
+> 以调用方身份执行，受 `configure` 权限（403）与保留名（403）约束，参数不一致按等价性检查拒绝。
+> 状态码对齐 RabbitMQ 实测：**新建 201、已存在且参数等价 204、参数不等价或类型非法 400**。
 
 > 管理 UI 的前端源码在 `web/`，产物 `web/dist` **不入库**，由构建时生成并经 `go:embed` 打进二进制，
 > 因此**部署只需一个二进制**、不装 Node，也没有额外的 Nginx。

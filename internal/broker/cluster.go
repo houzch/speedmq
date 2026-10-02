@@ -402,9 +402,13 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 			return err
 		}
 		return b.auth.ApplyUser(rec.Name, config.User{
-			Password:     rec.Password,
-			Tags:         append([]string(nil), rec.Tags...),
-			RemoteAccess: rec.RemoteAccess,
+			Password:           rec.Password,
+			Tags:               append([]string(nil), rec.Tags...),
+			RemoteAccess:       rec.RemoteAccess,
+			Root:               rec.Root,
+			Disabled:           rec.Disabled,
+			MustChangePassword: rec.MustChangePassword,
+			APIGroups:          append([]string(nil), rec.APIGroups...),
 		})
 
 	case meta.OpDeleteUser:
@@ -466,6 +470,12 @@ func (b *Broker) RestoreMeta(state meta.State) error {
 	b.syncVHostsFromMeta(state.VHosts)
 	if len(state.Users) > 0 {
 		b.auth.ReplaceUsers(restoredUsers(state))
+		// 升级兜底：老部署的元数据里没有 root 标记，这里按配置里的初始账号名补上，
+		// 否则"总管理员"保护对既有部署完全不生效。
+		//
+		// 只在**内存视图**上补，不写元数据：集群下这个视图可能还没追平，拿它回写会覆盖他人的真实记录；
+		// 内存兜底则是幂等的 —— 每次启动按同一条规则重算，结果一致。
+		b.adoptConfigRootUser()
 	}
 	// 策略要先建好集合：下面重建队列时就要按它算出生效参数，否则重启后的队列会丢掉策略。
 	set := buildPolicySet(state, nil)
@@ -799,10 +809,14 @@ func restoredUsers(state meta.State) map[string]config.User {
 	out := make(map[string]config.User, len(state.Users))
 	for name, u := range state.Users {
 		out[name] = config.User{
-			Password:     u.Password,
-			Tags:         append([]string(nil), u.Tags...),
-			RemoteAccess: u.RemoteAccess,
-			Permissions:  map[string]config.Permission{},
+			Password:           u.Password,
+			Tags:               append([]string(nil), u.Tags...),
+			RemoteAccess:       u.RemoteAccess,
+			Root:               u.Root,
+			Disabled:           u.Disabled,
+			MustChangePassword: u.MustChangePassword,
+			APIGroups:          append([]string(nil), u.APIGroups...),
+			Permissions:        map[string]config.Permission{},
 		}
 	}
 	for _, p := range state.Permissions {
@@ -878,13 +892,24 @@ func (b *Broker) writeSeedMark(path string) {
 }
 
 // seedConfigUsers 提交配置里的全部账号（幂等：重复提交同一份记录不改变最终状态）。
+//
+// 首次播种顺带定下**总管理员账号**：配置里显式标了 root 的优先，否则取第一个 administrator。
+// 只有在这里（以及 RestoreMeta 的升级兜底）会置 root 标记 —— 管理 API 不能把账号提升为 root，
+// 否则"总账号"会退化成一个人人可加的标签，保护规则随之失效。
+//
+// 总账号同时被置上 must_change_password：**新装实例出厂即默认口令**，
+// 第一次登录必须先把账号名与口令改掉（管理 UI 据此强制弹窗）。
 func (b *Broker) seedConfigUsers() error {
+	rootName := b.configRootUserName()
 	for name, u := range b.cfg.Users {
+		isRoot := name == rootName
 		rec := meta.User{
-			Name:         name,
-			Password:     u.Password,
-			Tags:         append([]string(nil), u.Tags...),
-			RemoteAccess: u.RemoteAccess,
+			Name:               name,
+			Password:           u.Password,
+			Tags:               append([]string(nil), u.Tags...),
+			RemoteAccess:       u.RemoteAccess,
+			Root:               isRoot,
+			MustChangePassword: isRoot,
 		}
 		if err := b.submitMeta(meta.OpPutUser, rec); err != nil {
 			return err
@@ -898,6 +923,9 @@ func (b *Broker) seedConfigUsers() error {
 				return err
 			}
 		}
+	}
+	if rootName == "" {
+		b.log.Warn("配置里的初始账号中没有 administrator，将没有总管理员账号；请通过管理面创建并指派")
 	}
 	return nil
 }

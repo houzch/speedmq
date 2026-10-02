@@ -143,13 +143,16 @@ type params map[string]string
 type route struct {
 	method   string
 	segments []string
-	handler  handlerFunc
+	// group 是该接口所属的**功能组**（见 apiGroup* 常量）。账号上勾选的功能组就是按它收窄的。
+	group   string
+	handler handlerFunc
 }
 
-func (s *Server) handle(method, pattern string, h handlerFunc) {
+func (s *Server) handle(method, pattern, group string, h handlerFunc) {
 	s.routes = append(s.routes, route{
 		method:   method,
 		segments: splitPath(pattern),
+		group:    group,
 		handler:  h,
 	})
 }
@@ -186,8 +189,8 @@ func splitRequestPath(r *http.Request) ([]string, error) {
 	return out, nil
 }
 
-// match 返回匹配的处理器与路径参数。
-func (s *Server) match(method string, segments []string) (handlerFunc, params, bool, bool) {
+// match 返回匹配的处理器、路径参数与所属功能组。
+func (s *Server) match(method string, segments []string) (handlerFunc, params, string, bool, bool) {
 	pathMatched := false
 	for _, rt := range s.routes {
 		p, ok := matchSegments(rt.segments, segments)
@@ -196,10 +199,10 @@ func (s *Server) match(method string, segments []string) (handlerFunc, params, b
 		}
 		pathMatched = true
 		if rt.method == method {
-			return rt.handler, p, true, true
+			return rt.handler, p, rt.group, true, true
 		}
 	}
-	return nil, nil, false, pathMatched
+	return nil, nil, "", false, pathMatched
 }
 
 func matchSegments(pattern, actual []string) (params, bool) {
@@ -245,7 +248,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handler, p, ok, pathMatched := s.match(r.Method, segments)
+	handler, p, group, ok, pathMatched := s.match(r.Method, segments)
 	if !ok {
 		if pathMatched {
 			w.Header().Set("Allow", s.allowedMethods(segments))
@@ -255,6 +258,14 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusNotFound, "Object Not Found",
 			"未找到管理接口 "+r.URL.Path)
+		return
+	}
+	// 接口级权限：账号勾选了功能组时，只允许访问这些组。
+	// 未勾选（列表为空）= 不限制，用标签允许的全部接口 —— 这样既有账号与
+	// rabbitmqadmin / 脚本的行为完全不变，新账号可以在此基础上收窄。
+	if !user.allowsGroup(group) {
+		writeError(w, http.StatusForbidden, "Access refused",
+			fmt.Sprintf("ACCESS_REFUSED - 账号 %s 未被授予「%s」管理接口权限", user.Name, groupLabel(group)))
 		return
 	}
 	handler(w, r, p, user)
@@ -273,6 +284,49 @@ func (s *Server) allowedMethods(segments []string) string {
 	return strings.Join(out, ", ")
 }
 
+// 管理接口的**功能组**：账号上勾选的接口权限就是按它收窄的（见 serveHTTP）。
+//
+// 分组按"运维实际会授权的一整块能力"来切，而不是按 URL 前缀机械切分 ——
+// 授权界面要能回答"这个账号是干什么的"，所以「队列 / 交换机 / 绑定 / 消费者」
+// 合成一个 topology（同属数据面拓扑），而「账号与权限」单独成组（安全敏感）。
+const (
+	apiGroupOverview    = "overview"    // 概览、节点、谁在登录（只读观测）
+	apiGroupTopology    = "topology"    // 队列、交换机、绑定、消费者（含 purge / 删除 / 发布 / 取消息）
+	apiGroupConnections = "connections" // 连接与通道（含强制关闭连接）
+	apiGroupAccounts    = "accounts"    // 账号与权限
+	apiGroupPolicies    = "policies"    // 策略
+	apiGroupVHosts      = "vhosts"      // 虚拟主机
+	apiGroupCluster     = "cluster"     // 集群状态与成员变更
+	apiGroupPlugins     = "plugins"     // 插件治理
+)
+
+// groupLabel 返回功能组的中文名（用于错误提示与管理 UI）。
+func groupLabel(group string) string {
+	switch group {
+	case apiGroupOverview:
+		return "概览与节点"
+	case apiGroupTopology:
+		return "队列与交换机"
+	case apiGroupConnections:
+		return "连接与通道"
+	case apiGroupAccounts:
+		return "账号与权限"
+	case apiGroupPolicies:
+		return "策略"
+	case apiGroupVHosts:
+		return "虚拟主机"
+	case apiGroupCluster:
+		return "集群"
+	case apiGroupPlugins:
+		return "插件"
+	case "":
+		// 空组表示"不参与接口权限收窄"的接口（如 whoami）：登录本身必须永远可用。
+		return "基础"
+	default:
+		return group
+	}
+}
+
 // authUser 是认证后的调用方。
 type authUser struct {
 	Name string
@@ -281,6 +335,24 @@ type authUser struct {
 	AllVHosts bool
 	// VHosts 是该用户有权限记录的 vhost 集合。
 	VHosts map[string]struct{}
+	// Root 表示该账号是内置总管理员（不可删除/禁用/降级）。
+	Root bool
+	// MustChangePassword 表示该账号尚未完成首次改密，管理 UI 需要强制弹窗。
+	MustChangePassword bool
+	// APIGroups 是该账号被允许访问的管理接口功能组。
+	// **为空表示不限制**（用标签允许的全部接口），以保持既有账号与工具的行为不变。
+	APIGroups []string
+}
+
+// allowsGroup 判断调用方是否可访问某个功能组。
+//
+// 两条放行规则：没配功能组（不限制）、或明确勾选了该组。
+// 空组名（whoami 这类"不参与收窄"的接口）一律放行 —— 否则账号连"我是谁"都问不了。
+func (au authUser) allowsGroup(group string) bool {
+	if group == "" || len(au.APIGroups) == 0 {
+		return true
+	}
+	return hasTag(au.APIGroups, group)
 }
 
 // authenticate 校验 Basic Auth，并计算该用户可访问的 vhost 集合。
@@ -293,7 +365,14 @@ func (s *Server) authenticate(r *http.Request) (authUser, error) {
 	if err != nil {
 		return authUser{}, err
 	}
-	au := authUser{Name: snap.Name, Tags: snap.Tags, VHosts: map[string]struct{}{}}
+	au := authUser{
+		Name:               snap.Name,
+		Tags:               snap.Tags,
+		VHosts:             map[string]struct{}{},
+		Root:               snap.Root,
+		MustChangePassword: snap.MustChangePassword,
+		APIGroups:          snap.APIGroups,
+	}
 	for _, tag := range snap.Tags {
 		switch tag {
 		case "administrator", "monitoring":

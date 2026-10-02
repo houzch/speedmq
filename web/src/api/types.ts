@@ -84,6 +84,53 @@ export interface Whoami {
   name: string
   tags: string
   auth_backend: string
+  /** 是否总管理员（总账号不可删除、禁用或移除 administrator 标签） */
+  is_root: boolean
+  /** 是否必须强制修改账号名与口令（首次登录时为 true） */
+  must_change_password: boolean
+  /** 可访问的管理接口功能组；空数组表示不限制（用标签允许的全部接口） */
+  api_groups: string[]
+}
+
+/** GET /api/users 与 /api/users/{name} 的账号对象 */
+export interface User {
+  name: string
+  /** 空格分隔的标签串，如 "administrator" / "management monitoring" */
+  tags: string
+  auth_backend: string
+  is_root: boolean
+  disabled: boolean
+  must_change_password: boolean
+  /** 可访问的管理接口功能组；空数组表示不限制（用标签允许的全部接口） */
+  api_groups: string[]
+}
+
+/** 权限记录（GET /api/permissions 等） */
+export interface Permission {
+  user: string
+  vhost: string
+  configure: string
+  write: string
+  read: string
+}
+
+/** PUT /api/users/{name} 请求体（新建或更新账号） */
+export interface UserUpsertRequest {
+  /** 新建时必须提供；更新时留空表示不改口令 */
+  password?: string
+  /** 空格分隔标签串或标签数组；不传表示保持原状 */
+  tags?: string | string[]
+  disabled?: boolean
+  must_change_password?: boolean
+  /** 可访问的管理接口功能组；传空数组表示不限制，不传表示保持原状 */
+  api_groups?: string[]
+}
+
+/** POST /api/users/{name}/credentials 请求体（改账号名与/或口令） */
+export interface CredentialsRequest {
+  /** 新账号名；留空或同旧名表示只改口令 */
+  name?: string
+  password?: string
 }
 
 /** 集群元数据规模（GET /api/cluster 的 object_totals） */
@@ -329,4 +376,25 @@ export interface QueueQuery extends Record<string, QueryValue> {
 export interface ExchangeQuery extends Record<string, QueryValue> {
   vhost?: string
   name?: string
+}
+
+/**
+ * PUT /api/queues/{vhost}/{name} 请求体（声明队列，语义同客户端 queue.declare）。
+ *
+ * 队列类型通过 arguments 表达：{"x-queue-type":"quorum"} 为仲裁队列；不传为经典队列。
+ */
+export interface QueueDeclareRequest {
+  durable: boolean
+  auto_delete: boolean
+  arguments?: Record<string, unknown>
+}
+
+/** PUT /api/exchanges/{vhost}/{name} 请求体（声明交换机，语义同客户端 exchange.declare） */
+export interface ExchangeDeclareRequest {
+  /** direct / fanout / topic / headers，不传默认 direct */
+  type: string
+  durable: boolean
+  auto_delete: boolean
+  internal: boolean
+  arguments?: Record<string, unknown>
 }

@@ -575,11 +575,7 @@ func (b *Broker) UserSnapshots() []UserSnapshot {
 		if !ok {
 			continue
 		}
-		out = append(out, UserSnapshot{
-			Name:         name,
-			Tags:         append([]string(nil), u.Tags...),
-			RemoteAccess: u.RemoteAccess,
-		})
+		out = append(out, userSnapshot(name, u))
 	}
 	return out
 }
@@ -589,6 +585,27 @@ type UserSnapshot struct {
 	Name         string
 	Tags         []string
 	RemoteAccess bool
+	// Root 表示这是内置总管理员账号（不可删除/禁用/降级）。
+	Root bool
+	// Disabled 表示账号已被禁用（不能登录）。
+	Disabled bool
+	// MustChangePassword 表示该账号首次登录须先改账号名/口令。
+	MustChangePassword bool
+	// APIGroups 是该账号被允许访问的管理接口功能组；为空表示不限制。
+	APIGroups []string
+}
+
+// userSnapshot 由用户记录组装只读视图（口令不出现在视图里）。
+func userSnapshot(name string, u config.User) UserSnapshot {
+	return UserSnapshot{
+		Name:               name,
+		Tags:               append([]string(nil), u.Tags...),
+		RemoteAccess:       u.RemoteAccess,
+		Root:               u.Root,
+		Disabled:           u.Disabled,
+		MustChangePassword: u.MustChangePassword,
+		APIGroups:          append([]string(nil), u.APIGroups...),
+	}
 }
 
 // User 返回单个用户。
@@ -597,7 +614,7 @@ func (b *Broker) User(name string) (UserSnapshot, bool) {
 	if !ok {
 		return UserSnapshot{}, false
 	}
-	return UserSnapshot{Name: name, Tags: append([]string(nil), u.Tags...), RemoteAccess: u.RemoteAccess}, true
+	return userSnapshot(name, u), true
 }
 
 // VerifyUser 校验管理 HTTP API 的 Basic Auth 凭证。
@@ -606,33 +623,193 @@ func (b *Broker) VerifyUser(user, password string, remote net.Addr) (UserSnapsho
 	if err != nil {
 		return UserSnapshot{}, err
 	}
-	return UserSnapshot{
-		Name:         user,
-		Tags:         append([]string(nil), rec.Tags...),
-		RemoteAccess: rec.RemoteAccess,
-	}, nil
+	return userSnapshot(user, rec), nil
 }
 
-// UpsertUser 新建或更新用户。
+// UserWrite 是写账号时的字段集合。
 //
-// 走元数据层提交（M8-4）：集群下经 Raft 复制到全体节点，单机下落到 meta/state.json，
-// 因此"改了密码/加了账号"不再随进程退出而丢失。
+// 用结构体而不是一串参数：字段会继续长（root / disabled / 待改密 / 功能组…），
+// 而多个布尔参数连在一起时，调用点读起来就是 `false, true, false`，极易写反。
+type UserWrite struct {
+	Name      string
+	Tags      []string
+	APIGroups []string
+	// Password 留空表示**保留原口令**（更新场景下"不填密码框"就不该把口令清空）。
+	Password string
+	Disabled bool
+	// MustChangePassword 为 true 时该账号下次登录须先改密。
+	MustChangePassword bool
+}
+
+// UpsertUser 新建或更新用户（只写"口令 + 标签"，其余字段保持原状）。
+//
+// 保留既有调用方（含测试）的签名；管理面要写全字段时用 PutUser。
 func (b *Broker) UpsertUser(name, password string, tags []string) error {
-	if strings.TrimSpace(name) == "" {
-		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 用户名不能为空")
+	w := UserWrite{Name: name, Password: password, Tags: tags}
+	if old, ok := b.auth.User(name); ok {
+		w.APIGroups = old.APIGroups
+		w.Disabled = old.Disabled
+		w.MustChangePassword = old.MustChangePassword
 	}
+	_, err := b.PutUser(w)
+	return err
+}
+
+// PutUser 新建或整体更新一个用户（管理面的写路径）。
+//
+// Root 标记不在这里设置：总账号归属只由首次播种与启动兜底决定，
+// 允许经管理 API 提升会让"总账号"退化成一个人人可加的标签。这里只**继承**既有标记。
+// 返回 created 表示本次是新建。
+func (b *Broker) PutUser(w UserWrite) (created bool, err error) {
+	if strings.TrimSpace(w.Name) == "" {
+		return false, plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 用户名不能为空")
+	}
+	old, existed := b.auth.User(w.Name)
 	rec := meta.User{
-		Name:     name,
-		Password: password,
-		Tags:     append([]string(nil), tags...),
-		// 管理 API 创建的账号一律允许远端登录：它是运维显式创建的，默认只允许本机会让它形同虚设
-		// （配置文件里的 guest 仍按配置的 remote_access 生效）。
-		RemoteAccess: true,
+		Name: w.Name,
+		// 管理 API 创建的账号一律允许远端登录（与既有语义一致）。
+		RemoteAccess:       true,
+		Tags:               append([]string(nil), w.Tags...),
+		APIGroups:          append([]string(nil), w.APIGroups...),
+		Root:               old.Root,
+		Disabled:           w.Disabled,
+		MustChangePassword: w.MustChangePassword,
+	}
+	if !existed || w.Password != "" {
+		rec.Password = w.Password
+	}
+	if err := b.submitMeta(meta.OpPutUser, rec); err != nil {
+		return false, err
+	}
+	if err := b.awaitMeta(func() bool { _, ok := b.auth.User(w.Name); return ok }); err != nil {
+		return false, err
+	}
+	return !existed, nil
+}
+
+// RenameUser 把账号改名，连同权限记录与 root / 禁用标记一起迁移；password 非空时同时改口令。
+//
+// 账号名是用户记录的主键，改名没有"原子改名"这个原语，实现是三步元数据提交：
+// 写新记录 → 逐条迁权限 → 删旧记录。三个 Op 都幂等，重放不会产生额外效果，
+// 因此不需要为它新增一个元数据操作类型（新增 Op 反而要把 fsm / 快照 / 集群一起改）。
+//
+// 改名或改口令都意味着"凭据已经换过"，因此会清掉 must_change_password。
+func (b *Broker) RenameUser(oldName, newName, password string) error {
+	if strings.TrimSpace(newName) == "" {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 新用户名不能为空")
+	}
+	old, ok := b.auth.User(oldName)
+	if !ok {
+		return plugin.Errorf(plugin.KindNotFound, "NOT_FOUND - 用户 %s 不存在", oldName)
+	}
+	if oldName == newName {
+		if password == "" {
+			return nil
+		}
+		_, err := b.PutUser(UserWrite{
+			Name: newName, Password: password, Tags: old.Tags,
+			APIGroups: old.APIGroups, Disabled: old.Disabled,
+		})
+		return err
+	}
+	if _, exists := b.auth.User(newName); exists {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - 用户 %s 已存在", newName)
+	}
+
+	rec := meta.User{
+		Name:         newName,
+		Password:     old.Password,
+		Tags:         append([]string(nil), old.Tags...),
+		APIGroups:    append([]string(nil), old.APIGroups...),
+		RemoteAccess: old.RemoteAccess,
+		Root:         old.Root,
+		Disabled:     old.Disabled,
+	}
+	if password != "" {
+		rec.Password = password
 	}
 	if err := b.submitMeta(meta.OpPutUser, rec); err != nil {
 		return err
 	}
-	return b.awaitMeta(func() bool { _, ok := b.auth.User(name); return ok })
+	for _, p := range b.metaPermissionsOf(oldName) {
+		if err := b.submitMeta(meta.OpPutPermission, meta.Permission{
+			User: newName, VHost: p.VHost,
+			Configure: p.Configure, Write: p.Write, Read: p.Read,
+		}); err != nil {
+			return err
+		}
+		if err := b.submitMeta(meta.OpDeletePermission, meta.Permission{User: oldName, VHost: p.VHost}); err != nil {
+			return err
+		}
+	}
+	if err := b.submitMeta(meta.OpDeleteUser, meta.User{Name: oldName}); err != nil {
+		return err
+	}
+	return b.awaitMeta(func() bool {
+		_, ok := b.auth.User(newName)
+		_, stale := b.auth.User(oldName)
+		return ok && !stale
+	})
+}
+
+// configRootUserName 返回配置里应当作为总账号的账号名。
+//
+// 优先取显式标记 root 的账号；一个都没有时退回"按名字排序的第一个 administrator"，
+// 这样配置文件没写 root 的部署也能自动获得一个总账号（否则保护规则对它形同虚设）。
+// 返回空串表示配置里根本没有 administrator。
+func (b *Broker) configRootUserName() string {
+	names := make([]string, 0, len(b.cfg.Users))
+	for name := range b.cfg.Users {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fallback := ""
+	for _, name := range names {
+		u := b.cfg.Users[name]
+		if u.Root {
+			return name
+		}
+		if fallback == "" && hasTag(u.Tags, adminTag) {
+			fallback = name
+		}
+	}
+	return fallback
+}
+
+// hasRootUser 判断当前用户表里是否已有总账号。
+func (b *Broker) hasRootUser() bool {
+	for _, name := range b.auth.UserNames() {
+		if u, ok := b.auth.User(name); ok && u.Root {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptConfigRootUser 是**升级兜底**：元数据里没有任何 root 标记时，把配置里的初始账号补标为 root。
+//
+// 只在内存视图上补、不写元数据 —— 集群下这个视图可能还没追平，回写会覆盖他人的真实记录；
+// 内存兜底则每次启动按同一条规则重算，结果一致。首次安装不走这条路径（播种时已置位）。
+func (b *Broker) adoptConfigRootUser() {
+	if b.hasRootUser() {
+		return
+	}
+	name := b.configRootUserName()
+	if name == "" {
+		return
+	}
+	rec, ok := b.auth.User(name)
+	if !ok {
+		b.log.Warn("元数据里没有总管理员账号，且配置里的初始账号已不存在；请在管理面核对账号与权限",
+			"expected", name)
+		return
+	}
+	rec.Root = true
+	if err := b.auth.ApplyUser(name, rec); err != nil {
+		b.log.Warn("补标总管理员账号失败", "user", name, "err", err)
+		return
+	}
+	b.log.Info("已把配置里的初始账号补标为总管理员（升级兜底）", "user", name)
 }
 
 // DeleteUser 删除用户（连同其权限记录）。返回是否命中。

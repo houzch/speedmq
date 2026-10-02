@@ -2,7 +2,7 @@
 // 交换机详情：基本信息 + source 绑定 + 发布测试消息
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Promotion, Refresh } from '@element-plus/icons-vue'
+import { ArrowLeft, Delete, Promotion, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Binding, Exchange } from '@/api/types'
 import { formatBoolean, formatJson, formatNumber } from '@/utils/format'
@@ -85,6 +85,26 @@ function goBack(): void {
   void router.push({ name: 'exchanges', params: { vhost: vhost.value } })
 }
 
+/** 删除交换机：二次确认后删除，成功返回交换机列表 */
+async function deleteExchange(): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`确定要删除交换机「${exchangeName.value}」吗？该操作不可撤销。`, '删除交换机', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await api.deleteExchange(vhost.value, exchangeName.value)
+    ElMessage.success('交换机已删除')
+    await router.push({ name: 'exchanges', params: { vhost: vhost.value } })
+  } catch (error) {
+    showError(error, '删除交换机失败')
+  }
+}
+
 onMounted(() => {
   void load()
 })
@@ -103,7 +123,10 @@ watch([vhost, exchangeName], () => {
         <h2 class="page-title">交换机详情：{{ exchangeName }}</h2>
         <div class="page-subtitle">虚拟主机：{{ vhost }}</div>
       </div>
-      <el-button :icon="Refresh" @click="load">刷新</el-button>
+      <div class="toolbar" style="margin-bottom: 0">
+        <el-button :icon="Refresh" @click="load">刷新</el-button>
+        <el-button type="danger" :icon="Delete" @click="deleteExchange">删除交换机</el-button>
+      </div>
     </div>
 
     <el-card class="section-card" shadow="never">

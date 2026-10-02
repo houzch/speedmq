@@ -337,8 +337,9 @@ func TestQueuePathEncoding(t *testing.T) {
 		t.Fatalf("404 响应体应为 {error,reason}，实际 %s", raw)
 	}
 
-	// 方法不允许：PUT 到队列详情
-	resp, _ = env.request(t, http.MethodPut, "/api/queues/%2F/m5.encode", map[string]any{}, "", "")
+	// 方法不允许：该路径只支持 GET / PUT / DELETE（PUT = 声明，见 declare_test.go），
+	// 用 POST 触发 405，避免"新增声明端点"把这条覆盖顺手取消掉。
+	resp, _ = env.request(t, http.MethodPost, "/api/queues/%2F/m5.encode", map[string]any{}, "", "")
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("不支持的方法应 405，实际 %d", resp.StatusCode)
 	}

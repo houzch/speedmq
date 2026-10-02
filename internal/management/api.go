@@ -26,94 +26,107 @@ const apiTimeLayout = "2006-01-02 15:04:05"
 // 能直接跑起来 —— 兼容性由真实消费者验证，而不是由接口数量验证。
 func (s *Server) registerRoutes() {
 	// ---- 概览与节点 ----
-	s.handle(http.MethodGet, "/api/overview", s.getOverview)
-	s.handle(http.MethodGet, "/api/nodes", s.getNodes)
-	s.handle(http.MethodGet, "/api/whoami", s.getWhoami)
+	s.handle(http.MethodGet, "/api/overview", apiGroupOverview, s.getOverview)
+	s.handle(http.MethodGet, "/api/nodes", apiGroupOverview, s.getNodes)
+	// whoami 不参与接口权限收窄（空组）：它是"我是谁"的身份探针，
+	// 登录后管理 UI 必须先拿到它才能知道当前账号被允许访问哪些功能组。
+	s.handle(http.MethodGet, "/api/whoami", "", s.getWhoami)
 
 	// ---- 集群（M6）----
 	// /api/cluster 是 SwiftMQ 的扩展端点（RabbitMQ 没有对应接口），
 	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
-	s.handle(http.MethodGet, "/api/cluster", s.getCluster)
-	s.handle(http.MethodGet, "/api/cluster/name", s.getClusterName)
+	s.handle(http.MethodGet, "/api/cluster", apiGroupCluster, s.getCluster)
+	s.handle(http.MethodGet, "/api/cluster/name", apiGroupCluster, s.getClusterName)
 	// 成员变更（M6d）：把节点加入/移出集群的运行期操作。
 	// RabbitMQ 用 `rabbitmqctl join_cluster`（在被加入的节点上执行），这里反过来
 	// 由集群侧发起（`PUT /api/cluster/members/{node_id}`），因为新节点是以 learner
 	// 身份启动、被动等待被纳入；两种方向的语义等价，但集群侧发起更容易与 Raft 的
 	// "只有 leader 能改配置"对齐。
-	s.handle(http.MethodGet, "/api/cluster/members", s.getClusterMembers)
-	s.handle(http.MethodPut, "/api/cluster/members/{name}", s.putClusterMember)
-	s.handle(http.MethodDelete, "/api/cluster/members/{name}", s.deleteClusterMember)
+	s.handle(http.MethodGet, "/api/cluster/members", apiGroupCluster, s.getClusterMembers)
+	s.handle(http.MethodPut, "/api/cluster/members/{name}", apiGroupCluster, s.putClusterMember)
+	s.handle(http.MethodDelete, "/api/cluster/members/{name}", apiGroupCluster, s.deleteClusterMember)
 
 	// ---- vhost ----
-	s.handle(http.MethodGet, "/api/vhosts", s.getVHosts)
-	s.handle(http.MethodGet, "/api/vhosts/{vhost}", s.getVHost)
-	s.handle(http.MethodPut, "/api/vhosts/{vhost}", s.putVHost)
-	s.handle(http.MethodDelete, "/api/vhosts/{vhost}", s.deleteVHost)
+	s.handle(http.MethodGet, "/api/vhosts", apiGroupVHosts, s.getVHosts)
+	s.handle(http.MethodGet, "/api/vhosts/{vhost}", apiGroupVHosts, s.getVHost)
+	s.handle(http.MethodPut, "/api/vhosts/{vhost}", apiGroupVHosts, s.putVHost)
+	s.handle(http.MethodDelete, "/api/vhosts/{vhost}", apiGroupVHosts, s.deleteVHost)
 
 	// ---- 队列 ----
-	s.handle(http.MethodGet, "/api/queues", s.getQueues)
-	s.handle(http.MethodGet, "/api/queues/{vhost}", s.getQueues)
-	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}", s.getQueue)
-	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}", s.deleteQueue)
-	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}/contents", s.purgeQueue)
-	s.handle(http.MethodPost, "/api/queues/{vhost}/{name}/get", s.getQueueMessages)
-	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}/bindings", s.getQueueBindings)
+	s.handle(http.MethodGet, "/api/queues", apiGroupTopology, s.getQueues)
+	s.handle(http.MethodGet, "/api/queues/{vhost}", apiGroupTopology, s.getQueues)
+	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}", apiGroupTopology, s.getQueue)
+	// 声明队列（RabbitMQ 管理 UI 的「Add a new queue」= 这个端点）：
+	// 语义与 AMQP 的 queue.declare 一致，因为它复用的就是同一段内核逻辑。
+	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}", apiGroupTopology, s.putQueue)
+	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}", apiGroupTopology, s.deleteQueue)
+	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}/contents", apiGroupTopology, s.purgeQueue)
+	s.handle(http.MethodPost, "/api/queues/{vhost}/{name}/get", apiGroupTopology, s.getQueueMessages)
+	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}/bindings", apiGroupTopology, s.getQueueBindings)
 	// 仲裁队列的副本集运行期操作（M8-15，SwiftMQ 扩展端点，RabbitMQ 用 rabbitmq-queues 命令做同样的事）。
 	//   PUT .../grow      {"count": N} 把副本数扩到 N（只增不减；单机模式返回 501）
 	//   PUT .../rebalance {}           把该队列的 leader 迁到副本集中较空的节点
-	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/grow", s.growQueue)
-	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/rebalance", s.rebalanceQueue)
+	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/grow", apiGroupTopology, s.growQueue)
+	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/rebalance", apiGroupTopology, s.rebalanceQueue)
 
 	// ---- 交换机 ----
-	s.handle(http.MethodGet, "/api/exchanges", s.getExchanges)
-	s.handle(http.MethodGet, "/api/exchanges/{vhost}", s.getExchanges)
-	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}", s.getExchange)
-	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}/bindings/source", s.getExchangeSourceBindings)
-	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}/bindings/destination", s.getExchangeDestinationBindings)
-	s.handle(http.MethodPost, "/api/exchanges/{vhost}/{name}/publish", s.publish)
+	s.handle(http.MethodGet, "/api/exchanges", apiGroupTopology, s.getExchanges)
+	s.handle(http.MethodGet, "/api/exchanges/{vhost}", apiGroupTopology, s.getExchanges)
+	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}", apiGroupTopology, s.getExchange)
+	// 声明交换机（RabbitMQ 管理 UI 的「Add a new exchange」= 这个端点）；删除是它的对称操作，
+	// 队列页既有删除，交换机页也要有，否则"能建不能删"。
+	s.handle(http.MethodPut, "/api/exchanges/{vhost}/{name}", apiGroupTopology, s.putExchange)
+	s.handle(http.MethodDelete, "/api/exchanges/{vhost}/{name}", apiGroupTopology, s.deleteExchange)
+	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}/bindings/source", apiGroupTopology, s.getExchangeSourceBindings)
+	s.handle(http.MethodGet, "/api/exchanges/{vhost}/{name}/bindings/destination", apiGroupTopology, s.getExchangeDestinationBindings)
+	s.handle(http.MethodPost, "/api/exchanges/{vhost}/{name}/publish", apiGroupTopology, s.publish)
 
 	// ---- 绑定 ----
-	s.handle(http.MethodGet, "/api/bindings", s.getBindings)
-	s.handle(http.MethodGet, "/api/bindings/{vhost}", s.getBindings)
+	s.handle(http.MethodGet, "/api/bindings", apiGroupTopology, s.getBindings)
+	s.handle(http.MethodGet, "/api/bindings/{vhost}", apiGroupTopology, s.getBindings)
 
 	// ---- 连接与通道 ----
-	s.handle(http.MethodGet, "/api/connections", s.getConnections)
-	s.handle(http.MethodGet, "/api/connections/{name}", s.getConnection)
-	s.handle(http.MethodDelete, "/api/connections/{name}", s.closeConnection)
-	s.handle(http.MethodGet, "/api/channels", s.getChannels)
-	s.handle(http.MethodGet, "/api/channels/{name}", s.getChannel)
+	s.handle(http.MethodGet, "/api/connections", apiGroupConnections, s.getConnections)
+	s.handle(http.MethodGet, "/api/connections/{name}", apiGroupConnections, s.getConnection)
+	s.handle(http.MethodDelete, "/api/connections/{name}", apiGroupConnections, s.closeConnection)
+	s.handle(http.MethodGet, "/api/channels", apiGroupConnections, s.getChannels)
+	s.handle(http.MethodGet, "/api/channels/{name}", apiGroupConnections, s.getChannel)
 
 	// ---- 消费者 ----
-	s.handle(http.MethodGet, "/api/consumers", s.getConsumers)
-	s.handle(http.MethodGet, "/api/consumers/{vhost}", s.getConsumers)
+	s.handle(http.MethodGet, "/api/consumers", apiGroupTopology, s.getConsumers)
+	s.handle(http.MethodGet, "/api/consumers/{vhost}", apiGroupTopology, s.getConsumers)
 
 	// ---- 用户与权限 ----
-	s.handle(http.MethodGet, "/api/users", s.getUsers)
-	s.handle(http.MethodGet, "/api/users/{name}", s.getUser)
-	s.handle(http.MethodPut, "/api/users/{name}", s.putUser)
-	s.handle(http.MethodDelete, "/api/users/{name}", s.deleteUser)
-	s.handle(http.MethodGet, "/api/permissions", s.getPermissions)
-	s.handle(http.MethodGet, "/api/vhosts/{vhost}/permissions", s.getVHostPermissions)
-	s.handle(http.MethodGet, "/api/permissions/{vhost}/{user}", s.getPermission)
-	s.handle(http.MethodPut, "/api/permissions/{vhost}/{user}", s.putPermission)
-	s.handle(http.MethodDelete, "/api/permissions/{vhost}/{user}", s.deletePermission)
+	s.handle(http.MethodGet, "/api/users", apiGroupAccounts, s.getUsers)
+	s.handle(http.MethodGet, "/api/users/{name}", apiGroupAccounts, s.getUser)
+	// 账号与权限管理要 administrator/management 标签；功能组权限只在此之上做收窄。
+	s.handle(http.MethodPut, "/api/users/{name}", apiGroupAccounts, s.putUser)
+	s.handle(http.MethodDelete, "/api/users/{name}", apiGroupAccounts, s.deleteUser)
+	// 改账号名与/或口令：本人可自助（首次强制改密走它），因此**不参与功能组收窄** ——
+	// 否则管理员一旦没给账号勾"账号与权限"，这个账号连自己的初始口令都改不了。
+	s.handle(http.MethodPost, "/api/users/{name}/credentials", "", s.putUserCredentials)
+	s.handle(http.MethodGet, "/api/permissions", apiGroupAccounts, s.getPermissions)
+	s.handle(http.MethodGet, "/api/vhosts/{vhost}/permissions", apiGroupAccounts, s.getVHostPermissions)
+	s.handle(http.MethodGet, "/api/permissions/{vhost}/{user}", apiGroupAccounts, s.getPermission)
+	s.handle(http.MethodPut, "/api/permissions/{vhost}/{user}", apiGroupAccounts, s.putPermission)
+	s.handle(http.MethodDelete, "/api/permissions/{vhost}/{user}", apiGroupAccounts, s.deletePermission)
 
 	// ---- 策略 ----
-	s.handle(http.MethodGet, "/api/policies", s.getPolicies)
-	s.handle(http.MethodGet, "/api/policies/{vhost}", s.getVHostPolicies)
-	s.handle(http.MethodGet, "/api/policies/{vhost}/{name}", s.getPolicy)
-	s.handle(http.MethodPut, "/api/policies/{vhost}/{name}", s.putPolicy)
-	s.handle(http.MethodDelete, "/api/policies/{vhost}/{name}", s.deletePolicy)
+	s.handle(http.MethodGet, "/api/policies", apiGroupPolicies, s.getPolicies)
+	s.handle(http.MethodGet, "/api/policies/{vhost}", apiGroupPolicies, s.getVHostPolicies)
+	s.handle(http.MethodGet, "/api/policies/{vhost}/{name}", apiGroupPolicies, s.getPolicy)
+	s.handle(http.MethodPut, "/api/policies/{vhost}/{name}", apiGroupPolicies, s.putPolicy)
+	s.handle(http.MethodDelete, "/api/policies/{vhost}/{name}", apiGroupPolicies, s.deletePolicy)
 
 	// ---- 插件治理 ----
-	s.handle(http.MethodGet, "/api/plugins", s.getPlugins)
-	s.handle(http.MethodGet, "/api/plugins/{name}", s.getPlugin)
-	s.handle(http.MethodPut, "/api/plugins/{name}/enable", s.enablePlugin)
-	s.handle(http.MethodPut, "/api/plugins/{name}/disable", s.disablePlugin)
+	s.handle(http.MethodGet, "/api/plugins", apiGroupPlugins, s.getPlugins)
+	s.handle(http.MethodGet, "/api/plugins/{name}", apiGroupPlugins, s.getPlugin)
+	s.handle(http.MethodPut, "/api/plugins/{name}/enable", apiGroupPlugins, s.enablePlugin)
+	s.handle(http.MethodPut, "/api/plugins/{name}/disable", apiGroupPlugins, s.disablePlugin)
 
 	// ---- 指标 ----
-	s.handle(http.MethodGet, "/metrics", s.getMetrics)
-	s.handle(http.MethodGet, "/api/metrics", s.getMetrics)
+	s.handle(http.MethodGet, "/metrics", apiGroupOverview, s.getMetrics)
+	s.handle(http.MethodGet, "/api/metrics", apiGroupOverview, s.getMetrics)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +439,11 @@ func (s *Server) getWhoami(w http.ResponseWriter, _ *http.Request, _ params, au 
 		"name":         au.Name,
 		"tags":         strings.Join(sortedCopy(au.Tags), " "),
 		"auth_backend": "internal",
+		// 前端据此判断要不要强制弹出"首次改账号名/口令"对话框。
+		"is_root":              au.Root,
+		"must_change_password": au.MustChangePassword,
+		// 当前账号可访问的管理接口功能组；空数组表示不限制。管理 UI 据此隐藏无权访问的菜单。
+		"api_groups": emptyIfNil(au.APIGroups),
 	})
 }
 
@@ -673,6 +691,66 @@ func quorumObject(info broker.QuorumQueueInfo) map[string]any {
 		"voters":   voters,
 		"learners": learners,
 	}
+}
+
+// queueDeclareRequest 是 PUT /api/queues/{vhost}/{name} 的请求体（字段名对齐 RabbitMQ）。
+type queueDeclareRequest struct {
+	Durable    bool           `json:"durable"`
+	AutoDelete bool           `json:"auto_delete"`
+	Arguments  map[string]any `json:"arguments"`
+	// Node 是 RabbitMQ 的字段（把队列放到指定节点）。SwiftMQ 的队列放置由内核决定，
+	// 这里**显式忽略而不是报错** —— 否则 rabbitmqadmin 与既有脚本多传一个字段就会失败。
+	Node string `json:"node"`
+}
+
+// putQueue 声明一个队列。
+//
+// RabbitMQ 管理 UI 的「Add a new queue」就是这个端点：UI 只是它的表单壳。
+// 语义与 AMQP `queue.declare` **完全一致** —— 因为它复用的就是同一段内核逻辑：
+// 经 SessionFor(调用方) 拿会话，`configure` 权限、保留名（403）、参数等价性检查（400）
+// 全部照走，因此管理面建出来的队列与客户端建出来的没有任何区别。
+//
+// 状态码对齐 RabbitMQ：新建 201、已存在且参数等价 204、参数不等价 400。
+func (s *Server) putQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	var req queueDeclareRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	// 先探测是否已存在，用来决定 201（新建）还是 204（已存在）——这正是 RabbitMQ 的区别。
+	_, existed := s.deps.Broker.QueueSnapshot(vhost, name)
+
+	sess, err := s.deps.Broker.SessionFor(au.Name, vhost)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	defer sess.Close()
+	if _, err := sess.DeclareQueue(sdk.QueueDeclare{
+		Name:       name,
+		Durable:    req.Durable,
+		AutoDelete: req.AutoDelete,
+		Arguments:  req.Arguments,
+	}); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面声明队列", "actor", au.Name, "vhost", vhost, "queue", name,
+		"durable", req.Durable, "auto_delete", req.AutoDelete)
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusNoContent
+	}
+	w.WriteHeader(status)
 }
 
 func (s *Server) deleteQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
@@ -1063,6 +1141,96 @@ func exchangeObject(e broker.ExchangeSnapshot) map[string]any {
 	}
 }
 
+// exchangeDeclareRequest 是 PUT /api/exchanges/{vhost}/{name} 的请求体（字段名对齐 RabbitMQ）。
+type exchangeDeclareRequest struct {
+	// Type 为交换机类型（direct / fanout / topic / headers）。缺省按 direct ——
+	// 对齐 RabbitMQ 实测：不带 type 的 PUT 会建成 direct（201）。
+	Type       string         `json:"type"`
+	Durable    bool           `json:"durable"`
+	AutoDelete bool           `json:"auto_delete"`
+	Internal   bool           `json:"internal"`
+	Arguments  map[string]any `json:"arguments"`
+}
+
+// putExchange 声明一个交换机。
+//
+// RabbitMQ 管理 UI 的「Add a new exchange」就是这个端点。与 putQueue 同一套做法：
+// 经 SessionFor(调用方) 复用内核的声明逻辑 —— `configure` 权限、保留名、类型合法性、
+// 参数等价性检查全部照走，因此管理面建的交换机与客户端建的完全一致。
+//
+// 状态码：新建 201、已存在且参数等价 204、参数或类型非法 400。
+func (s *Server) putExchange(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	var req exchangeDeclareRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	if req.Type == "" {
+		req.Type = "direct"
+	}
+	_, existed := s.deps.Broker.ExchangeSnapshot(vhost, name)
+
+	sess, err := s.deps.Broker.SessionFor(au.Name, vhost)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	defer sess.Close()
+	if err := sess.DeclareExchange(sdk.ExchangeDeclare{
+		Name:       normalizeExchange(name),
+		Type:       sdk.ExchangeType(req.Type),
+		Durable:    req.Durable,
+		AutoDelete: req.AutoDelete,
+		Internal:   req.Internal,
+		Arguments:  req.Arguments,
+	}); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面声明交换机", "actor", au.Name, "vhost", vhost, "exchange", name, "type", req.Type)
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusNoContent
+	}
+	w.WriteHeader(status)
+}
+
+// deleteExchange 删除交换机（声明端点的对称操作；队列页既有删除，交换机页也要有）。
+//
+// if-unused=true 时，交换机上仍有绑定的会被拒绝（对齐 RabbitMQ 的同名查询参数）。
+func (s *Server) deleteExchange(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	sess, err := s.deps.Broker.SessionFor(au.Name, vhost)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	defer sess.Close()
+	if err := sess.DeleteExchange(normalizeExchange(name), queryBool(r, "if-unused")); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面删除交换机", "actor", au.Name, "vhost", vhost, "exchange", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) getExchangeSourceBindings(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
 	s.exchangeBindings(w, p, au, "source")
 }
@@ -1446,13 +1614,26 @@ func userObject(u broker.UserSnapshot) map[string]any {
 		"name":         u.Name,
 		"tags":         strings.Join(sortedCopy(u.Tags), " "),
 		"auth_backend": "internal",
+		// 管理 UI 的账号页据此渲染"总账号"标记与"已禁用/待改密"状态。
+		"is_root":              u.Root,
+		"disabled":             u.Disabled,
+		"must_change_password": u.MustChangePassword,
+		// 允许访问的管理接口功能组；空数组表示不限制（用标签允许的全部接口）。
+		"api_groups": emptyIfNil(u.APIGroups),
 	}
 }
 
 // userRequest 是 PUT /api/users/{name} 的请求体。
+//
+// 可选字段用可空形式，区分"没传"与"传了零值"：更新账号时没传 password 表示**不改口令**，
+// 没传 disabled 表示**保持原状** —— 否则前端只改一下标签就会顺手把账号解禁。
 type userRequest struct {
-	Password string `json:"password"`
-	Tags     any    `json:"tags"`
+	Password           string `json:"password"`
+	Tags               any    `json:"tags"`
+	Disabled           *bool  `json:"disabled"`
+	MustChangePassword *bool  `json:"must_change_password"`
+	// APIGroups 是可访问的管理接口功能组；传空数组表示"不限制"。不传则保持原状。
+	APIGroups *[]string `json:"api_groups"`
 }
 
 func (s *Server) putUser(w http.ResponseWriter, r *http.Request, p params, au authUser) {
@@ -1466,9 +1647,37 @@ func (s *Server) putUser(w http.ResponseWriter, r *http.Request, p params, au au
 		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
 		return
 	}
-	tags := parseTags(req.Tags)
-	_, existed := s.deps.Broker.User(name)
-	if err := s.deps.Broker.UpsertUser(name, req.Password, tags); err != nil {
+	current, existed := s.deps.Broker.User(name)
+	// 新建必须给口令：没有口令的账号建出来也登不上，与其留个"哑账号"不如直接报错。
+	if !existed && req.Password == "" {
+		writeError(w, http.StatusBadRequest, "Bad Request", "新建账号必须提供 password")
+		return
+	}
+	tags := append([]string(nil), current.Tags...)
+	if req.Tags != nil {
+		tags = parseTags(req.Tags)
+	}
+	disabled := current.Disabled
+	if req.Disabled != nil {
+		disabled = *req.Disabled
+	}
+	mustChange := current.MustChangePassword
+	if req.MustChangePassword != nil {
+		mustChange = *req.MustChangePassword
+	}
+	apiGroups := append([]string(nil), current.APIGroups...)
+	if req.APIGroups != nil {
+		apiGroups = normalizeAPIGroups(*req.APIGroups)
+	}
+
+	if err := s.checkUserMutation(au, name, current, existed, tags, disabled, false); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	if _, err := s.deps.Broker.PutUser(broker.UserWrite{
+		Name: name, Password: req.Password, Tags: tags, APIGroups: apiGroups,
+		Disabled: disabled, MustChangePassword: mustChange,
+	}); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -1476,8 +1685,160 @@ func (s *Server) putUser(w http.ResponseWriter, r *http.Request, p params, au au
 	if existed {
 		status = http.StatusNoContent
 	}
-	s.log.Info("管理面更新用户", "actor", au.Name, "user", name, "tags", tags)
+	s.log.Info("管理面更新账号", "actor", au.Name, "user", name, "tags", tags,
+		"disabled", disabled, "api_groups", apiGroups)
 	w.WriteHeader(status)
+}
+
+// normalizeAPIGroups 去重并丢掉未知的功能组名。
+//
+// 丢掉未知值而不是报错：前端与服务端的功能组集合可能因版本不同而错位，
+// 静默忽略未知项比"整个账号存不进去"更不容易把人挡在门外；真正的越权由
+// serveHTTP 的 allowsGroup 按**已知**组名判定，未知组名不会带来额外权限。
+func normalizeAPIGroups(groups []string) []string {
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if !knownAPIGroup(g) || hasTag(out, g) {
+			continue
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+// knownAPIGroup 判断是否为已知的管理接口功能组名。
+func knownAPIGroup(group string) bool {
+	switch group {
+	case apiGroupOverview, apiGroupTopology, apiGroupConnections, apiGroupAccounts,
+		apiGroupPolicies, apiGroupVHosts, apiGroupCluster, apiGroupPlugins:
+		return true
+	default:
+		return false
+	}
+}
+
+// credentialsRequest 是 POST /api/users/{name}/credentials 的请求体。
+type credentialsRequest struct {
+	// Name 为新账号名；留空或与原名相同表示只改口令。
+	Name string `json:"name"`
+	// Password 为新口令；留空表示只改名。
+	Password string `json:"password"`
+}
+
+// putUserCredentials 修改账号名与/或口令。
+//
+// 授权：本人可自助（这正是"首次登录强制改密"走的路径，因此不需要 administrator 标签），
+// administrator 可改他人；总管理员账号只能由本人修改。
+//
+// 为什么账号名与口令放在**同一个请求**里：首次改密要同时改掉两者，
+// 拆成两个请求会出现"改完账号名后旧凭据失效、第二次请求直接 401"的中间态，
+// 用户会在半路被踢出去。
+func (s *Server) putUserCredentials(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	name := p["name"]
+	isSelf := name == au.Name
+	if !isSelf && !hasTag(au.Tags, adminTag) {
+		writeError(w, http.StatusForbidden, "Access refused",
+			fmt.Sprintf("ACCESS_REFUSED - 用户 %s 无权修改账号 %s 的凭据", au.Name, name))
+		return
+	}
+	current, ok := s.deps.Broker.User(name)
+	if !ok {
+		userNotFound(w, name)
+		return
+	}
+	if current.Root && !isSelf {
+		writeError(w, http.StatusForbidden, "Access refused",
+			fmt.Sprintf("ACCESS_REFUSED - 总管理员账号 %s 只能由本人修改", name))
+		return
+	}
+	var req credentialsRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	newName := strings.TrimSpace(req.Name)
+	if newName == "" {
+		newName = name
+	}
+	if newName == name && req.Password == "" {
+		writeError(w, http.StatusBadRequest, "Bad Request", "请至少提供新的账号名或新口令")
+		return
+	}
+	if err := s.deps.Broker.RenameUser(name, newName, req.Password); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面修改账号凭据", "actor", au.Name, "old", name, "new", newName)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkUserMutation 校验账号的**保护规则**：总账号不可删除/禁用/降级，且不能把自己锁在门外。
+//
+// 三条规则都返回 403 ACCESS_REFUSED（"不允许"而不是"参数错"），便于前端区分提示语：
+//  1. 总账号（root）：不可删除、不可禁用、不可移除 administrator 标签，且只能由本人修改；
+//  2. 不能删除**当前登录账号**（要删先换号登录，或由另一个管理员操作）；
+//  3. 任何操作之后都必须至少留下一个**启用中的 administrator**（防止把管理权改没了）。
+//
+// delete 为 true 表示这是删除操作（此时 tags / disabled 无意义）。
+func (s *Server) checkUserMutation(
+	au authUser, name string, current broker.UserSnapshot, existed bool,
+	tags []string, disabled, delete bool,
+) error {
+	if !existed {
+		return nil
+	}
+	if current.Root {
+		switch {
+		case delete:
+			return sdk.Errorf(sdk.KindAccessRefused, "ACCESS_REFUSED - 总管理员账号 '%s' 不可删除", name)
+		case disabled:
+			return sdk.Errorf(sdk.KindAccessRefused, "ACCESS_REFUSED - 总管理员账号 '%s' 不可禁用", name)
+		case !hasTag(tags, adminTag):
+			return sdk.Errorf(sdk.KindAccessRefused,
+				"ACCESS_REFUSED - 总管理员账号 '%s' 不可移除 administrator 标签", name)
+		case au.Name != name:
+			return sdk.Errorf(sdk.KindAccessRefused,
+				"ACCESS_REFUSED - 总管理员账号 '%s' 只能由本人修改", name)
+		}
+	}
+	if delete && au.Name == name {
+		return sdk.Errorf(sdk.KindAccessRefused, "ACCESS_REFUSED - 不能删除当前登录账号 '%s'", name)
+	}
+	// 只在"该账号原本是启用中的管理员、且本次会改变这一点"时才做全局计数，
+	// 避免每次改标签都遍历一遍用户表。
+	if hasTag(current.Tags, adminTag) && !current.Disabled &&
+		(delete || disabled || !hasTag(tags, adminTag)) && s.enabledAdminsExcept(name) == 0 {
+		return sdk.Errorf(sdk.KindAccessRefused,
+			"ACCESS_REFUSED - 至少要保留一个启用中的 administrator 账号")
+	}
+	return nil
+}
+
+// enabledAdminsExcept 统计除 exclude 之外**启用中的** administrator 数量。
+func (s *Server) enabledAdminsExcept(exclude string) int {
+	n := 0
+	for _, u := range s.deps.Broker.UserSnapshots() {
+		if u.Name == exclude || u.Disabled {
+			continue
+		}
+		if hasTag(u.Tags, adminTag) {
+			n++
+		}
+	}
+	return n
+}
+
+// adminTag 是管理员标签（与内核 permission.go 的 adminTag 同义，管理面单独持有一份）。
+const adminTag = "administrator"
+
+// hasTag 判断标签集合里是否含某个标签。
+func hasTag(tags []string, want string) bool {
+	for _, tag := range tags {
+		if tag == want {
+			return true
+		}
+	}
+	return false
 }
 
 // parseTags 兼容两种 tags 表示：RabbitMQ 3.x 的 "a,b c" 字符串与 4.x 的数组。
@@ -1518,16 +1879,26 @@ func (s *Server) deleteUser(w http.ResponseWriter, _ *http.Request, p params, au
 		writeKernelError(w, err)
 		return
 	}
-	ok, err := s.deps.Broker.DeleteUser(p["name"])
+	name := p["name"]
+	current, existed := s.deps.Broker.User(name)
+	if !existed {
+		userNotFound(w, name)
+		return
+	}
+	if err := s.checkUserMutation(au, name, current, true, nil, false, true); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	ok, err := s.deps.Broker.DeleteUser(name)
 	if err != nil {
 		writeKernelError(w, err)
 		return
 	}
 	if !ok {
-		userNotFound(w, p["name"])
+		userNotFound(w, name)
 		return
 	}
-	s.log.Info("管理面删除用户", "actor", au.Name, "user", p["name"])
+	s.log.Info("管理面删除账号", "actor", au.Name, "user", name)
 	w.WriteHeader(http.StatusNoContent)
 }
 

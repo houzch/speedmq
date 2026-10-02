@@ -30,6 +30,26 @@ type User struct {
 	// RemoteAccess 为 true 时允许从非本机地址登录。
 	// 对齐 RabbitMQ：内置 guest 用户默认仅允许本机登录。
 	RemoteAccess bool `json:"remote_access,omitempty"`
+	// Root 标记内置的**总管理员账号**（语义对齐操作系统的 root）。
+	//
+	// 它不可删除、不可禁用、不可降级（必须保留 administrator 标签），改口令/改名只允许本人操作。
+	// 只有在"首次引导播种"与"启动兜底"两处会被置位，管理 API 不能把别的账号提升为 root ——
+	// 否则"总管理员"就退化成一个普通标签，保护规则随之失效。
+	Root bool `json:"root,omitempty"`
+	// Disabled 为 true 时该账号不能登录（AMQP 与管理面同一份用户表，两处都拒）。
+	Disabled bool `json:"disabled,omitempty"`
+	// MustChangePassword 为 true 时，管理 UI 登录后强制先改账号名/口令，改完才放行。
+	//
+	// 只在"首次引导播种"时对新装的初始账号置位：它针对的是"安装后仍是出厂口令"这一状态，
+	// 而不是把所有该字段为空的账号都当成待改密（那会误伤既有部署）。
+	MustChangePassword bool `json:"must_change_password,omitempty"`
+	// APIGroups 是该账号被允许访问的**管理接口功能组**（overview / topology /
+	// connections / accounts / policies / vhosts / cluster / plugins）。
+	//
+	// **为空表示不限制**：用标签允许的全部接口 —— 这样既有账号、rabbitmqadmin 与脚本
+	// 的行为完全不变；新账号可以在此基础上按功能组收窄（只读监控账号只勾 overview 等）。
+	// 它是标签（administrator / management / monitoring）之上的**收窄**，不是替代。
+	APIGroups []string `json:"api_groups,omitempty"`
 	// Permissions 按 vhost 名索引的权限。未列出的 vhost 一律拒绝。
 	// 权限检查在 M3 生效：越权操作返回 403 ACCESS_REFUSED。
 	Permissions map[string]Permission `json:"permissions,omitempty"`
@@ -146,6 +166,10 @@ func Default() *Config {
 				Password:     "guest",
 				Tags:         []string{"administrator"},
 				RemoteAccess: false,
+				// 出厂账号即**总管理员**：安装后第一次登录会被强制改掉账号名与口令，
+				// 因此这里不预置 must_change_password —— 那个标记由首次引导播种统一置位
+				// （见 broker.seedConfigUsers），这样"配置文件里没写 root"的部署也能拿到总账号。
+				Root: true,
 			},
 		},
 		Storage: DefaultStorage(),

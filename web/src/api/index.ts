@@ -7,17 +7,23 @@ import type {
   Connection,
   Consumer,
   Exchange,
+  ExchangeDeclareRequest,
   ExchangeQuery,
   GetMessage,
   GetMessagesRequest,
   NodeInfo,
   Overview,
+  Permission,
   PublishRequest,
   PublishResult,
   QuorumView,
   Queue,
+  QueueDeclareRequest,
   QueueQuery,
   RebalanceResult,
+  User,
+  UserUpsertRequest,
+  CredentialsRequest,
   Vhost,
   Whoami,
 } from './types'
@@ -50,6 +56,9 @@ export const api = {
     }),
   purgeQueue: (vhost: string, name: string): Promise<void> =>
     request<void>('DELETE', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/contents`),
+  /** 声明队列（语义同 queue.declare）：201 新建 / 204 已存在且参数等价 / 400 参数不等价 */
+  declareQueue: (vhost: string, name: string, body: QueueDeclareRequest): Promise<void> =>
+    request<void>('PUT', `/api/queues/${encodePath(vhost)}/${encodePath(name)}`, { body }),
   getMessages: (vhost: string, name: string, body: GetMessagesRequest): Promise<GetMessage[]> =>
     request<GetMessage[]>('POST', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/get`, { body }),
   queueBindings: (vhost: string, name: string): Promise<Binding[]> =>
@@ -73,6 +82,14 @@ export const api = {
     request<Exchange[]>('GET', '/api/exchanges', { query }),
   exchange: (vhost: string, name: string): Promise<Exchange> =>
     request<Exchange>('GET', `/api/exchanges/${encodePath(vhost)}/${encodePath(name)}`),
+  /** 声明交换机（语义同 exchange.declare）：201 新建 / 204 已存在且参数等价 / 400 类型非法等 */
+  declareExchange: (vhost: string, name: string, body: ExchangeDeclareRequest): Promise<void> =>
+    request<void>('PUT', `/api/exchanges/${encodePath(vhost)}/${encodePath(name)}`, { body }),
+  /** 删除交换机：if-unused=true 时仅在无绑定/无消费者时删除 */
+  deleteExchange: (vhost: string, name: string, ifUnused = false): Promise<void> =>
+    request<void>('DELETE', `/api/exchanges/${encodePath(vhost)}/${encodePath(name)}`, {
+      query: { 'if-unused': ifUnused },
+    }),
   exchangeSourceBindings: (vhost: string, name: string): Promise<Binding[]> =>
     request<Binding[]>('GET', `/api/exchanges/${encodePath(vhost)}/${encodePath(name)}/bindings/source`),
   publish: (vhost: string, exchange: string, body: PublishRequest): Promise<PublishResult> =>
@@ -96,4 +113,29 @@ export const api = {
   // ---- 消费者 ----
   consumers: (vhost: string): Promise<Consumer[]> =>
     request<Consumer[]>('GET', `/api/consumers/${encodePath(vhost)}`),
+
+  // ---- 账号（用户）----
+  users: (): Promise<User[]> => request<User[]>('GET', '/api/users'),
+  user: (name: string): Promise<User> => request<User>('GET', `/api/users/${encodePath(name)}`),
+  saveUser: (name: string, body: UserUpsertRequest): Promise<void> =>
+    request<void>('PUT', `/api/users/${encodePath(name)}`, { body }),
+  deleteUser: (name: string): Promise<void> =>
+    request<void>('DELETE', `/api/users/${encodePath(name)}`),
+  changeCredentials: (name: string, body: CredentialsRequest): Promise<void> =>
+    request<void>('POST', `/api/users/${encodePath(name)}/credentials`, { body }),
+
+  // ---- 权限 ----
+  permissions: (): Promise<Permission[]> => request<Permission[]>('GET', '/api/permissions'),
+  vhostPermissions: (vhost: string): Promise<Permission[]> =>
+    request<Permission[]>('GET', `/api/vhosts/${encodePath(vhost)}/permissions`),
+  userPermission: (vhost: string, user: string): Promise<Permission> =>
+    request<Permission>('GET', `/api/permissions/${encodePath(vhost)}/${encodePath(user)}`),
+  setPermission: (
+    vhost: string,
+    user: string,
+    body: Pick<Permission, 'configure' | 'write' | 'read'>,
+  ): Promise<void> =>
+    request<void>('PUT', `/api/permissions/${encodePath(vhost)}/${encodePath(user)}`, { body }),
+  deletePermission: (vhost: string, user: string): Promise<void> =>
+    request<void>('DELETE', `/api/permissions/${encodePath(vhost)}/${encodePath(user)}`),
 }

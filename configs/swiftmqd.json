@@ -10,7 +10,8 @@
     "guest": {
       "password": "guest",
       "tags": ["administrator"],
-      "remote_access": true
+      "remote_access": true,
+      "root": true
     }
   },
   "storage": {

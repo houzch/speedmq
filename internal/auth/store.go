@@ -38,9 +38,10 @@ func NewStore(users map[string]config.User) *Store {
 	return &Store{users: cp}
 }
 
-// copyUser 复制一条用户记录（含权限表），避免与调用方共享可变 map。
+// copyUser 复制一条用户记录（含权限表与功能组），避免与调用方共享可变 map/slice。
 func copyUser(u config.User) config.User {
 	u.Tags = append([]string(nil), u.Tags...)
+	u.APIGroups = append([]string(nil), u.APIGroups...)
 	if u.Permissions != nil {
 		perms := make(map[string]config.Permission, len(u.Permissions))
 		for vhost, p := range u.Permissions {
@@ -102,6 +103,8 @@ func (s *Store) UpsertUser(name, password string, tags []string) error {
 	rec.Password = password
 	rec.Tags = tags
 	rec.RemoteAccess = true
+	// Root / Disabled / MustChangePassword 不在这里改：它们由"总账号归属"与"首次改密"
+	// 两条独立语义决定，顺手清零会让"改个口令把总账号保护也改没了"。
 	if rec.Permissions == nil {
 		rec.Permissions = map[string]config.Permission{}
 	}
@@ -282,6 +285,11 @@ func (s *Store) Verify(user, password string, remote net.Addr) (config.User, err
 	if !ok || rec.Password != password {
 		return config.User{}, fmt.Errorf("用户名或密码错误")
 	}
+	// 被禁用的账号与口令错误返回同一句话：禁用的目的就是让对方连不上，
+	// 而"该账号已被禁用"会把账号是否存在泄露给未认证方。
+	if rec.Disabled {
+		return config.User{}, fmt.Errorf("用户名或密码错误")
+	}
 	if !rec.RemoteAccess && !isLoopback(remote) {
 		return config.User{}, fmt.Errorf("用户 %q 仅允许从本机访问（如需开放请设置 remote_access: true）", user)
 	}
@@ -328,8 +336,8 @@ func (s *Store) Authenticate(mechanism string, response []byte, remote net.Addr)
 	}
 
 	rec, ok := s.users[user]
-	// 用户不存在与口令错误返回同一个错误，避免泄露用户是否存在。
-	if !ok || rec.Password != pass {
+	// 用户不存在、口令错误、账号被禁用一律返回同一个错误，避免泄露账号是否存在。
+	if !ok || rec.Password != pass || rec.Disabled {
 		return "", &plugin.AuthError{
 			Kind: plugin.AuthFailureAccessRefused,
 			Text: fmt.Sprintf("ACCESS_REFUSED - Login was refused using authentication mechanism %s. "+

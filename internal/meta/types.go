@@ -115,6 +115,14 @@ type User struct {
 	Password     string   `json:"password"`
 	Tags         []string `json:"tags,omitempty"`
 	RemoteAccess bool     `json:"remote_access"`
+	// Root 标记总管理员账号（不可删除/禁用/降级），见 config.User.Root。
+	Root bool `json:"root,omitempty"`
+	// Disabled 为 true 时该账号不能登录。
+	Disabled bool `json:"disabled,omitempty"`
+	// MustChangePassword 为 true 时首次登录须先改账号名/口令。
+	MustChangePassword bool `json:"must_change_password,omitempty"`
+	// APIGroups 是允许访问的管理接口功能组；为空表示不限制（见 config.User.APIGroups）。
+	APIGroups []string `json:"api_groups,omitempty"`
 }
 
 // Permission 是权限的元数据记录。
