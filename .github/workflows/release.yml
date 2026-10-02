@@ -1,0 +1,119 @@
+# 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（二进制）与 GHCR 镜像（Packages）。
+#
+#   git push swiftmq v1.0.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
+#
+# 说明见 docs/ops/release.md。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# 建 Release 需要 contents: write；推 GHCR 需要 packages: write
+permissions:
+  contents: write
+  packages: write
+
+env:
+  # 本仓库解析为 ghcr.io/houzch/swiftmq；GHCR 要求镜像名全小写
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ---------- 1) 交叉编译两个静态二进制 ----------
+  binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      # 先产出 web/dist：web/dist 不入库，缺少它二进制里就没有管理 UI
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      # 纯 Go + CGO_ENABLED=0：可直接交叉编译，无需 QEMU
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          suffix="${GOOS}-${GOARCH}"
+          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqd-${suffix}"   ./cmd/swiftmqd
+          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqctl-${suffix}" ./cmd/swiftmqctl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swiftmq-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # ---------- 2) 汇总附件 + 校验和 + 创建 Release ----------
+  release:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "SwiftMQ ${GITHUB_REF_NAME}" \
+            --generate-notes
+
+  # ---------- 3) 构建多架构镜像并推到 GHCR ----------
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"   # v1.0.0 -> 1.0.0
+          minor="${version%.*}"            # 1.0.0 -> 1.0
+          major="${version%%.*}"           # 1.0.0 -> 1
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            -t "${IMAGE}:${version}" \
+            -t "${IMAGE}:${minor}" \
+            -t "${IMAGE}:${major}" \
+            -t "${IMAGE}:latest" \
+            --push .
