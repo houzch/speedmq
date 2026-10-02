@@ -1,8 +1,11 @@
-# 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（二进制）与 GHCR 镜像（Packages）。
+# 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（多平台二进制归档）与 GHCR 镜像（Packages）。
 #
 #   git push swiftmq v1.0.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
 #
 # 说明见 docs/ops/release.md。
+#
+# 平台口径：Linux / Windows / macOS 都在支持范围内（amd64 与 arm64）。
+# 容器镜像只出 Linux（不提供 Windows 容器镜像）。详见 docs/ops/release.md。
 name: Release
 
 on:
@@ -19,14 +22,21 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  # ---------- 1) 交叉编译两个静态二进制 ----------
+  # ---------- 1) 交叉编译各平台二进制并打包 ----------
   binaries:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }   # macOS Intel
+          - { goos: darwin,  goarch: arm64 }   # macOS Apple Silicon
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          # 需要 32 位或 armv7 时按下面格式加一行即可：
+          # - { goos: windows, goarch: 386 }
+          # - { goos: linux,   goarch: 386 }
     steps:
       - uses: actions/checkout@v4
 
@@ -48,18 +58,36 @@ jobs:
           # 关掉可避免 setup-go 因找不到 go.sum 而打 warning
           cache: false
 
-      # 纯 Go + CGO_ENABLED=0：可直接交叉编译，无需 QEMU
-      - name: Build
+      # 纯 Go + CGO_ENABLED=0：所有平台都能交叉编译，无需 QEMU / macOS runner
+      - name: Build and package
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          ver="${REF#v}"                       # v1.0.0 -> 1.0.0
+          ext=""
+          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
+
+          # 1) 编译两个二进制
+          mkdir -p stage
+          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqd${ext}"   ./cmd/swiftmqd
+          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqctl${ext}" ./cmd/swiftmqctl
+
+          # 2) 归档里附带 README 与 LICENSE，方便下载者直接看用法
+          cp README.md LICENSE stage/
+
+          # 3) 打包：Windows 用 zip，其余用 tar.gz
+          base="swiftmq-${ver}-${GOOS}-${GOARCH}"
           mkdir -p dist
-          suffix="${GOOS}-${GOARCH}"
-          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqd-${suffix}"   ./cmd/swiftmqd
-          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqctl-${suffix}" ./cmd/swiftmqctl
+          if [ "${GOOS}" = "windows" ]; then
+            (cd stage && zip -q -r "../dist/${base}.zip" .)
+          else
+            tar -czf "dist/${base}.tar.gz" -C stage .
+          fi
+          ls -l dist
 
       - uses: actions/upload-artifact@v4
         with:
@@ -67,7 +95,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # ---------- 2) 汇总附件 + 校验和 + 创建 Release ----------
+  # ---------- 2) 汇总归档 + 校验和 + 创建 Release ----------
   release:
     needs: binaries
     runs-on: ubuntu-latest
@@ -95,6 +123,7 @@ jobs:
             --generate-notes
 
   # ---------- 3) 构建多架构镜像并推到 GHCR ----------
+  # 容器只出 Linux：本项目不提供 Windows 容器镜像
   image:
     runs-on: ubuntu-latest
     steps:

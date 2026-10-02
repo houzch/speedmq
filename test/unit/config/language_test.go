@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/houzch/swiftmq/internal/config"
@@ -52,6 +53,28 @@ func TestLanguageFromTimezone(t *testing.T) {
 				t.Fatalf("LanguageFromTimezone(%q) = %q, 期望 %q", tc.tz, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSystemTimezoneIsIANA 断言系统时区探测要么取不到（空串），要么返回 **IANA 名**，
+// 而不是平台自有的时区标识（如 Windows 的 "China Standard Time"）。
+//
+// 这条断言专门抓"忘了做 Windows 映射、把注册表里的时区 ID 原样返回"这类 bug：
+// 那种情况下 LanguageFromTimezone 会静默回退 en，只看语言值根本发现不了。
+func TestSystemTimezoneIsIANA(t *testing.T) {
+	tz := config.SystemTimezone()
+	if tz == "" {
+		t.Skip("当前环境取不到系统时区（未设 TZ 且平台探测未命中）")
+	}
+	if strings.ContainsAny(tz, " ") {
+		t.Fatalf("SystemTimezone() 返回的像是平台自有标识而非 IANA 名: %q", tz)
+	}
+	if tz != "UTC" && !strings.Contains(tz, "/") {
+		t.Fatalf("SystemTimezone() 返回值不像 IANA 名（既不是 UTC 也不含 /）: %q", tz)
+	}
+	// 探测结果最终要能落到一个受支持的语言上，否则等于白探测
+	if code := config.LanguageFromTimezone(tz); !config.IsSupportedLanguage(code) {
+		t.Fatalf("SystemTimezone()=%q 推断出的语言 %q 不在支持列表内", tz, code)
 	}
 }
 

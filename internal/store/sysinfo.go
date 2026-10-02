@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-// ErrSysInfoUnsupported 表示当前平台未实现资源探测（磁盘可用空间 / 物理内存总量）。
+// ErrSysInfoUnsupported 表示当前平台尚未实现资源探测（磁盘可用空间 / 物理内存总量）。
 //
-// 生产与验收只承诺 Linux（见设计 1.4），其他平台取不到指标是设计内的行为：
-// 流控在取不到指标时按"未超限"处理，绝不会因为探测失败就误阻塞业务。
-// 定义在这里（无构建标签）是为了让所有平台都能引用它做判断。
+// Linux / Windows / macOS 都已各自实现（sysinfo_linux.go / sysinfo_windows.go / sysinfo_darwin.go）；
+// 其它平台仍会落到 sysinfo_other.go 返回本错误 —— 流控在取不到指标时按"未超限"处理，
+// 绝不会因为探测失败就误阻塞业务。定义在这里（无构建标签）是为了让所有平台都能引用它做判断。
 var ErrSysInfoUnsupported = errors.New("当前平台未实现资源探测")
 
 // DiskFree 返回路径所在文件系统的可用字节数。

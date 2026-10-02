@@ -49,21 +49,34 @@
 | --- | --- |
 | tag 名 | `v1.0.0`（语义化版本，**带 `v` 前缀**） |
 | 版本号来源 | 源码里的 `broker.Version`（`internal/broker/broker.go`）；tag 必须与它一致 |
-| Release 附件 | `swiftmqd-linux-amd64`、`swiftmqctl-linux-amd64`、`swiftmqd-linux-arm64`、`swiftmqctl-linux-arm64`、`SHA256SUMS` |
+| Release 附件 | 6 个平台归档 + `SHA256SUMS`：`swiftmq-1.0.0-<os>-<arch>.tar.gz`（linux / darwin）、`.zip`（windows）；每个归档内含 `swiftmqd`、`swiftmqctl`（Windows 为 `.exe`）、`README.md`、`LICENSE` |
+| 二进制平台 | Linux（amd64 / arm64）、macOS（amd64 / arm64）、Windows（amd64 / arm64） |
 | 镜像地址 | `ghcr.io/houzch/swiftmq` |
 | 镜像 tag | `1.0.0`、`1.0`、`1`、`latest` |
-| 镜像平台 | `linux/amd64`、`linux/arm64` |
+| 镜像平台 | `linux/amd64`、`linux/arm64`（**容器只出 Linux**，不提供 Windows 容器镜像） |
 
 > ⚠️ **发布二进制前必须先构建管理 UI**。`web/dist` 不入库，`go:embed` 在缺少产物时仍能编译，但访问 `/` 会提示「管理 UI 未构建」——
 > 那样发出去的二进制是**没有管理后台**的。CI 里必须加 `cd web && npm ci && npm run build` 这一步（Dockerfile 中的 ui 阶段已自动做了）。
+
+> ℹ️ **平台支持口径**：**Linux / Windows / macOS 都在支持范围内**（amd64 与 arm64 都要能跑）。三者的磁盘可用空间与物理内存总量探测均已实现
+> （`internal/store/sysinfo_linux.go` / `sysinfo_windows.go` / `sysinfo_darwin.go`），所以水位流控在各平台都真实生效；
+> 其它尚未实现的平台会**显式返回不支持**，流控按"未超限"处理，不会静默假装成功。
+> 容器镜像只出 Linux（不提供 Windows 容器镜像）。
+>
+> - **macOS**：首次运行可能被 Gatekeeper 拦截（未签名）——`xattr -d com.apple.quarantine ./swiftmqd`，或右键 →「打开」。
+> - **Windows**：未签名的 `.exe` 可能触发 SmartScreen 提示，选择「仍要运行」即可。
+>   默认语言按注册表里的时区 ID（如 `China Standard Time` → `Asia/Shanghai`）查表推断；
+>   对横跨多种语言的时区 ID（如 `W. Europe Standard Time` 同属德语/荷兰语/意大利语区）用系统区域设置消歧，
+>   仍无法确定就回退英文；也可以在配置项 `management.language` 里直接指定。
+> - 需要 32 位 / armv7 时，在矩阵里加一行即可（见 4.1 的注释）。
 
 ---
 
 ## 4. 方式一：自动化发布（推荐）
 
-### 4.1 新增 `.github/workflows/release.yml`
+### 4.1 工作流 `.github/workflows/release.yml`
 
-仓库当前没有 `.github` 目录，新建即可。把下面整段存为 `.github/workflows/release.yml`：
+仓库里**已经内置**这份工作流，直接用即可；下面保留完整内容，便于阅读与改动（改动请直接改仓库里的文件，避免两份不一致）。
 
 ```yaml
 name: Release
@@ -83,18 +96,25 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  # ---------- 1) 交叉编译两个静态二进制 ----------
+  # ---------- 1) 交叉编译各平台二进制并打包 ----------
   binaries:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }   # macOS Intel
+          - { goos: darwin,  goarch: arm64 }   # macOS Apple Silicon
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          # 需要 32 位或 armv7 时按同样格式加一行即可：
+          # - { goos: windows, goarch: 386 }
+          # - { goos: linux,   goarch: 386 }
     steps:
       - uses: actions/checkout@v4
 
-      # 先产出 web/dist：否则二进制里没有管理 UI
+      # ① 先产出 web/dist：否则二进制里没有管理 UI
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -105,23 +125,36 @@ jobs:
       - run: npm run build
         working-directory: web
 
+      # ② 纯 Go + CGO_ENABLED=0：六个平台都能交叉编译，无需 QEMU / macOS runner
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
           cache: false   # 零第三方依赖，无 go.sum，模块缓存无意义
 
-      # 纯 Go + CGO_ENABLED=0，可直接交叉编译，无需 QEMU
-      - name: Build
+      - name: Build and package
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          ver="${REF#v}"                                  # v1.0.0 -> 1.0.0
+          ext=""
+          if [ "${GOOS}" = "windows" ]; then ext=".exe"; fi
+
+          mkdir -p stage
+          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqd${ext}"   ./cmd/swiftmqd
+          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqctl${ext}" ./cmd/swiftmqctl
+          cp README.md LICENSE stage/                     # 归档里带上文档与许可证
+
+          base="swiftmq-${ver}-${GOOS}-${GOARCH}"
           mkdir -p dist
-          suffix="${GOOS}-${GOARCH}"
-          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqd-${suffix}"   ./cmd/swiftmqd
-          go build -trimpath -ldflags="-s -w" -o "dist/swiftmqctl-${suffix}" ./cmd/swiftmqctl
+          if [ "${GOOS}" = "windows" ]; then
+            (cd stage && zip -q -r "../dist/${base}.zip" .)      # Windows -> zip
+          else
+            tar -czf "dist/${base}.tar.gz" -C stage .            # 其余 -> tar.gz
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -211,6 +244,88 @@ git push swiftmq v1.0.0
 
 - 只发二进制：在 workflow 里删掉 `image` job。
 - 只发镜像：删掉 `binaries` + `release` 两个 job。
+
+### 4.4 代码签名（可选，需自备证书）
+
+不签名时：Windows 会弹 SmartScreen、macOS 会被 Gatekeeper 拦。要消除提示，必须有**付费证书**：
+
+| 平台 | 需要什么 | 说明 |
+| --- | --- | --- |
+| Windows | 代码签名证书（OV / EV） | 2023 年后 CA 不再签发可直接导出的 PFX；实际多走 **Azure Trusted Signing**（约 $10/月）或 DigiCert KeyLocker / EV 硬件令牌 |
+| macOS | Apple Developer Program（$99/年）→ **Developer ID Application** 证书 | 还必须**过公证（notarization）**，否则首次运行仍会被拦 |
+
+仓库已提供两个脚本，**未配置证书时会自动跳过（打印警告并成功退出）**，所以不影响现有发布流程：
+
+```bash
+# Windows：PFX（本地调试/自签证书）
+pwsh ./scripts/sign-windows.ps1 -Files dist/swiftmqd.exe,dist/swiftmqctl.exe `
+  -PfxPath certs/codesign.pfx -PfxPassword '***'
+
+# Windows：Azure Trusted Signing（推荐用于正式发布）
+pwsh ./scripts/sign-windows.ps1 -Files dist/swiftmqd.exe,dist/swiftmqctl.exe -AzureTrustedSigning `
+  -AzureMetadataPath azure-signing-metadata.json `
+  -AzureDlibPath 'C:\azure-signing\Azure.CodeSigning.Dlib.dll'
+
+# macOS：签名 + 公证（只能在 macOS 上执行）
+./scripts/sign-macos.sh --files dist/swiftmqd dist/swiftmqctl \
+  --p12 certs/developer-id.p12 --p12-password '***' \
+  --notary-key keys/AuthKey_XXXXXX.p8 --notary-key-id XXXXXX \
+  --notary-issuer 69a6de70-0000-0000-0000-000000000000 \
+  --zip-out dist/notarize.zip
+```
+
+**接入 Actions** 的两条硬性约束：
+
+1. **签名必须在打包之前**（先签二进制，再压 tar.gz/zip；否则改动了文件签名就失效）；
+2. **必须在对应系统的 runner 上跑**：`signtool.exe` 只有 Windows 有，`codesign` / `notarytool` 只有 macOS 有——
+   所以 ubuntu 上交叉编译出的 Windows/macOS 二进制要签名，得下载到对应 runner 再签名。
+
+推荐做法：给矩阵加上 `runner` 维度（windows 目标用 `windows-latest`、darwin 目标用 `macos-latest`、linux 用 `ubuntu-latest`），把签名步骤插在 `go build` 之后、打包之前：
+
+```yaml
+      - name: Sign (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WIN_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WIN_PFX_PASSWORD }}
+        run: |
+          ./scripts/sign-windows.ps1 -Files (Join-Path stage 'swiftmqd.exe'),(Join-Path stage 'swiftmqctl.exe') `
+            -PfxBase64 $env:PFX_B64 -PfxPassword $env:PFX_PASSWORD -RequireSigning
+
+      - name: Sign + notarize (macOS)
+        if: matrix.goos == 'darwin'
+        env:
+          MACOS_P12_BASE64: ${{ secrets.MACOS_P12_BASE64 }}
+          MACOS_P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # secrets 以 base64 存放，先落盘到临时目录（CI 目录是临时的）
+          echo "$MACOS_P12_BASE64"        | base64 -d > /tmp/cert.p12
+          echo "$MACOS_NOTARY_KEY_BASE64" | base64 -d > /tmp/notary.p8
+          chmod +x ./scripts/sign-macos.sh
+          ./scripts/sign-macos.sh --files stage/swiftmqd stage/swiftmqctl \
+            --p12 /tmp/cert.p12 --p12-password "$MACOS_CERTIFICATE_PASSWORD" \
+            --notary-key /tmp/notary.p8 --notary-key-id "$MACOS_NOTARY_KEY_ID" \
+            --notary-issuer "$MACOS_NOTARY_ISSUER" --require-signing
+```
+
+需要的 GitHub Secrets：
+
+| Secret | 用途 |
+| --- | --- |
+| `WIN_PFX_BASE64` / `WIN_PFX_PASSWORD` | Windows 签名证书（base64）与口令 |
+| `MACOS_P12_BASE64` / `MACOS_P12_PASSWORD` | macOS Developer ID 证书（base64）与口令 |
+| `MACOS_NOTARY_KEY_BASE64` / `MACOS_NOTARY_KEY_ID` / `MACOS_NOTARY_ISSUER` | App Store Connect API Key（`.p8`）用于公证；也可改用 `APPLE_ID` + App 专用密码 |
+
+两个注意点：
+
+- **`secrets` 不能直接用在 job 级 `if:`**（GitHub 不支持）。要"有证书才签名"请用仓库变量控制，例如 `if: vars.SIGN_WINDOWS == 'true'`；不判断也行——脚本在没有凭据时会自行跳过。
+- `scripts/sign-windows.ps1` 以 **UTF-8 with BOM** 保存：Windows PowerShell 5.1 在没有 BOM 时会按 ANSI/GBK 解码，中文注释会让脚本直接语法报错。
 
 ---
 
@@ -312,11 +427,24 @@ docker run -d --name swiftmq -p 5672:5672 -p 1883:1883 -p 15672:15672 \
 curl -s http://127.0.0.1:15672/api/default-language   # 应返回 {"default_language":"..."}
 ```
 
-下载的二进制验证（Linux）：
+二进制归档验证（按平台解包）：
 
 ```bash
-sha256sum -c SHA256SUMS
-./swiftmqd-linux-amd64 -config configs/swiftmqd.json   # 日志里 version=1.0.0
+# ① 校验下载完整性（Linux）
+sha256sum -c SHA256SUMS            # macOS 用 shasum -a 256 -c SHA256SUMS
+
+# ② Linux / macOS：tar.gz 里是 swiftmqd / swiftmqctl（无扩展名）
+tar -xzf swiftmq-1.0.0-linux-amd64.tar.gz
+./swiftmqd -config configs/swiftmqd.json         # 日志里 version=1.0.0，管理 UI 在 :15672
+
+# ③ macOS 首次运行若被 Gatekeeper 拦下
+xattr -d com.apple.quarantine ./swiftmqd
+```
+
+```powershell
+# ④ Windows（PowerShell）：zip 里是 swiftmqd.exe / swiftmqctl.exe
+Expand-Archive swiftmq-1.0.0-windows-amd64.zip -DestinationPath .
+.\swiftmqd.exe -config configs\swiftmqd.json
 ```
 
 ---
@@ -378,6 +506,7 @@ on:
 - [ ] `web/package.json` 与 `web/package-lock.json` 的 `version` 同步为 `1.0.0`
 - [ ] `docker-compose.yml` 的 `image: swiftmq:1.0.0` 同步
 - [ ] `gofmt -l .` 无输出；`go build ./...`、`go vet ./...`、`go test ./...` 通过
+- [ ] GitHub CI 三平台全绿（`ci.yml`：ubuntu / windows / macos 各自跑 gofmt、vet、单测）
 - [ ] `cd web && npm run type-check && npm run build` 通过
 - [ ] README 的「已具备的能力」与实际一致
 - [ ] tag 与版本号一致（`v1.0.0` ↔ `1.0.0`），且**该 tag 尚未存在**（复用 tag 会引发"同 tag 不同内容"）

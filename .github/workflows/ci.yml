@@ -1,0 +1,53 @@
+# 持续集成：push 到 master 或提 PR 时，在三个支持平台上跑格式化检查、vet 与单测。
+#
+# 为什么要跨平台跑：项目承诺支持 Linux / Windows / macOS，其中平台相关代码
+# （internal/store/sysinfo_*.go、internal/config/timezone_*.go）只在各自平台上才会被编译到，
+# 只在 Linux 上跑测试是守不住这些分支的。
+#
+# 发布流程见 release.yml；发布说明见 docs/ops/release.md。
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败时让其余平台继续跑完，便于一次看清是三平台共性还是单平台问题
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          # 本仓库零第三方依赖（go.mod 无 require、无 go.sum）：关掉模块缓存避免 setup-go 告警
+          cache: false
+
+      # 格式化结果与平台无关，只在 Linux 上查一次
+      - name: 格式检查
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "以下文件没有格式化（本地执行 gofmt -w 修正）："
+            echo "$out"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -count=1 ./...
