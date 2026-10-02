@@ -20,27 +20,33 @@ Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです
 
 ### 方法 1：Docker（推奨）
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # ステータスは Up (healthy) になるはず
-docker compose logs -f   # ログをフォロー
-```
-
-等価な純粋な docker：
+**リポジトリを clone せず、イメージをそのまま取得して起動できます：**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- データは名前付きボリューム `swiftmq-data` に保存され、コンテナを再作成しても失われません。設定は `configs/swiftmqd.json` を読み取り専用でマウントし、変更後は `docker compose restart` で反映されます。
-- 停止：`docker compose down`（データは保持）；`docker compose down -v`（データごと削除）。
+イメージは 2 か所に同一内容で公開しています（速い方をお使いください）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`。どちらも `linux/amd64` と `linux/arm64` を提供します。
+
+- データは名前付きボリューム `swiftmq-data` に保存され、コンテナを作り直しても失われません。
+- 停止／削除：`docker stop swiftmq`、`docker rm swiftmq`（データボリュームは残ります）。
+
+**設定を変更したり compose で運用したりする場合は、リポジトリを clone してください：**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # 公開済みイメージを使用。ローカルでビルドするなら up -d --build に変更
+
+docker compose ps        # ステータスは Up (healthy) になるはず
+docker compose logs -f   # ログを追う
+```
+
+- 設定は `configs/swiftmqd.json` から読み取り専用でマウントされ、変更後は `docker compose restart` で反映されます。
+- 停止：`docker compose down`（データは保持）；`docker compose down -v`（データも削除）。
 
 ### 方法 2：ローカルバイナリ（Go 1.24+ が必要）
 

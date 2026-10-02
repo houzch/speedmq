@@ -20,27 +20,33 @@ Reeds aanwezige mogelijkheden: persistentie (segmentlog + fsync-niveaus + crashh
 
 ### Methode 1: Docker (aanbevolen)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # de status moet Up (healthy) zijn
-docker compose logs -f   # logs volgen
-```
-
-Equivalente pure docker:
+**Zonder de repo te clonen: haal de image op en start hem direct.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Gegevens komen terecht in het benoemde volume `swiftmq-data` en gaan niet verloren bij het opnieuw opbouwen van de container; de configuratie wordt alleen-lezen gemount vanuit `configs/swiftmqd.json`; na een wijziging wordt deze actief met `docker compose restart`.
-- Stoppen: `docker compose down` (gegevens blijven behouden); `docker compose down -v` (gegevens worden ook verwijderd).
+De image staat op twee plekken met dezelfde inhoud (kies wat voor jou het snelst is): Docker Hub `houzch/swiftmq` en GitHub GHCR `ghcr.io/houzch/swiftmq`; beide bieden `linux/amd64` en `linux/arm64`.
+
+- De data komt in het named volume `swiftmq-data` en blijft bewaard als de container opnieuw wordt aangemaakt.
+- Stoppen / verwijderen: `docker stop swiftmq`, `docker rm swiftmq` (het datavolume blijft behouden).
+
+**Wil je de configuratie aanpassen of met compose werken, clone dan de repo:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Gebruikt de gepubliceerde image; gebruik up -d --build om lokaal te bouwen
+
+docker compose ps        # Status zou Up (healthy) moeten zijn
+docker compose logs -f   # Logs volgen
+```
+
+- De configuratie wordt read-only gemount vanuit `configs/swiftmqd.json`; wijzigingen gelden na `docker compose restart`.
+- Stoppen: `docker compose down` (data blijft); `docker compose down -v` (data wordt ook verwijderd).
 
 ### Methode 2: Lokaal binary (vereist Go 1.24+)
 

@@ -20,27 +20,33 @@ Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn +
 
 ### Cách 1: Docker (khuyến nghị)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # trạng thái phải là Up (healthy)
-docker compose logs -f   # theo dõi log
-```
-
-Docker thuần tương đương:
+**Không cần clone kho mã: chỉ cần kéo image về và chạy.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Dữ liệu nằm trong volume có tên `swiftmq-data`, tạo lại container không mất; cấu hình được mount ở chế độ chỉ đọc `configs/swiftmqd.json`, sau khi sửa xong `docker compose restart` để có hiệu lực.
-- Dừng: `docker compose down` (giữ lại dữ liệu); `docker compose down -v` (xóa cả dữ liệu).
+Image được phát hành ở hai nơi với nội dung giống nhau (chọn nơi nhanh hơn): Docker Hub `houzch/swiftmq` và GitHub GHCR `ghcr.io/houzch/swiftmq`; cả hai đều có `linux/amd64` và `linux/arm64`.
+
+- Dữ liệu nằm trong volume có tên `swiftmq-data`, không mất khi tạo lại container.
+- Dừng / xoá: `docker stop swiftmq`, `docker rm swiftmq` (volume dữ liệu vẫn giữ).
+
+**Muốn sửa cấu hình hoặc dùng compose thì clone kho mã:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Dùng image đã phát hành; đổi thành up -d --build nếu muốn build tại máy
+
+docker compose ps        # Trạng thái phải là Up (healthy)
+docker compose logs -f   # Theo dõi log
+```
+
+- Cấu hình được mount chỉ đọc từ `configs/swiftmqd.json`; sửa xong `docker compose restart` là có hiệu lực.
+- Dừng: `docker compose down` (giữ dữ liệu); `docker compose down -v` (xoá cả dữ liệu).
 
 ### Cách 2: Binary cục bộ (cần Go 1.24+)
 

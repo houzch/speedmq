@@ -20,27 +20,33 @@ Mga kakayahang mayroon na: persistence (segment log + fsync tiers + crash recove
 
 ### Paraan 1: Docker (inirerekomenda)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # Ang status ay dapat na Up (healthy)
-docker compose logs -f   # Sundan ang logs
-```
-
-Katumbas na pure docker:
+**Hindi na kailangang i-clone ang repo — kunin lang ang image at patakbuhin:**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Ang data ay napupunta sa named volume na `swiftmq-data`, hindi nawawala kapag muling itinayo ang container; ang config ay naka-mount na read-only na `configs/swiftmqd.json`, at magiging epektibo ang mga pagbabago pagkatapos ng `docker compose restart`.
-- Pagtigil: `docker compose down` (pinapanatili ang data); `docker compose down -v` (kasama ang data na binubura).
+Nailalathala ang image sa dalawang lugar na pareho ang nilalaman (piliin ang mas mabilis para sa iyo): Docker Hub `houzch/swiftmq` at GitHub GHCR `ghcr.io/houzch/swiftmq`; parehong may `linux/amd64` at `linux/arm64`.
+
+- Nasa named volume na `swiftmq-data` ang data, hindi nawawala kahit muling gawin ang container.
+- Itigil / alisin: `docker stop swiftmq`, `docker rm swiftmq` (nananatili ang data volume).
+
+**Kung kailangang baguhin ang configuration o gumamit ng compose, i-clone ang repo:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Gumagamit ng nailathalang image; palitan ng up -d --build para mag-build nang lokal
+
+docker compose ps        # Dapat Up (healthy) ang status
+docker compose logs -f   # Sundan ang logs
+```
+
+- Read-only na naka-mount ang configuration mula sa `configs/swiftmqd.json`; epektibo ang pagbabago pagkatapos ng `docker compose restart`.
+- Itigil: `docker compose down` (nananatili ang data); `docker compose down -v` (kasama ang data na buburahin).
 
 ### Paraan 2: Lokal na binary (kailangan ang Go 1.24+)
 

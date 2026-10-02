@@ -20,27 +20,33 @@
 
 ### 方式一：Docker（推薦）
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # 狀態應為 Up (healthy)
-docker compose logs -f   # 跟隨日誌
-```
-
-等效的純 docker：
+**不用複製倉庫，直接拉取映像檔跑起來：**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- 資料落在具名磁碟區 `swiftmq-data`，容器重建不會遺失；設定以唯讀方式掛載 `configs/swiftmqd.json`，修改完成後 `docker compose restart` 即生效。
-- 停止：`docker compose down`（保留資料）；`docker compose down -v`（連同資料一併刪除）。
+映像檔同時發佈在兩處（內容相同，挑網路較快的）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`；兩個倉庫都提供 `linux/amd64` 與 `linux/arm64`。
+
+- 資料落在具名磁碟區 `swiftmq-data`，容器重建不會遺失。
+- 停止 / 刪除：`docker stop swiftmq`、`docker rm swiftmq`（資料磁碟區保留）。
+
+**要調整設定或用 compose 編排，再複製倉庫：**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # 使用已發佈的映像檔；改成 up -d --build 則在本機建置
+
+docker compose ps        # 狀態應為 Up (healthy)
+docker compose logs -f   # 追蹤日誌
+```
+
+- 設定以唯讀方式掛載 `configs/swiftmqd.json`，修改後 `docker compose restart` 即生效。
+- 停止：`docker compose down`（保留資料）；`docker compose down -v`（連資料一併刪除）。
 
 ### 方式二：本機二進位檔（需要 Go 1.24+）
 

@@ -20,27 +20,33 @@ Recursos já disponíveis: persistência (log de segmentos + níveis de fsync + 
 
 ### Opção 1: Docker (recomendado)
 
+**Sem clonar o repositório: baixe a imagem e execute.**
+
+```bash
+docker run -d --name swiftmq \
+  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
+  -v swiftmq-data:/var/lib/swiftmq \
+  houzch/swiftmq:1.1.0
+```
+
+A imagem é publicada em dois locais com o mesmo conteúdo (use o mais rápido para você): Docker Hub `houzch/swiftmq` e GitHub GHCR `ghcr.io/houzch/swiftmq`; ambos oferecem `linux/amd64` e `linux/arm64`.
+
+- Os dados ficam no volume nomeado `swiftmq-data`, que sobrevive à recriação do contêiner.
+- Parar / remover: `docker stop swiftmq`, `docker rm swiftmq` (o volume de dados é mantido).
+
+**Para alterar a configuração ou usar compose, clone o repositório:**
+
 ```bash
 git clone https://github.com/houzch/swiftmq.git
 cd swiftmq
-docker compose up -d --build
+docker compose pull && docker compose up -d   # Usa a imagem publicada; troque para up -d --build para compilar localmente
 
 docker compose ps        # O status deve ser Up (healthy)
 docker compose logs -f   # Acompanhar os logs
 ```
 
-Equivalente em docker puro:
-
-```bash
-docker build -t swiftmq:1.0.0 .
-docker run -d --name swiftmq \
-  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
-```
-
-- Os dados ficam no volume nomeado `swiftmq-data` e não se perdem ao recriar o contêiner; a configuração é montada como somente leitura a partir de `configs/swiftmqd.json`, e `docker compose restart` aplica as alterações.
-- Parar: `docker compose down` (mantém os dados); `docker compose down -v` (remove também os dados).
+- A configuração é montada somente leitura a partir de `configs/swiftmqd.json`; as alterações valem após `docker compose restart`.
+- Parar: `docker compose down` (mantém os dados); `docker compose down -v` (apaga os dados também).
 
 ### Opção 2: binário local (requer Go 1.24+)
 

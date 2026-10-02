@@ -20,27 +20,33 @@ Funzionalità già disponibili: persistenza (log a segmenti + profili fsync + ri
 
 ### Metodo 1: Docker (consigliato)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # lo stato dovrebbe essere Up (healthy)
-docker compose logs -f   # segui i log
-```
-
-Equivalenti con docker puro:
+**Senza clonare il repository: scarica l immagine e avviala.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- I dati risiedono nel volume con nome `swiftmq-data` e non si perdono alla ricreazione del container; la configurazione viene montata in sola lettura da `configs/swiftmqd.json` e le modifiche hanno effetto con `docker compose restart`.
-- Arresto: `docker compose down` (conserva i dati); `docker compose down -v` (elimina anche i dati).
+L immagine è pubblicata in due posti con lo stesso contenuto (usa quello più veloce per te): Docker Hub `houzch/swiftmq` e GitHub GHCR `ghcr.io/houzch/swiftmq`; entrambi offrono `linux/amd64` e `linux/arm64`.
+
+- I dati finiscono nel volume denominato `swiftmq-data`, che sopravvive alla ricreazione del container.
+- Stop / rimozione: `docker stop swiftmq`, `docker rm swiftmq` (il volume dei dati resta).
+
+**Per modificare la configurazione o usare compose, clona il repository:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Usa l immagine pubblicata; sostituisci con up -d --build per compilare in locale
+
+docker compose ps        # Lo stato deve essere Up (healthy)
+docker compose logs -f   # Segui i log
+```
+
+- La configurazione è montata in sola lettura da `configs/swiftmqd.json`; le modifiche hanno effetto dopo `docker compose restart`.
+- Stop: `docker compose down` (conserva i dati); `docker compose down -v` (elimina anche i dati).
 
 ### Metodo 2: binario locale (richiede Go 1.24+)
 

@@ -20,27 +20,33 @@
 
 ### วิธีที่หนึ่ง: Docker（แนะนำ）
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # สถานะควรเป็น Up (healthy)
-docker compose logs -f   # ติดตาม log
-```
-
-เทียบเท่ากับการใช้ docker ล้วน:
+**ไม่ต้อง clone repo ก็ใช้ได้: ดึงอิมเมจแล้วรันเลย**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- ข้อมูลเก็บใน named volume `swiftmq-data` สร้างคอนเทนเนอร์ใหม่ก็ไม่หาย; ไฟล์คอนฟิก `configs/swiftmqd.json` ถูก mount แบบอ่านอย่างเดียว แก้เสร็จแล้ว `docker compose restart` จึงมีผล
-- หยุด: `docker compose down`（เก็บข้อมูลไว้）; `docker compose down -v`（ลบข้อมูลทิ้งไปด้วย）
+อิมเมจเผยแพร่ไว้สองที่ด้วยเนื้อหาเดียวกัน (เลือกที่เร็วกว่า): Docker Hub `houzch/swiftmq` และ GitHub GHCR `ghcr.io/houzch/swiftmq` ทั้งสองที่มี `linux/amd64` และ `linux/arm64`
+
+- ข้อมูลอยู่บน named volume `swiftmq-data` สร้างคอนเทนเนอร์ใหม่ก็ไม่หาย
+- หยุด / ลบ: `docker stop swiftmq`, `docker rm swiftmq` (volume ข้อมูลยังอยู่)
+
+**ถ้าต้องแก้คอนฟิกหรือใช้ compose ให้ clone repo:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # ใช้ภาพที่เผยแพร่แล้ว; เปลี่ยนเป็น up -d --build ถ้าต้องการบิลด์เองในเครื่อง
+
+docker compose ps        # สถานะควรเป็น Up (healthy)
+docker compose logs -f   # ดู log แบบต่อเนื่อง
+```
+
+- คอนฟิกถูก mount แบบอ่านอย่างเดียวจาก `configs/swiftmqd.json` แก้แล้วใช้ `docker compose restart` ให้มีผล
+- หยุด: `docker compose down` (ข้อมูลยังอยู่); `docker compose down -v` (ลบข้อมูลด้วย)
 
 ### วิธีที่สอง: ไบนารีในเครื่อง（ต้องมี Go 1.24+）
 

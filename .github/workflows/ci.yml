@@ -4,7 +4,7 @@
 # （internal/store/sysinfo_*.go、internal/config/timezone_*.go）只在各自平台上才会被编译到，
 # 只在 Linux 上跑测试是守不住这些分支的。
 #
-# 发布流程见 release.yml；发布说明见 docs/ops/release.md。
+# 发布流程见 release.yml。
 name: CI
 
 on:

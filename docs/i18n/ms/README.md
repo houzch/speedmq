@@ -20,27 +20,33 @@ Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap),
 
 ### Kaedah satu: Docker (disyorkan)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # status sepatutnya Up (healthy)
-docker compose logs -f   # ikut log
-```
-
-Docker tulen yang setara:
+**Tanpa mengklon repositori: tarik imej dan jalankan terus.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Data disimpan dalam volum bernama `swiftmq-data`, tidak hilang apabila kontena dibina semula; konfigurasi `configs/swiftmqd.json` dipasang sebagai baca sahaja, selepas diubah `docker compose restart` akan menguatkuasakannya.
-- Hentikan: `docker compose down` (kekalkan data); `docker compose down -v` (padam bersama data).
+Imej diterbitkan di dua tempat dengan kandungan sama (pilih yang lebih laju): Docker Hub `houzch/swiftmq` dan GitHub GHCR `ghcr.io/houzch/swiftmq`; kedua-duanya menyediakan `linux/amd64` dan `linux/arm64`.
+
+- Data disimpan dalam volume bernama `swiftmq-data` dan kekal walaupun kontena dicipta semula.
+- Henti / buang: `docker stop swiftmq`, `docker rm swiftmq` (volume data dikekalkan).
+
+**Untuk ubah konfigurasi atau guna compose, klon repositori:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Guna imej yang telah diterbitkan; tukar ke up -d --build untuk bina secara tempatan
+
+docker compose ps        # Status sepatutnya Up (healthy)
+docker compose logs -f   # Ikut log
+```
+
+- Konfigurasi dipasang baca-sahaja daripada `configs/swiftmqd.json`; perubahan berkuat kuasa selepas `docker compose restart`.
+- Henti: `docker compose down` (data kekal); `docker compose down -v` (data turut dipadam).
 
 ### Kaedah dua: binari tempatan (perlukan Go 1.24+)
 

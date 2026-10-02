@@ -20,26 +20,32 @@ Go로 작성된 **RabbitMQ 호환** 메시지 미들웨어입니다. 기존 Rabb
 
 ### 방법 1: Docker(권장)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # 상태는 Up (healthy)여야 함
-docker compose logs -f   # 로그 따라가기
-```
-
-동등한 순수 docker 명령:
+**저장소를 clone하지 않고 이미지를 바로 받아 실행할 수 있습니다:**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- 데이터는 명명 볼륨 `swiftmq-data`에 저장되어 컨테이너를 재생성해도 유지됩니다. 설정은 `configs/swiftmqd.json`을 읽기 전용으로 마운트하며, 수정 후 `docker compose restart`하면 반영됩니다.
+이미지는 두 곳에 동일하게 배포됩니다(더 빠른 쪽을 사용하세요): Docker Hub `houzch/swiftmq`, GitHub GHCR `ghcr.io/houzch/swiftmq`. 두 곳 모두 `linux/amd64`와 `linux/arm64`를 제공합니다.
+
+- 데이터는 이름 있는 볼륨 `swiftmq-data`에 저장되어 컨테이너를 다시 만들어도 유지됩니다.
+- 중지/삭제: `docker stop swiftmq`, `docker rm swiftmq`(데이터 볼륨은 유지됩니다).
+
+**설정을 바꾸거나 compose로 운영하려면 저장소를 clone하세요:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # 게시된 이미지 사용. 로컬에서 빌드하려면 up -d --build 로 변경
+
+docker compose ps        # 상태가 Up (healthy) 여야 합니다
+docker compose logs -f   # 로그 따라가기
+```
+
+- 설정은 `configs/swiftmqd.json`을 읽기 전용으로 마운트하며, 수정 후 `docker compose restart` 로 반영됩니다.
 - 중지: `docker compose down`(데이터 유지), `docker compose down -v`(데이터까지 삭제).
 
 ### 방법 2: 로컬 바이너리(Go 1.24+ 필요)

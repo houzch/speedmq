@@ -20,27 +20,33 @@ Bereits vorhandene Fähigkeiten: Persistenz (Segment-Log + fsync-Stufen + Crash-
 
 ### Variante 1: Docker (empfohlen)
 
+**Ohne Klonen des Repos: einfach das Image ziehen und starten:**
+
+```bash
+docker run -d --name swiftmq \
+  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
+  -v swiftmq-data:/var/lib/swiftmq \
+  houzch/swiftmq:1.1.0
+```
+
+Das Image wird an zwei Stellen mit identischem Inhalt veröffentlicht (nimm die schnellere): Docker Hub `houzch/swiftmq` und GitHub GHCR `ghcr.io/houzch/swiftmq`; beide bieten `linux/amd64` und `linux/arm64`.
+
+- Die Daten liegen im benannten Volume `swiftmq-data` und überleben ein Neuerstellen des Containers.
+- Stoppen / Entfernen: `docker stop swiftmq`, `docker rm swiftmq` (das Daten-Volume bleibt erhalten).
+
+**Zum Ändern der Konfiguration oder für den Betrieb mit compose das Repo klonen:**
+
 ```bash
 git clone https://github.com/houzch/swiftmq.git
 cd swiftmq
-docker compose up -d --build
+docker compose pull && docker compose up -d   # Nutzt das veröffentlichte Image; mit up -d --build wird lokal gebaut
 
 docker compose ps        # Status sollte Up (healthy) sein
 docker compose logs -f   # Logs mitverfolgen
 ```
 
-Äquivalent mit reinem Docker:
-
-```bash
-docker build -t swiftmq:1.0.0 .
-docker run -d --name swiftmq \
-  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
-```
-
-- Die Daten liegen im benannten Volume `swiftmq-data` und gehen beim Neuerstellen des Containers nicht verloren; die Konfiguration wird schreibgeschützt als `configs/swiftmqd.json` eingebunden, Änderungen werden nach `docker compose restart` wirksam.
-- Stoppen: `docker compose down` (Daten bleiben erhalten); `docker compose down -v` (Daten werden mitgelöscht).
+- Die Konfiguration wird schreibgeschützt aus `configs/swiftmqd.json` gemountet; Änderungen wirken nach `docker compose restart`.
+- Stoppen: `docker compose down` (Daten bleiben); `docker compose down -v` (löscht auch die Daten).
 
 ### Variante 2: Lokales Binary (erfordert Go 1.24+)
 

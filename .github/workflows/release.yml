@@ -1,12 +1,15 @@
 # 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（多平台二进制归档）
 # 与多架构容器镜像（GHCR；配置了 Docker Hub 凭据时同时推 Docker Hub）。
 #
-#   git push swiftmq v1.0.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
+#   git push swiftmq v1.1.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
+#                                # tag 必须等于源码里的 broker.Version，否则 verify-version 直接失败
 #
-# 说明见 docs/ops/release.md。
+# 一次发布的完整步骤：把 4 处版本号改齐 → 提交并推送 → 打 tag 推送 → 等 Actions 跑完。
+# 4 处 = internal/broker/broker.go 的 broker.Version、web/package.json、web/package-lock.json、
+# docker-compose.yml 的 image tag（由下面的 verify-version 强制校验）。
 #
 # 平台口径：Linux / Windows / macOS 都在支持范围内（amd64 与 arm64）。
-# 容器镜像只出 Linux（不提供 Windows 容器镜像）。详见 docs/ops/release.md。
+# 容器镜像只出 Linux（不提供 Windows 容器镜像）。
 name: Release
 
 on:
@@ -26,8 +29,42 @@ env:
   DOCKERHUB_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'houzch' }}/swiftmq
 
 jobs:
+  # ---------- 0) 门禁：tag 必须与源码里的版本号一致 ----------
+  # 事故复盘：v1.0.2 与 v1.0.3 曾被先后打在同一提交上，而源码里 broker.Version 始终是 1.0.0，
+  # 于是镜像"标签写着 1.0.3、启动日志与 /api/overview 却报 1.0.0"。这一步把版本一致性变成硬门禁，
+  # 校验的就是上面注释里那 4 处，避免只改了源码却忘了编排文件。
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 tag 与源码版本号
+        run: |
+          set -euo pipefail
+          want="${GITHUB_REF_NAME#v}"          # v1.1.0 -> 1.1.0
+          fail=0
+          check() {                            # check 名称 实际值
+            if [ "$2" != "${want}" ]; then
+              echo "::error::$1 = '$2'，与 tag ${GITHUB_REF_NAME} 不一致（应为 ${want}）"
+              fail=1
+            else
+              echo "OK   $1 = $2"
+            fi
+          }
+          check "internal/broker/broker.go" "$(awk -F'"' '/^const Version = /{print $2; exit}' internal/broker/broker.go)"
+          check "web/package.json"          "$(grep -m1 -oP '"version":\s*"\K[^"]+' web/package.json)"
+          check "web/package-lock.json"     "$(grep -m1 -oP '"version":\s*"\K[^"]+' web/package-lock.json)"
+          check "docker-compose.yml"        "$(grep -m1 -oP 'image:\s*\S+:\K[0-9][^ ]*' docker-compose.yml)"
+
+          if [ "${fail}" -ne 0 ]; then
+            echo "::error::版本号未统一：把上述 4 处改齐后，删掉该 tag 重新打（不要复用已发布的 tag）"
+            exit 1
+          fi
+          echo "版本号校验通过：${want}"
+
   # ---------- 1) 交叉编译各平台二进制并打包 ----------
   binaries:
+    needs: verify-version
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -129,6 +166,7 @@ jobs:
   # ---------- 3) 构建多架构镜像并推到公共仓库（GHCR + 可选 Docker Hub）----------
   # 容器只出 Linux：本项目不提供 Windows 容器镜像
   image:
+    needs: verify-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

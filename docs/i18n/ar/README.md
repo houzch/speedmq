@@ -20,27 +20,33 @@
 
 ### الطريقة 1: Docker (مُوصى بها)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # الحالة يجب أن تكون Up (healthy)
-docker compose logs -f   # متابعة السجلات
-```
-
-ما يكافئ ذلك باستخدام docker وحده:
+**بدون استنساخ المستودع: اسحب الصورة وشغّلها مباشرة.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- تُخزَّن البيانات في حجم مُسمّى `swiftmq-data`، فلا تُفقد عند إعادة إنشاء الحاوية؛ ويُركَّب ملف الإعداد `configs/swiftmqd.json` للقراءة فقط، ويُفعَّل التعديل بعد `docker compose restart`.
-- الإيقاف: `docker compose down` (مع الاحتفاظ بالبيانات)؛ و`docker compose down -v` (يحذف البيانات معه).
+تُنشَر الصورة في مكانين بمحتوى متطابق (اختر الأسرع لديك): Docker Hub `houzch/swiftmq` وGitHub GHCR `ghcr.io/houzch/swiftmq`، وكلاهما يوفّر `linux/amd64` و`linux/arm64`.
+
+- تُحفظ البيانات في الحجم المسمّى `swiftmq-data` وتبقى حتى بعد إعادة إنشاء الحاوية.
+- الإيقاف / الحذف: `docker stop swiftmq` و`docker rm swiftmq` (يبقى حجم البيانات).
+
+**لتعديل الإعدادات أو للاستخدام مع compose، استنسخ المستودع:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # يستخدم الصورة المنشورة؛ غيّرها إلى up -d --build للبناء محليًا
+
+docker compose ps        # يجب أن تكون الحالة Up (healthy)
+docker compose logs -f   # متابعة السجلات
+```
+
+- يُربَط ملف الإعدادات `configs/swiftmqd.json` للقراءة فقط، وتُطبَّق التعديلات بعد `docker compose restart`.
+- الإيقاف: `docker compose down` (يحتفظ بالبيانات)؛ `docker compose down -v` (يحذف البيانات أيضًا).
 
 ### الطريقة 2: ملف تنفيذي محلي (يتطلب Go 1.24+)
 

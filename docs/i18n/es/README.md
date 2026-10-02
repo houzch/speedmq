@@ -20,27 +20,33 @@ Capacidades ya disponibles: persistencia (registro por segmentos + niveles de fs
 
 ### Opción 1: Docker (recomendado)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # el estado debe ser Up (healthy)
-docker compose logs -f   # seguir los logs
-```
-
-Equivalente con docker puro:
+**Sin clonar el repositorio: basta con descargar la imagen y ejecutarla.**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Los datos se guardan en el volumen con nombre `swiftmq-data`; al reconstruir el contenedor no se pierden. La configuración se monta en modo de solo lectura desde `configs/swiftmqd.json`; tras modificarla, `docker compose restart` la aplica.
-- Detener: `docker compose down` (conserva los datos); `docker compose down -v` (elimina también los datos).
+La imagen se publica en dos sitios con el mismo contenido (usa el que te vaya más rápido): Docker Hub `houzch/swiftmq` y GitHub GHCR `ghcr.io/houzch/swiftmq`; ambos ofrecen `linux/amd64` y `linux/arm64`.
+
+- Los datos quedan en el volumen con nombre `swiftmq-data`, que sobrevive a la recreación del contenedor.
+- Detener / eliminar: `docker stop swiftmq`, `docker rm swiftmq` (el volumen de datos se conserva).
+
+**Si quieres cambiar la configuración u orquestar con compose, clona el repositorio:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Usa la imagen publicada; cambia a up -d --build para compilar en local
+
+docker compose ps        # El estado debe ser Up (healthy)
+docker compose logs -f   # Sigue los logs
+```
+
+- La configuración se monta en solo lectura desde `configs/swiftmqd.json`; los cambios se aplican con `docker compose restart`.
+- Detener: `docker compose down` (conserva los datos); `docker compose down -v` (borra también los datos).
 
 ### Opción 2: binario local (requiere Go 1.24+)
 

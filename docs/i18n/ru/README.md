@@ -20,27 +20,33 @@
 
 ### Способ первый: Docker (рекомендуется)
 
-```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-docker compose up -d --build
-
-docker compose ps        # статус должен быть Up (healthy)
-docker compose logs -f   # следить за логами
-```
-
-Эквивалентный вариант на чистом docker:
+**Клонировать репозиторий не нужно — просто заберите образ и запустите:**
 
 ```bash
-docker build -t swiftmq:1.0.0 .
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
+  houzch/swiftmq:1.1.0
 ```
 
-- Данные размещаются в именованном томе `swiftmq-data` и не теряются при пересоздании контейнера; конфигурация `configs/swiftmqd.json` монтируется только для чтения, после изменений достаточно выполнить `docker compose restart`.
-- Остановка: `docker compose down` (данные сохраняются); `docker compose down -v` (данные удаляются вместе с томом).
+Образ публикуется в двух местах с одинаковым содержимым (выбирайте, где быстрее): Docker Hub `houzch/swiftmq` и GitHub GHCR `ghcr.io/houzch/swiftmq`; оба дают `linux/amd64` и `linux/arm64`.
+
+- Данные попадают в именованный том `swiftmq-data` и сохраняются при пересоздании контейнера.
+- Остановка / удаление: `docker stop swiftmq`, `docker rm swiftmq` (том с данными остаётся).
+
+**Чтобы изменить конфигурацию или использовать compose, клонируйте репозиторий:**
+
+```bash
+git clone https://github.com/houzch/swiftmq.git
+cd swiftmq
+docker compose pull && docker compose up -d   # Использует опубликованный образ; замените на up -d --build для локальной сборки
+
+docker compose ps        # Статус должен быть Up (healthy)
+docker compose logs -f   # Следить за логами
+```
+
+- Конфигурация монтируется только для чтения из `configs/swiftmqd.json`; изменения применяются после `docker compose restart`.
+- Остановка: `docker compose down` (данные сохраняются); `docker compose down -v` (удаляет и данные).
 
 ### Способ второй: локальный бинарный файл (требуется Go 1.24+)
 

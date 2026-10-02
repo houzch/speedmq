@@ -20,26 +20,32 @@ Capabilities already available: persistence (segment log + fsync level + crash r
 
 ### Option 1: Docker (recommended)
 
+**No need to clone the repo — just pull the image and run it:**
+
+```bash
+docker run -d --name swiftmq \
+  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
+  -v swiftmq-data:/var/lib/swiftmq \
+  houzch/swiftmq:1.1.0
+```
+
+The image is published in two places with identical content (pick whichever is faster for you): Docker Hub `houzch/swiftmq` and GitHub GHCR `ghcr.io/houzch/swiftmq`; both provide `linux/amd64` and `linux/arm64`.
+
+- Data lands in the named volume `swiftmq-data`, which survives container recreation.
+- Stop / remove: `docker stop swiftmq`, `docker rm swiftmq` (the data volume is kept).
+
+**To change the configuration or use docker compose, clone the repo:**
+
 ```bash
 git clone https://github.com/houzch/swiftmq.git
 cd swiftmq
-docker compose up -d --build
+docker compose pull && docker compose up -d   # Use the published image; switch to up -d --build to build locally
 
 docker compose ps        # Status should be Up (healthy)
 docker compose logs -f   # Follow the logs
 ```
 
-Equivalent plain docker:
-
-```bash
-docker build -t swiftmq:1.0.0 .
-docker run -d --name swiftmq \
-  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
-```
-
-- Data lands in the named volume `swiftmq-data`, which survives container recreation; the configuration is mounted read-only from `configs/swiftmqd.json`, and changes take effect after `docker compose restart`.
+- The configuration is mounted read-only from `configs/swiftmqd.json`; changes take effect after `docker compose restart`.
 - Stop: `docker compose down` (keeps data); `docker compose down -v` (deletes data too).
 
 ### Option 2: Local binary (requires Go 1.24+)
