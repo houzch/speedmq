@@ -63,6 +63,8 @@ VOLUME ["/var/lib/swiftmq"]
 
 # AMQP 0-9-1
 EXPOSE 5672
+# MQTT 3.1.1（内置协议插件，可用 plugins.mqtt.enabled=false 关闭）
+EXPOSE 1883
 # 管理面（Management HTTP API + 内嵌管理 UI + Prometheus 指标）
 EXPOSE 15672
 

@@ -1,6 +1,7 @@
 # SwiftMQ 本地编排
 #
-#   docker compose up -d --build      # 构建并启动
+#   docker compose up -d --build      # 本地构建并启动
+#   docker compose pull && docker compose up -d   # 直接用已发布的镜像，不本地构建
 #   docker compose ps                 # 查看状态（含健康检查）
 #   docker compose logs -f            # 跟随日志
 #   docker compose down               # 停止并删除容器（保留数据卷）
@@ -22,7 +23,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: swiftmq:1.0.0
+    # 指向已发布的镜像，这样 `docker compose pull` 能直接拉到；
+    # 本地开发用 `docker compose up -d --build` 时会用同名 tag 覆盖它（两个仓库都发布同一份镜像）
+    image: houzch/swiftmq:1.0.0
     container_name: swiftmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动

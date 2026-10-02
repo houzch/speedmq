@@ -1,4 +1,5 @@
-# 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（多平台二进制归档）与 GHCR 镜像（Packages）。
+# 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（多平台二进制归档）
+# 与多架构容器镜像（GHCR；配置了 Docker Hub 凭据时同时推 Docker Hub）。
 #
 #   git push swiftmq v1.0.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
 #
@@ -20,6 +21,9 @@ permissions:
 env:
   # 本仓库解析为 ghcr.io/houzch/swiftmq；GHCR 要求镜像名全小写
   IMAGE: ghcr.io/${{ github.repository }}
+  # Docker Hub 镜像名：命名空间默认 houzch，可用仓库变量 DOCKERHUB_NAMESPACE 覆盖。
+  # 是否真的推送由下面"有没有配 DOCKERHUB_TOKEN"决定（没配就跳过，不影响发布）。
+  DOCKERHUB_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'houzch' }}/swiftmq
 
 jobs:
   # ---------- 1) 交叉编译各平台二进制并打包 ----------
@@ -122,7 +126,7 @@ jobs:
             --title "SwiftMQ ${GITHUB_REF_NAME}" \
             --generate-notes
 
-  # ---------- 3) 构建多架构镜像并推到 GHCR ----------
+  # ---------- 3) 构建多架构镜像并推到公共仓库（GHCR + 可选 Docker Hub）----------
   # 容器只出 Linux：本项目不提供 Windows 容器镜像
   image:
     runs-on: ubuntu-latest
@@ -136,16 +140,46 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # 用 secret 的"有没有配"当开关：secrets 不能直接写在 job 级 if 里，所以在 shell 里判断。
+      # 没配 → 只发 GHCR，发布照常成功；配了 → 同时发 Docker Hub。
+      - name: Login to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 用 :- 兜底：万一变量完全没定义（例如以后有人删掉 env），也不至于因 set -u 直接失败
+          if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "未配置 DOCKERHUB_TOKEN，跳过 Docker Hub 登录与推送"
+            exit 0
+          fi
+          echo "${DOCKERHUB_TOKEN}" | docker login docker.io -u "${DOCKERHUB_USERNAME:-}" --password-stdin
+
       - name: Build and push
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"   # v1.0.0 -> 1.0.0
           minor="${version%.*}"            # 1.0.0 -> 1.0
           major="${version%%.*}"           # 1.0.0 -> 1
+
+          tags=(
+            -t "${IMAGE}:${version}"
+            -t "${IMAGE}:${minor}"
+            -t "${IMAGE}:${major}"
+            -t "${IMAGE}:latest"
+          )
+          if [ -n "${DOCKERHUB_TOKEN:-}" ]; then
+            tags+=(
+              -t "${DOCKERHUB_IMAGE}:${version}"
+              -t "${DOCKERHUB_IMAGE}:${minor}"
+              -t "${DOCKERHUB_IMAGE}:${major}"
+              -t "${DOCKERHUB_IMAGE}:latest"
+            )
+          fi
+
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
-            -t "${IMAGE}:${version}" \
-            -t "${IMAGE}:${minor}" \
-            -t "${IMAGE}:${major}" \
-            -t "${IMAGE}:latest" \
+            "${tags[@]}" \
             --push .

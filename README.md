@@ -20,26 +20,32 @@
 
 ### 方式一：Docker（推荐）
 
+**不用克隆仓库，直接拉镜像跑起来：**
+
+```bash
+docker run -d --name swiftmq \
+  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
+  -v swiftmq-data:/var/lib/swiftmq \
+  houzch/swiftmq:1.0.0
+```
+
+镜像同时发布在两处（内容相同，挑网络快的那个）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`；两个仓库都提供 `linux/amd64` 与 `linux/arm64`。
+
+- 数据落在命名卷 `swiftmq-data`，容器重建不丢。
+- 停止 / 删除：`docker stop swiftmq`、`docker rm swiftmq`（数据卷保留）。
+
+**要改配置或用 compose 编排，再克隆仓库：**
+
 ```bash
 git clone https://github.com/houzch/swiftmq.git
 cd swiftmq
-docker compose up -d --build
+docker compose pull && docker compose up -d   # 用已发布的镜像；改成 up -d --build 则本地构建
 
 docker compose ps        # 状态应为 Up (healthy)
 docker compose logs -f   # 跟随日志
 ```
 
-等价的纯 docker：
-
-```bash
-docker build -t swiftmq:1.0.0 .
-docker run -d --name swiftmq \
-  -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  swiftmq:1.0.0
-```
-
-- 数据落在命名卷 `swiftmq-data`，容器重建不丢；配置以只读方式挂载 `configs/swiftmqd.json`，改完 `docker compose restart` 生效。
+- 配置以只读方式挂载 `configs/swiftmqd.json`，改完 `docker compose restart` 生效。
 - 停止：`docker compose down`（保留数据）；`docker compose down -v`（连数据一起删）。
 
 ### 方式二：本地二进制（需要 Go 1.24+）
