@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"os"
 )
 
@@ -36,6 +37,14 @@ func openLogFile(path string) (*logFile, error) {
 	}
 	valid, err := truncateToValid(f)
 	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	// 追加写的起点必须显式定位到有效数据的末尾：新打开的 fd 偏移是 0，
+	// 而 truncateToValid 的定位读（ReadAt）不会改变它。少了这一步，
+	// 重新打开一个**非空**文件之后的写入会从文件头覆盖已有记录 ——
+	// 索引与段都会在"重启后继续写入"时损坏（这是 M8-7 排障时抓到的真实缺陷）。
+	if _, err := f.Seek(valid, io.SeekStart); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -134,6 +143,18 @@ func (l *logFile) forEach(fn func(offset int64, payload []byte) error) error {
 
 // size 返回有效字节数。
 func (l *logFile) size() int64 { return l.valid }
+
+// fileSize 返回文件的真实大小；读不到时返回 -1。
+//
+// 用来在出错时把"内存里的有效字节数"与"文件实际大小"一起报出来 ——
+// 两者不一致说明文件被外部改动过，这是定位这类问题最关键的两个数字。
+func (l *logFile) fileSize() int64 {
+	info, err := l.f.Stat()
+	if err != nil {
+		return -1
+	}
+	return info.Size()
+}
 
 // flush 把用户态缓冲写入操作系统（不保证落盘）。
 func (l *logFile) flush() error { return l.w.Flush() }

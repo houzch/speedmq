@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/houzch/swiftmq/internal/config"
@@ -25,8 +26,9 @@ import (
 // durable 非 exclusive 队列，以及两端都在该范围内的绑定。transient / exclusive / auto-delete
 // 的对象属会话本地，不进元数据（与 meta/types.go 的约定 1 一致）—— 这样单机行为与 M1–M5 完全不变。
 //
-// vhost 集合本身由配置驱动（集群各节点必须配置相同的 vhost 列表），本期不支持运行期增删 vhost。
-
+// vhost 集合自 M8-7 起**可在运行期增删**：配置文件里的 vhosts 只负责首次引导，
+// 此后 vhost 集合以元数据为准（与账号同一约定，见 bootstrapVHosts）—— 否则一个
+// 运行期删掉的 vhost 会在下次重启时从配置里"复活"，而且各节点的集合会悄悄分叉。
 const (
 	// metaSubmitTimeout 是元数据提交（含 follower 转发 leader）的上限。
 	metaSubmitTimeout = 5 * time.Second
@@ -380,9 +382,19 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 		}
 		v.applyBindingDelete(rec)
 
-	case meta.OpPutVHost, meta.OpDeleteVHost:
-		// vhost 集合由配置驱动（见本文件顶部说明）：元数据层里的 vhost 记录只做展示，
-		// 不在本地增删 vhost —— 否则一个错误记录就能把正在服务的 vhost 摘掉。
+	case meta.OpPutVHost:
+		rec, err := decodeMeta[meta.VHost](op, payload)
+		if err != nil {
+			return err
+		}
+		b.addVHost(rec.Name)
+
+	case meta.OpDeleteVHost:
+		rec, err := decodeMeta[meta.VHost](op, payload)
+		if err != nil {
+			return err
+		}
+		b.applyVHostDelete(rec.Name)
 
 	case meta.OpPutUser:
 		rec, err := decodeMeta[meta.User](op, payload)
@@ -423,6 +435,16 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 		}
 		b.auth.ApplyDeletePermission(rec.User, rec.VHost)
 
+	case meta.OpPutPolicy, meta.OpDeletePolicy:
+		rec, err := decodeMeta[meta.Policy](op, payload)
+		if err != nil {
+			return err
+		}
+		// 策略是"事后施加"的：重建集合后必须回到已有对象上重算，否则运维改了策略
+		// 却要等队列重建才生效。重建用的是**已提交**的元数据状态（此时状态机已应用本条目）。
+		b.refreshPolicies(b.metaState())
+		b.log.Debug("策略已应用", "op", string(op), "vhost", rec.VHost, "policy", rec.Name)
+
 	default:
 		return fmt.Errorf("未知的元数据操作 %q", op)
 	}
@@ -439,9 +461,15 @@ func (b *Broker) ApplyMeta(op meta.Op, payload []byte) error {
 // 唯一的例外是空快照：单机新装 / 新集群首次启动时元数据里本来就没有账号，
 // 此时保留配置带来的初始账号，由 bootstrapUsers 把它们写进元数据。
 func (b *Broker) RestoreMeta(state meta.State) error {
+	// vhost 集合先对齐：元数据里有记录时它**就是**权威（新增的补建、已删除的摘掉），
+	// 这样运行期增删的 vhost 才能随重启/集群复制正确重建。
+	b.syncVHostsFromMeta(state.VHosts)
 	if len(state.Users) > 0 {
 		b.auth.ReplaceUsers(restoredUsers(state))
 	}
+	// 策略要先建好集合：下面重建队列时就要按它算出生效参数，否则重启后的队列会丢掉策略。
+	set := buildPolicySet(state, nil)
+	b.policies.Store(&set)
 	for _, rec := range sortedExchanges(state) {
 		v, err := b.vhostForMeta(rec.VHost)
 		if err != nil {
@@ -465,6 +493,11 @@ func (b *Broker) RestoreMeta(state meta.State) error {
 		}
 		v.applyBindingPut(rec)
 	}
+	// 拓扑建完后再统一落一遍策略：队列的生效参数在 applyQueuePut 里已经按策略算过，
+	// 这一步补上交换机侧的 alternate-exchange 与队列的策略展示信息。
+	for _, v := range b.vhostList() {
+		b.applyPoliciesForVHost(v.name)
+	}
 	return nil
 }
 
@@ -479,18 +512,19 @@ func (b *Broker) applyQueuePut(v *vhost, rec meta.Queue) error {
 	if _, ok := v.getQueue(rec.Name); ok {
 		return nil
 	}
-	args, err := parseQueueArgs(rec.Arguments)
+	args, polName, polDef, err := b.queuePolicyArgs(rec.VHost, rec.Name, rec.Arguments)
 	if err != nil {
 		return fmt.Errorf("元数据中的队列 %s/%s 参数非法: %w", rec.VHost, rec.Name, err)
 	}
 	q := newQueue(rec.Name, rec.Durable, rec.Exclusive, rec.AutoDelete, "", rec.Arguments, args, v.log)
+	q.applyPolicy(args, polName, polDef)
 	q.nodeOwner = rec.Owner
 	// 仲裁队列没有固定 Owner（服务节点是 Raft leader，会变），因此不能按 Owner 判远端。
 	q.remote = args.queueType != queueTypeQuorum && rec.Owner != "" && rec.Owner != b.nodeID
 	v.wireDeadLetter(q, args)
 
 	if args.queueType == queueTypeQuorum {
-		if err := b.startQuorumGroup(v, q); err != nil {
+		if err := b.startQuorumGroup(v, q, rec); err != nil {
 			return fmt.Errorf("启动仲裁队列 %s/%s 的 Raft 组失败: %w", rec.VHost, rec.Name, err)
 		}
 		if !v.addQueueObject(q, args) {
@@ -570,11 +604,179 @@ func (b *Broker) bindingsForExchange(vhost, exchange string) []meta.Binding {
 // 集群各节点的 vhost 配置必须一致：不一致会让元数据引用的对象无处安放，
 // 这里明确失败比"跳过这条记录"更安全 —— 后者会让各节点状态悄悄分叉。
 func (b *Broker) vhostForMeta(name string) (*vhost, error) {
-	v, ok := b.vhosts[name]
+	v, ok := b.vhostOf(name)
 	if !ok {
 		return nil, fmt.Errorf("元数据引用了本节点不存在的 vhost %q（集群各节点的 vhost 配置必须一致）", name)
 	}
 	return v, nil
+}
+
+// ---------------------------------------------------------------------------
+// vhost 集合（M8-7）
+// ---------------------------------------------------------------------------
+
+// syncVHostsFromMeta 让本地 vhost 集合与元数据对齐。
+//
+// 空集合时**不**做任何删除：那说明元数据里还没有 vhost 记录（首次启动，或从 M8-7 之前的
+// 版本升级上来），此时应当保留配置带来的 vhost，由 bootstrapVHosts 把它们播种进元数据。
+// 一旦元数据里有记录，它即权威 —— 运行期删掉的 vhost 不会在重启后从配置里复活。
+//
+// 默认 vhost 是唯一例外：它永不被摘掉。它是内核保证存在的连接落点（见 New），
+// 摘掉它会让所有使用默认 vhost 的客户端直接连不上。
+func (b *Broker) syncVHostsFromMeta(vhosts map[string]meta.VHost) {
+	if len(vhosts) == 0 {
+		return
+	}
+	for _, rec := range vhosts {
+		b.addVHost(rec.Name)
+	}
+	for _, name := range b.VHostNames() {
+		if _, ok := vhosts[name]; ok {
+			continue
+		}
+		if name == b.cfg.DefaultVHost {
+			continue
+		}
+		b.log.Info("vhost 不在元数据中（已被删除），本节点不再提供它", "vhost", name)
+		b.applyVHostDelete(name)
+	}
+}
+
+// applyVHostDelete 在本地移除一个 vhost：摘掉登记、断开使用它的连接、关闭其队列、删磁盘目录。
+//
+// 幂等：vhost 本就不存在时直接返回（Raft 重放与快照恢复会重复应用同一批 Op）。
+func (b *Broker) applyVHostDelete(name string) {
+	v := b.dropVHost(name)
+	if v == nil {
+		return
+	}
+	// 先断开使用它的连接：否则会话仍持有这个已摘除的 vhost，能在被删的拓扑上继续操作。
+	b.disconnectVHostConns(name)
+	v.teardown()
+	if b.stores != nil {
+		if err := b.stores.RemoveVHost(name); err != nil {
+			b.log.Warn("删除 vhost 的存储目录失败", "vhost", name, "err", err)
+		}
+	}
+	b.log.Info("vhost 已删除", "vhost", name)
+}
+
+// disconnectVHostConns 断开当前打开着指定 vhost 的连接。
+//
+// 收集回调后在锁外逐个调用：disconnect 会走到协议层的关闭流程，持锁调用有死锁风险。
+func (b *Broker) disconnectVHostConns(vhost string) {
+	b.connsMu.RLock()
+	fns := make([]func(string), 0)
+	for _, e := range b.conns {
+		if e.vhost == vhost && e.disconnect != nil {
+			fns = append(fns, e.disconnect)
+		}
+	}
+	b.connsMu.RUnlock()
+	reason := fmt.Sprintf("CONNECTION_FORCED - vhost '%s' was deleted", vhost)
+	for _, fn := range fns {
+		fn(reason)
+	}
+}
+
+// CreateVHost 新建一个 vhost（幂等：已存在时重写同一份记录，不改变结果）。
+//
+// 走元数据层提交：集群下经 Raft 复制到全体节点，单机下落盘，因此运行期新建的 vhost
+// 不会随进程退出而消失。
+func (b *Broker) CreateVHost(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return plugin.Errorf(plugin.KindPreconditionFailed, "PRECONDITION_FAILED - vhost 名不能为空")
+	}
+	rec := meta.VHost{Name: name, CreatedAt: time.Now().UTC()}
+	if err := b.submitMeta(meta.OpPutVHost, rec); err != nil {
+		return err
+	}
+	return b.awaitMeta(func() bool { return b.VHostExists(name) })
+}
+
+// DeleteVHost 删除一个 vhost 及其全部内容。返回是否命中。
+//
+// 级联是**显式**的：元数据层的 delete 不级联（见 meta/fsm.go），因此这里把 vhost 内的
+// 队列 / 交换机 / 绑定 / 权限 / 策略逐条提交删除，最后才删 vhost 本身 ——
+// 只删 vhost 会在元数据里留下一堆指向已删 vhost 的悬空记录。
+//
+// 默认 vhost 拒绝删除：它是内核保证存在的落点，删掉会让所有默认 vhost 客户端立刻失联。
+func (b *Broker) DeleteVHost(name string) (bool, error) {
+	if name == b.cfg.DefaultVHost {
+		return false, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 不能删除默认 vhost '%s'", name)
+	}
+	if !b.VHostExists(name) {
+		return false, nil
+	}
+	// 先**快照**出该 vhost 的全部从属记录，再逐条提交。
+	//
+	// 不能边遍历元数据状态边提交：ModeRaft 下"提交成功"与"本地应用"发生在不同协程，
+	// 遍历过程中状态 map 会被应用协程改写 —— 并发遍历+写 map 是未定义行为（可能直接 panic）。
+	st := b.metaState()
+	var queues []meta.Queue
+	for _, rec := range st.Queues {
+		if rec.VHost == name {
+			queues = append(queues, rec)
+		}
+	}
+	var exchanges []meta.Exchange
+	for _, rec := range st.Exchanges {
+		if rec.VHost == name {
+			exchanges = append(exchanges, rec)
+		}
+	}
+	var bindings []meta.Binding
+	for _, rec := range st.Bindings {
+		if rec.VHost == name {
+			bindings = append(bindings, rec)
+		}
+	}
+	var permissions []meta.Permission
+	for _, rec := range st.Permissions {
+		if rec.VHost == name {
+			permissions = append(permissions, rec)
+		}
+	}
+	var policies []meta.Policy
+	for _, rec := range st.Policies {
+		if rec.VHost == name {
+			policies = append(policies, rec)
+		}
+	}
+
+	for _, rec := range queues {
+		if err := b.submitMeta(meta.OpDeleteQueue, meta.Queue{VHost: name, Name: rec.Name}); err != nil {
+			return false, err
+		}
+	}
+	for _, rec := range exchanges {
+		if err := b.submitMeta(meta.OpDeleteExchange, meta.Exchange{VHost: name, Name: rec.Name}); err != nil {
+			return false, err
+		}
+	}
+	for _, rec := range bindings {
+		if err := b.submitMeta(meta.OpDeleteBinding, rec); err != nil {
+			return false, err
+		}
+	}
+	for _, rec := range permissions {
+		if err := b.submitMeta(meta.OpDeletePermission, meta.Permission{User: rec.User, VHost: name}); err != nil {
+			return false, err
+		}
+	}
+	for _, rec := range policies {
+		if err := b.submitMeta(meta.OpDeletePolicy, meta.Policy{Name: rec.Name, VHost: name}); err != nil {
+			return false, err
+		}
+	}
+	if err := b.submitMeta(meta.OpDeleteVHost, meta.VHost{Name: name}); err != nil {
+		return false, err
+	}
+	if err := b.awaitMeta(func() bool { return !b.VHostExists(name) }); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // decodeMeta 把一条 Op 的 payload 解析成对应记录类型。
@@ -670,8 +872,8 @@ func (b *Broker) bootstrapUsers(ctx context.Context) {
 // writeSeedMark 写下引导标记。失败只告警：下次启动会重新播种一遍（幂等），
 // 因此不值得为此让内核启动失败。
 func (b *Broker) writeSeedMark(path string) {
-	if err := os.WriteFile(path, []byte("已按配置完成一次初始账号引导\n"), 0o600); err != nil {
-		b.log.Warn("写入账号引导标记失败（下次启动会重新引导一次）", "path", path, "err", err)
+	if err := os.WriteFile(path, []byte("已按配置完成一次首次引导\n"), 0o600); err != nil {
+		b.log.Warn("写入引导标记失败（下次启动会重新引导一次）", "path", path, "err", err)
 	}
 }
 
@@ -700,6 +902,67 @@ func (b *Broker) seedConfigUsers() error {
 	return nil
 }
 
+// vhostSeedMark 是"配置里的初始 vhost 已处理过"的标记文件（<data_dir>/meta/vhosts.seeded）。
+//
+// 判据与账号播种同一理由（见 userSeedMark）：集群模式下启动重放是异步的，
+// 用"元数据里有没有 vhost"当判据会在刚启动时误判为空，把配置里的 vhost 重新写回日志尾部，
+// 使"运行期删掉的 vhost"复活。标记文件把"本节点是否做过首次引导"变成一个确定事实。
+const vhostSeedMark = "vhosts.seeded"
+
+// bootstrapVHosts 把配置里的初始 vhost 写进元数据，随后退出。
+//
+// 与账号、cluster.peers 同一约定：**配置文件只负责首次引导**，此后 vhost 集合以元数据为准。
+// 因此"给已有实例新增一个 vhost"要经管理 API / swiftmqctl 做，而不是改配置 —— 改配置不会生效，
+// 这一点在 README 的 vhost 说明里写明。
+func (b *Broker) bootstrapVHosts(ctx context.Context) {
+	if b.meta == nil {
+		return
+	}
+	mark := filepath.Join(b.cfg.DataDir, "meta", vhostSeedMark)
+	if _, err := os.Stat(mark); err == nil {
+		return // 本节点已引导过：此后 vhost 集合以元数据为准
+	}
+	if b.cfg.Cluster.Join {
+		// 以 learner 身份加入既有集群：vhost 由集群元数据带过来，本地配置不参与播种
+		// （各节点配置漂移时，播种会凭空造出集群里没有的 vhost）。
+		b.log.Info("以 learner 身份加入既有集群，vhost 由集群元数据接管，不播种本地配置")
+		b.writeSeedMark(mark)
+		return
+	}
+	for {
+		if err := b.seedConfigVHosts(); err != nil {
+			b.log.Warn("初始 vhost 写入元数据失败，稍后重试", "err", err, "retry_in", userBootstrapRetry)
+		} else {
+			b.log.Info("已把配置里的 vhost 写入元数据（此后 vhost 集合以元数据为准）",
+				"vhosts", b.VHostNames())
+			b.writeSeedMark(mark)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(userBootstrapRetry):
+		}
+	}
+}
+
+// seedConfigVHosts 把本地已有的 vhost（来自配置首建）补进元数据；已在元数据里的跳过。
+//
+// 跳过已存在的记录既避免了无谓的日志写入，也让"重跑播种"真正幂等 ——
+// 记录里带 CreatedAt，重复覆盖会让它在集群各节点/各次重启间漂移。
+func (b *Broker) seedConfigVHosts() error {
+	existing := b.metaState().VHosts
+	for _, name := range b.VHostNames() {
+		if _, ok := existing[name]; ok {
+			continue
+		}
+		if err := b.submitMeta(meta.OpPutVHost, meta.VHost{Name: name, CreatedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // vhost 级应用：把一条元数据记录作用到本地拓扑
 // ---------------------------------------------------------------------------
@@ -713,6 +976,8 @@ func (v *vhost) applyExchangePut(rec meta.Exchange) {
 	}
 	v.exchanges[rec.Name] = newExchange(rec.Name, plugin.ExchangeType(rec.Type),
 		rec.Durable, rec.AutoDelete, rec.Internal, rec.Arguments)
+	// 注：策略（alternate-exchange）不在这里设 —— RestoreMeta 末尾会统一落一遍，
+	// 那时策略集合已建好；此处再查一次只会多一次重复计算。
 }
 
 // applyExchangeDelete 删除交换机并清理指向它的绑定（幂等）。

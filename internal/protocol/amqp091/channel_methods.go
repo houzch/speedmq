@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/protocol/codec"
 	"github.com/houzch/swiftmq/internal/protocol/spec"
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
@@ -252,6 +253,18 @@ func (ch *channel) handleQueue(m spec.Method) error {
 		if err != nil {
 			return ch.fail(syntaxErr("Queue.Declare", err), m.ClassID, m.MethodID)
 		}
+		// 伪队列名的声明被 RabbitMQ 一律当作"被动探测"：不建真队列、一定回
+		// message_count=0 / consumer_count=1（实测，与是否已有伪队列消费者无关）。
+		if req.Queue == directReplyQueue {
+			if req.NoWait {
+				return nil
+			}
+			args, err := spec.EncodeQueueDeclareOk(directReplyQueue, 0, 1)
+			if err != nil {
+				return ch.fail(internalErr(err), m.ClassID, m.MethodID)
+			}
+			return ch.con.sendMethod(ch.id, spec.ClassQueue, spec.MethodQueueDeclareOk, args)
+		}
 		info, err := sess.DeclareQueue(plugin.QueueDeclare{
 			Name:       req.Queue,
 			Passive:    req.Passive,
@@ -314,6 +327,15 @@ func (ch *channel) handleQueue(m spec.Method) error {
 		req, err := spec.DecodeQueueDelete(m.Args)
 		if err != nil {
 			return ch.fail(syntaxErr("Queue.Delete", err), m.ClassID, m.MethodID)
+		}
+		// 伪队列名没有真队列可删：RabbitMQ 一律回 Delete-Ok(0)（实测）。
+		// 这里也不动本通道的伪队列消费者 —— 实测两者互不影响。
+		if req.Queue == directReplyQueue {
+			if req.NoWait {
+				return nil
+			}
+			return ch.con.sendMethod(ch.id, spec.ClassQueue, spec.MethodQueueDeleteOk,
+				spec.EncodeQueueDeleteOk(0))
 		}
 		info, err := sess.DeleteQueue(req.Queue, req.IfUnused, req.IfEmpty)
 		if err != nil {
@@ -383,6 +405,8 @@ func (ch *channel) handleBasic(m spec.Method) error {
 		if err := sess.Cancel(req.ConsumerTag); err != nil {
 			return ch.fail(err, m.ClassID, m.MethodID)
 		}
+		// 伪队列消费者被取消后，本通道不能再改写 reply_to（对齐 RabbitMQ）
+		ch.forgetDirectReply(req.ConsumerTag)
 		ch.mu.Lock()
 		delete(ch.consumers, req.ConsumerTag)
 		ch.mu.Unlock()
@@ -467,13 +491,31 @@ func (ch *channel) handleBasic(m spec.Method) error {
 
 // handleConsume 处理 Basic.Consume。
 //
-// 顺序很关键：先在本地登记消费者（此时投递会被暂存），再向内核注册，
-// 成功后才放行暂存的投递并回 Consume-Ok —— 否则客户端可能先收到 Basic.Deliver
-// 再收到 Consume-Ok，很多客户端会因此错乱。
+// 两条顺序约束，都关系到客户端能不能正确解析投递：
+//  1. 先在本地登记消费者（此时投递会被**暂存**），再向内核注册 —— 避免注册成功后
+//     投递在客户端还没准备好时到达；
+//  2. **先回 Consume-Ok、再放行暂存投递** —— 客户端要先用 Ok 里的 consumer-tag 建立
+//     本地消费者表，之后收到的 Basic.Deliver 才认得出来。反过来的话，投递会先于
+//     Consume-Ok 到达，客户端把它判成 "unsolicited delivery" 并断开连接。
+//
+// 第 2 条是 M8-8 的 Java 用例抓到的真实缺陷：amqp-client 在 consumer-tag 为空时
+// **由服务端生成** tag（自己不知道 tag 是什么，只能等 Consume-Ok），因此必然踩中；
+// 而 pika / amqp091-go 会自行生成 tag，侥幸避开了这个竞态。原先的实现是
+// openGate() 写在 sendMethod(Consume-Ok) 之前，两个协程抢着往同一条连接写帧。
 func (ch *channel) handleConsume(sess plugin.Session, m spec.Method) error {
 	req, err := spec.DecodeBasicConsume(m.Args)
 	if err != nil {
 		return ch.fail(syntaxErr("Basic.Consume", err), m.ClassID, m.MethodID)
+	}
+
+	// direct reply-to 伪队列不是真队列：它由本通道的一条独占队列承载，走单独的处理路径。
+	if req.Queue == directReplyQueue {
+		return ch.handleReplyConsume(sess, req, m)
+	}
+
+	priority, err := consumerPriority(req.Arguments, req.Queue, ch.con.identity.VHost)
+	if err != nil {
+		return ch.fail(err, m.ClassID, m.MethodID)
 	}
 
 	tag := req.ConsumerTag
@@ -488,6 +530,7 @@ func (ch *channel) handleConsume(sess plugin.Session, m spec.Method) error {
 		NoAck:     req.NoAck,
 		Exclusive: req.Exclusive,
 		Prefetch:  ch.prefetchCount(),
+		Priority:  priority,
 		Deliver: func(d *plugin.Delivery) error {
 			return entry.deliver(d)
 		},
@@ -500,17 +543,21 @@ func (ch *channel) handleConsume(sess plugin.Session, m spec.Method) error {
 		return ch.fail(err, m.ClassID, m.MethodID)
 	}
 
-	// 放行暂存投递
-	entry.openGate()
-
+	// nowait 时没有 Consume-Ok 可等，客户端必须自己知道 tag（规范要求它显式给出），
+	// 因此直接放行；否则必须在 Consume-Ok **之后**才放行暂存的投递。
 	if req.NoWait {
+		entry.openGate()
 		return nil
 	}
 	args, err := spec.EncodeBasicConsumeOk(tag)
 	if err != nil {
 		return ch.fail(internalErr(err), m.ClassID, m.MethodID)
 	}
-	return ch.con.sendMethod(ch.id, spec.ClassBasic, spec.MethodBasicConsumeOk, args)
+	if err := ch.con.sendMethod(ch.id, spec.ClassBasic, spec.MethodBasicConsumeOk, args); err != nil {
+		return err
+	}
+	entry.openGate()
+	return nil
 }
 
 // handleGet 处理 Basic.Get。
@@ -665,4 +712,73 @@ func serverConsumerTag() string {
 		return fmt.Sprintf("amq.ctag-%d", time.Now().UnixNano())
 	}
 	return "amq.ctag-" + hex.EncodeToString(b)
+}
+
+// consumerPriority 从 basic.consume 的 arguments 里读消费者优先级 x-priority。
+//
+// 对齐 RabbitMQ（实测 4.3）：缺省为 0；显式给出但不是整数时是 channel 级 406，
+// 且报文里带上队列名与 vhost（照抄它的措辞，便于两侧对照排查）。
+// 只校验类型不校验范围 —— 实测 300 / -1 都被接受，因此这里用 int 原样承载。
+func consumerPriority(args codec.Table, queue, vhost string) (int, error) {
+	v, ok := args["x-priority"]
+	if !ok {
+		return 0, nil
+	}
+	p, ok := asPriority(v)
+	if !ok {
+		return 0, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - invalid arg 'x-priority' for queue '%s' in vhost '%s': "+
+				"\"expected integer, got %s\"", queue, vhost, fieldTypeName(v))
+	}
+	return p, nil
+}
+
+// asPriority 把 field-table 的整数值转成优先级；AMQP 的整型有符号/无符号都算整数。
+func asPriority(v any) (int, bool) {
+	switch n := v.(type) {
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
+// fieldTypeName 给出 field-table 值在错误报文里的类型名（与 RabbitMQ 的措辞对齐）。
+func fieldTypeName(v any) string {
+	switch v.(type) {
+	case bool:
+		return "bool"
+	case string:
+		return "longstr"
+	case []byte:
+		return "byte_array"
+	case codec.Decimal:
+		return "decimal"
+	case float32:
+		return "float"
+	case float64:
+		return "double"
+	case codec.Table:
+		return "table"
+	case []any:
+		return "array"
+	case time.Time:
+		return "timestamp"
+	case nil:
+		return "void"
+	default:
+		return "unknown"
+	}
 }

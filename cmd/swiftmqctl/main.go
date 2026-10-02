@@ -94,6 +94,11 @@ func printUsage() {
   add_member <node_id> <rpc_addr>                            把节点加入集群（先作 learner 追平，再提升为投票成员）
   remove_member <node_id>                                    把节点移出集群（无需改配置文件与重启）
   list_queues [vhost]                                        列出队列
+  grow_queue <vhost> <name> <count>                          把仲裁队列的副本数扩到 count（只增不减；落元数据，重启仍生效）
+  rebalance_queue <vhost> <name>                             把仲裁队列的 leader 迁到副本集中较空的节点
+  list_vhosts                                                列出 vhost
+  add_vhost <name>                                           新建 vhost（也可用管理 API/UI）
+  delete_vhost <name>                                        删除 vhost 及其全部内容（默认 vhost 不可删）
   list_connections                                           列出连接
   list_exchanges [vhost]                                     列出交换机
   list_bindings [vhost]                                      列出绑定

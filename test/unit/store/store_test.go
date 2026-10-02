@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -221,6 +222,76 @@ func TestCorruptTailIsDiscarded(t *testing.T) {
 	}
 	if after.Size() != before.Size() {
 		t.Fatalf("尾部半写记录应被截断：文件大小 %d, want %d", after.Size(), before.Size())
+	}
+}
+
+// TestReopenAppendKeepsExistingData 覆盖"重启后继续写"这条路径：
+// 重新打开一个**非空**的存储并追加新消息时，绝不能覆盖已有的索引 / 段数据。
+//
+// 这是 M8-7 排障时抓到的真实缺陷：新打开的文件描述符写偏移是 0，
+// 而定位读（ReadAt）不会改动它，于是追加写会从文件头覆盖已有记录 ——
+// 表现为索引与内存计数不一致、恢复时报 EOF 或恢复出错乱的消息。
+func TestReopenAppendKeepsExistingData(t *testing.T) {
+	m := newTestManager(t, store.FsyncAlways)
+
+	st, _, err := m.Open("/", "reopen.q", true)
+	if err != nil {
+		t.Fatalf("打开存储失败: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		c, err := st.Append(uint64(i), &plugin.Message{
+			Properties: plugin.Properties{DeliveryMode: 2},
+			Body:       []byte(fmt.Sprintf("old-%d", i)),
+		})
+		if err != nil {
+			t.Fatalf("追加旧消息 %d 失败: %v", i, err)
+		}
+		if err := c.Wait(); err != nil {
+			t.Fatalf("等待旧消息 %d 落盘失败: %v", i, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("关闭存储失败: %v", err)
+	}
+
+	// 重新打开（此时存储非空），继续写入 —— 这正是缺陷会触发的场景。
+	st2, recovered, err := m.Open("/", "reopen.q", true)
+	if err != nil {
+		t.Fatalf("重新打开存储失败: %v", err)
+	}
+	if len(recovered) != 3 {
+		t.Fatalf("重开后应恢复 3 条旧消息，实际 %d 条", len(recovered))
+	}
+	for i := 4; i <= 5; i++ {
+		c, err := st2.Append(uint64(i), &plugin.Message{
+			Properties: plugin.Properties{DeliveryMode: 2},
+			Body:       []byte(fmt.Sprintf("new-%d", i)),
+		})
+		if err != nil {
+			t.Fatalf("追加新消息 %d 失败: %v", i, err)
+		}
+		if err := c.Wait(); err != nil {
+			t.Fatalf("等待新消息 %d 落盘失败: %v", i, err)
+		}
+	}
+	if err := st2.Close(); err != nil {
+		t.Fatalf("关闭存储失败: %v", err)
+	}
+
+	// 再打开一次：新旧消息必须一条不少、内容正确。
+	st3, recovered, err := m.Open("/", "reopen.q", true)
+	if err != nil {
+		t.Fatalf("再次打开存储失败: %v", err)
+	}
+	defer st3.Close()
+	if len(recovered) != 5 {
+		t.Fatalf("应恢复 5 条消息（3 旧 + 2 新），实际 %d 条", len(recovered))
+	}
+	want := map[uint64]string{1: "old-1", 2: "old-2", 3: "old-3", 4: "new-4", 5: "new-5"}
+	for _, r := range recovered {
+		if body := string(r.Message.Body); body != want[r.Seq] {
+			t.Fatalf("seq=%d 的消息体 = %q, want %q", r.Seq, body, want[r.Seq])
+		}
 	}
 }
 

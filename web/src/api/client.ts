@@ -70,6 +70,8 @@ export type QueryValue = string | number | boolean | undefined | null
 export interface RequestOptions {
   query?: Record<string, QueryValue>
   body?: unknown
+  /** 覆盖默认的 10 秒超时（毫秒）。少数接口本身很慢，例如仲裁队列扩副本要等新副本追平。 */
+  timeout?: number
 }
 
 function buildUrl(path: string, query?: Record<string, QueryValue>): string {
@@ -95,7 +97,8 @@ async function readErrorBody(response: Response): Promise<ErrorBody> {
 export async function request<T>(method: string, path: string, options: RequestOptions = {}): Promise<T> {
   const url = buildUrl(path, options.query)
   const controller = new AbortController()
-  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT)
+  const timeout = options.timeout ?? REQUEST_TIMEOUT
+  const timer = window.setTimeout(() => controller.abort(), timeout)
 
   try {
     const headers = new Headers({ Accept: 'application/json' })
@@ -136,7 +139,7 @@ export async function request<T>(method: string, path: string, options: RequestO
   } catch (error) {
     if (error instanceof ApiError) throw error
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError(0, 'Request Timeout', '请求超时（10 秒），请检查服务端状态')
+      throw new ApiError(0, 'Request Timeout', `请求超时（${Math.round(timeout / 1000)} 秒），请检查服务端状态`)
     }
     throw new ApiError(0, 'Network Error', error instanceof Error ? error.message : '网络请求失败')
   } finally {

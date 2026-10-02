@@ -2,7 +2,7 @@
 // 应用外壳：顶部导航 + vhost 全局选择器 + 侧边菜单 + 登录框
 import { computed, onMounted, ref, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { Connection, Odometer, Postcard, Share } from '@element-plus/icons-vue'
+import { Connection, Grid, Odometer, Postcard, Share } from '@element-plus/icons-vue'
 import LoginDialog from '@/components/LoginDialog.vue'
 import { setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
@@ -21,6 +21,7 @@ const menuItems = [
   { index: 'overview', label: '概览', icon: Odometer },
   { index: 'queues', label: '队列', icon: Postcard },
   { index: 'exchanges', label: '交换机', icon: Share },
+  { index: 'cluster', label: '集群', icon: Grid },
   { index: 'connections', label: '连接', icon: Connection },
 ]
 

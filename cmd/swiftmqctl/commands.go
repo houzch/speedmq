@@ -113,6 +113,14 @@ type binding struct {
 	RoutingKey      string `json:"routing_key"`
 }
 
+// vhost 是 GET /api/vhosts 的元素（只取展示需要的字段）。
+type vhost struct {
+	Name                   string `json:"name"`
+	Messages               int    `json:"messages"`
+	MessagesReady          int    `json:"messages_ready"`
+	MessagesUnacknowledged int    `json:"messages_unacknowledged"`
+}
+
 type plugin struct {
 	Name         string   `json:"name"`
 	Version      string   `json:"version"`
@@ -294,6 +302,31 @@ func dispatch(c *client, cmd string, args []string) error {
 			return err
 		}
 		return cmdListQueues(c, vhost, has)
+	case "grow_queue":
+		if err := wantArgs(args, 3, "grow_queue <vhost> <name> <count>"); err != nil {
+			return err
+		}
+		return cmdGrowQueue(c, args[0], args[1], args[2])
+	case "rebalance_queue":
+		if err := wantArgs(args, 2, "rebalance_queue <vhost> <name>"); err != nil {
+			return err
+		}
+		return cmdRebalanceQueue(c, args[0], args[1])
+	case "list_vhosts":
+		if err := wantArgs(args, 0, "list_vhosts"); err != nil {
+			return err
+		}
+		return cmdListVHosts(c)
+	case "add_vhost":
+		if err := wantArgs(args, 1, "add_vhost <name>"); err != nil {
+			return err
+		}
+		return cmdAddVHost(c, args[0])
+	case "delete_vhost":
+		if err := wantArgs(args, 1, "delete_vhost <name>"); err != nil {
+			return err
+		}
+		return cmdDeleteVHost(c, args[0])
 	case "list_connections":
 		if err := wantArgs(args, 0, "list_connections"); err != nil {
 			return err
@@ -590,6 +623,145 @@ func cmdListQueues(c *client, vhost string, hasVhost bool) error {
 	}
 	writeTable([]string{"vhost", "name", "messages", "messages_ready", "messages_unacknowledged", "consumers", "durable", "type"}, rows)
 	return nil
+}
+
+// ---------- 3a. 仲裁队列副本集（M8-15） ----------
+
+// quorumInfo 是 PUT /api/queues/{vhost}/{name}/grow 的响应。
+type quorumInfo struct {
+	VHost    string   `json:"vhost"`
+	Queue    string   `json:"queue"`
+	Leader   string   `json:"leader"`
+	Replicas []string `json:"replicas"`
+	Count    int      `json:"count"`
+	Voters   []string `json:"voters"`
+	Learners []string `json:"learners"`
+}
+
+// rebalanceInfo 是 PUT /api/queues/{vhost}/{name}/rebalance 的响应。
+type rebalanceInfo struct {
+	VHost  string `json:"vhost"`
+	Queue  string `json:"queue"`
+	Moved  bool   `json:"moved"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason"`
+}
+
+// cmdGrowQueue 把一条仲裁队列的副本数扩到 count（只增不减）。
+//
+// 改组要等新副本追平日志，因此与成员加入同一口径地把 HTTP 超时放宽。
+func cmdGrowQueue(c *client, vhost, name, countArg string) error {
+	count, err := strconv.Atoi(countArg)
+	if err != nil || count <= 0 {
+		return usagef("count 必须是大于 0 的整数: %s", countArg)
+	}
+	if c.http.Timeout < memberOpMinTimeout {
+		c.http.Timeout = memberOpMinTimeout
+	}
+	raw, err := c.put("/api/queues/"+esc(vhost)+"/"+esc(name)+"/grow", nil, map[string]any{"count": count})
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("未找到队列 %s（vhost %s）", name, vhost)
+		}
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(raw)
+	}
+	var info quorumInfo
+	if err := decodeJSON(raw, &info); err != nil {
+		return err
+	}
+	fmt.Printf("仲裁队列 %s 的副本集已扩到 %d 个：%s\n", name, len(info.Replicas), joinOrNone(info.Replicas))
+	fmt.Printf("投票成员：%s\n非投票成员：%s\n服务节点：%s\n",
+		joinOrNone(info.Voters), joinOrNone(info.Learners), orDash(info.Leader))
+	return nil
+}
+
+// cmdRebalanceQueue 把一条仲裁队列的 leader 迁到副本集中较空的节点。
+func cmdRebalanceQueue(c *client, vhost, name string) error {
+	raw, err := c.put("/api/queues/"+esc(vhost)+"/"+esc(name)+"/rebalance", nil, map[string]any{})
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("未找到队列 %s（vhost %s）", name, vhost)
+		}
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(raw)
+	}
+	var info rebalanceInfo
+	if err := decodeJSON(raw, &info); err != nil {
+		return err
+	}
+	if info.Moved {
+		fmt.Printf("仲裁队列 %s 的 leader 已从 %s 迁到 %s\n", name, orDash(info.From), orDash(info.To))
+		return nil
+	}
+	fmt.Printf("仲裁队列 %s 的 leader 未迁移（%s）\n", name, orDash(info.Reason))
+	return nil
+}
+
+// orDash 为空值返回"（未知）"，便于表格与文本输出稳定。
+func orDash(s string) string {
+	if s == "" {
+		return "（未知）"
+	}
+	return s
+}
+
+// ---------- 3b. vhost 增删查（M8-7） ----------
+
+func cmdListVHosts(c *client) error {
+	data, err := c.get("/api/vhosts", nil)
+	if err != nil {
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+
+	var vhosts []vhost
+	if err := decodeJSON(data, &vhosts); err != nil {
+		return err
+	}
+	sort.Slice(vhosts, func(i, j int) bool { return vhosts[i].Name < vhosts[j].Name })
+	if len(vhosts) == 0 {
+		fmt.Println("（无 vhost）")
+		return nil
+	}
+
+	rows := make([][]string, 0, len(vhosts))
+	for _, item := range vhosts {
+		rows = append(rows, []string{
+			item.Name,
+			strconv.Itoa(item.Messages),
+			strconv.Itoa(item.MessagesReady),
+			strconv.Itoa(item.MessagesUnacknowledged),
+		})
+	}
+	writeTable([]string{"name", "messages", "messages_ready", "messages_unacknowledged"}, rows)
+	return nil
+}
+
+func cmdAddVHost(c *client, name string) error {
+	raw, err := c.put("/api/vhosts/"+esc(name), nil, nil)
+	if err != nil {
+		return err
+	}
+	return c.confirm(raw, fmt.Sprintf("vhost %s 已创建或更新", name))
+}
+
+func cmdDeleteVHost(c *client, name string) error {
+	raw, err := c.delete("/api/vhosts/"+esc(name), nil)
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("未找到 vhost %s", name)
+		}
+		return err
+	}
+	return c.confirm(raw, fmt.Sprintf("vhost %s 及其全部内容已删除", name))
 }
 
 // ---------- 3. list_connections ----------

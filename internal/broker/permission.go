@@ -89,3 +89,16 @@ func (s *permissionSet) check(rule permissionRule, action, resource string) erro
 	return plugin.Errorf(plugin.KindAccessRefused,
 		"ACCESS_REFUSED - access to %s '%s' refused for user '%s'", action, resource, s.user)
 }
+
+// adminTag 是"管理员"标签：拥有它即对所有 vhost 具备完全权限（见 compilePermission）。
+const adminTag = "administrator"
+
+// hasTag 判断标签集合里是否含某个标签。
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}

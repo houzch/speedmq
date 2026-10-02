@@ -188,6 +188,12 @@ const (
 	MethodRequestVote     = "raft.request_vote"
 	MethodAppendEntries   = "raft.append_entries"
 	MethodInstallSnapshot = "raft.install_snapshot"
+	// MethodTimeoutNow 是"收到后立即发起一轮选举"的内部 RPC。
+	//
+	// 它只由**当前 leader** 在主动让位时发出（见 TransferLeadership）：让一个日志已追平的
+	// follower 立刻竞选，把"谁是服务节点"的迁移从"等下一个随机选举超时"变成确定动作。
+	// 安全性不依赖它 —— 被通知者仍要走完整的 RequestVote 规则（日志不落后、同一任期只投一票）。
+	MethodTimeoutNow = "raft.timeout_now"
 )
 
 // Options 是构造 Raft 节点的参数。

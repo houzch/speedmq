@@ -398,6 +398,55 @@ func TestQueueRedeclareEquivalence(t *testing.T) {
 	}
 }
 
+// TestPassiveDeclareIgnoresParams 覆盖被动声明的语义（M8-5 对照实测）：
+// 被动声明**只**校验"存在"，不比较任何声明参数 —— 队列的 durable / auto_delete / arguments、
+// 交换机的 type / durable 全都忽略；连 exclusive 标志本身也不比较。
+//
+// 背景：客户端"先探一下对象在不在"是极常见的写法（`queue_declare(queue=x, passive=True)`），
+// 往往只写队列名。按等价性比较会把这类调用全部挡回去，而 RabbitMQ 是接受的。
+func TestPassiveDeclareIgnoresParams(t *testing.T) {
+	sess := newTestSession(t, newTestBroker(t))
+
+	// —— 队列：durable / auto_delete / arguments 全都与已存在的不一致 ——
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "p.q", Durable: true}); err != nil {
+		t.Fatalf("首次声明 durable 队列失败: %v", err)
+	}
+	if info, err := sess.DeclareQueue(plugin.QueueDeclare{
+		Name: "p.q", Passive: true, Durable: false, AutoDelete: true,
+		Arguments: map[string]any{"x-max-length": 7},
+	}); err != nil {
+		t.Fatalf("被动声明不应比较参数，实际 %v", err)
+	} else if info.Name != "p.q" {
+		t.Fatalf("被动声明应返回队列名 p.q，实际 %q", info.Name)
+	}
+
+	// 独占队列：同一个会话用 exclusive=false 被动声明也必须成功（只查存在性）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "p.excl.q", Exclusive: true}); err != nil {
+		t.Fatalf("首次声明独占队列失败: %v", err)
+	}
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "p.excl.q", Passive: true}); err != nil {
+		t.Fatalf("被动声明独占队列不应比较 exclusive 标志，实际 %v", err)
+	}
+
+	// 被动声明不存在的队列仍是 404（存在性必须真的查）。
+	if _, err := sess.DeclareQueue(plugin.QueueDeclare{Name: "p.no.such.q", Passive: true}); !isKind(err, plugin.KindNotFound) {
+		t.Fatalf("被动声明不存在的队列应 404，实际 %v", err)
+	}
+
+	// —— 交换机：type / durable 不一致也要忽略 ——
+	if err := sess.DeclareExchange(plugin.ExchangeDeclare{Name: "p.ex", Type: plugin.ExchangeDirect}); err != nil {
+		t.Fatalf("首次声明交换机失败: %v", err)
+	}
+	if err := sess.DeclareExchange(plugin.ExchangeDeclare{
+		Name: "p.ex", Type: plugin.ExchangeFanout, Durable: true, Passive: true,
+	}); err != nil {
+		t.Fatalf("被动声明交换机不应比较参数，实际 %v", err)
+	}
+	if err := sess.DeclareExchange(plugin.ExchangeDeclare{Name: "p.no.such.ex", Passive: true}); !isKind(err, plugin.KindNotFound) {
+		t.Fatalf("被动声明不存在的交换机应 404，实际 %v", err)
+	}
+}
+
 // TestQueueTypeValidation 覆盖队列类型的声明校验：
 // 未实现的类型必须明确报错（而不是静默建成 classic），
 // 已实现的 quorum 必须满足它的语义前提（durable / 非独占 / 非自动删除 / 有名字）。

@@ -72,8 +72,12 @@ type queue struct {
 	remote    bool
 	nodeOwner string
 	arguments map[string]any
-	args      queueArgs
-	log       *slog.Logger
+	// applied 是队列**当前生效**的参数与策略（策略可以在运行期改它，见 internal/broker/policy.go）。
+	//
+	// 用原子替换而不是普通字段：策略变更会在运行期改这些值，而读侧并不总是持有 q.mu
+	// （例如 needsTimer 由 vhost 的维护协程调用），普通字段会变成数据竞争。
+	applied atomic.Pointer[appliedPolicy]
+	log     *slog.Logger
 
 	// deadLetter 把消息交给 vhost 投递到死信交换机；由 vhost 在创建队列时注入。
 	deadLetter func(msg *plugin.Message, reason string)
@@ -107,18 +111,52 @@ type queue struct {
 
 func newQueue(name string, durable, exclusive, autoDelete bool, owner string,
 	arguments map[string]any, args queueArgs, log *slog.Logger) *queue {
-	return &queue{
+	q := &queue{
 		name:       name,
 		durable:    durable,
 		exclusive:  exclusive,
 		autoDelete: autoDelete,
 		owner:      owner,
 		arguments:  arguments,
-		args:       args,
 		log:        log.With("queue", name),
 		unacked:    map[uint64]*queuedMsg{},
 		lastUsed:   time.Now(),
 	}
+	q.applied.Store(&appliedPolicy{args: args})
+	return q
+}
+
+// appliedPolicy 是队列当前生效的一组参数。
+//
+// 参数与"命中哪个策略"打包成一个结构整体替换：分开存会在替换的瞬间被读出
+// "新参数 + 旧策略名"这种自相矛盾的组合，而管理面正是靠这两者给运维解释行为的。
+type appliedPolicy struct {
+	args queueArgs
+	// policy 是命中的策略名（没有命中为空）。
+	policy string
+	// definition 是命中策略的 definition 拷贝（只用于展示，不参与运行期判断）。
+	definition map[string]any
+}
+
+// arg 返回队列当前生效的参数。
+func (q *queue) arg() queueArgs {
+	if p := q.applied.Load(); p != nil {
+		return p.args
+	}
+	return queueArgs{}
+}
+
+// applyPolicy 换掉队列生效的参数与策略信息（策略新增/删除/变更时调用）。
+func (q *queue) applyPolicy(args queueArgs, policy string, definition map[string]any) {
+	q.applied.Store(&appliedPolicy{args: args, policy: policy, definition: definition})
+}
+
+// policyInfo 返回当前命中的策略名与定义（管理面展示用）。
+func (q *queue) policyInfo() (string, map[string]any) {
+	if p := q.applied.Load(); p != nil {
+		return p.policy, p.definition
+	}
+	return "", nil
 }
 
 // queueType 返回队列类型（与 RabbitMQ 管理 API 的 `type` 字段一致）。
@@ -140,7 +178,8 @@ func (q *queue) needsTimer() bool {
 	if q == nil {
 		return false
 	}
-	return q.args.messageTTL > 0 || q.args.expires > 0
+	a := q.arg()
+	return a.messageTTL > 0 || a.expires > 0
 }
 
 // stats 返回就绪消息数与消费者数。
@@ -166,12 +205,19 @@ type QueueSnapshot struct {
 	Remote bool
 	Owner  string
 	// QueueType 是队列类型：classic / quorum。
-	QueueType            string
-	Ready                int
-	Unacked              int
-	ConsumerCount        int
-	ConsumerTags         []string
-	ExclusiveConsumerTag string
+	QueueType string
+	// Quorum 是仲裁队列的副本集视图（副本集 / 投票成员 / 非投票成员 / 服务节点）；
+	// 经典队列为 nil。运维据此判断"这条队列已经复制到哪些节点、能容忍几台机器同时宕机"。
+	Quorum *QuorumQueueInfo
+	// Policy 是命中该队列的策略名（没有命中则为空）。
+	Policy string
+	// EffectivePolicyDefinition 是命中策略的定义（对运维解释"这个限制是哪来的"很关键）。
+	EffectivePolicyDefinition map[string]any
+	Ready                     int
+	Unacked                   int
+	ConsumerCount             int
+	ConsumerTags              []string
+	ExclusiveConsumerTag      string
 	// MemoryBytes 是内存占用的估算值（就绪消息体 + 每消息固定开销）。
 	MemoryBytes int64
 	// IdleSince 是该队列最近一次被访问（发布/投递/声明）的时刻。
@@ -198,6 +244,7 @@ func (q *queue) snapshot(vhostName string) QueueSnapshot {
 		Gotten:     q.gotten.Load(),
 		Acked:      q.acked.Load(),
 	}
+	s.Policy, s.EffectivePolicyDefinition = q.policyInfo()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	s.Ready = len(q.ready)
@@ -238,8 +285,8 @@ func (q *queue) consumerSnapshots(vhostName string) []ConsumerSnapshot {
 			AckRequired: !c.sub.NoAck,
 			Prefetch:    c.sub.Prefetch,
 			Exclusive:   c.sub.Exclusive,
-			// 消费者参数（如 x-priority）当前未在内核侧保留，统一给空表，
-			// 避免管理面出现 null（客户端会当成"字段缺失"）。
+			// 消费者的 x-priority 已被内核解析并用于投递排序，但声明时的完整参数表没有保留，
+			// 因此这里统一给空表，避免管理面出现 null（客户端会当成"字段缺失"）。
 			Arguments: map[string]any{},
 		})
 	}
@@ -280,18 +327,19 @@ func (q *queue) publishLocal(msg *plugin.Message) (accepted bool, commit *store.
 	q.touchLocked()
 
 	item := &queuedMsg{msg: msg, priority: msg.Properties.Priority}
-	if ttl := q.args.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
+	a := q.arg()
+	if ttl := a.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
 		item.expireAt = time.Now().Add(ttl)
 	}
 
 	if q.wouldExceedLocked(item) {
-		switch q.args.overflow {
+		switch a.overflow {
 		case overflowRejectPublish:
 			q.mu.Unlock()
 			return false, nil
 		case overflowRejectPublishDLX:
 			q.mu.Unlock()
-			if q.args.hasDeadLetter() {
+			if a.hasDeadLetter() {
 				// reject-publish-dlx：把被拒的消息直接送去死信
 				q.deadLetterLocked(item, deathReasonMaxLen)
 			}
@@ -326,10 +374,11 @@ func (q *queue) publishLocal(msg *plugin.Message) (accepted bool, commit *store.
 
 // wouldExceedLocked 判断加入该消息是否会超过长度限制。
 func (q *queue) wouldExceedLocked(item *queuedMsg) bool {
-	if q.args.maxLength > 0 && int64(len(q.ready))+1 > q.args.maxLength {
+	a := q.arg()
+	if a.maxLength > 0 && int64(len(q.ready))+1 > a.maxLength {
 		return true
 	}
-	if q.args.maxLengthBytes > 0 && q.readyBytes+messageSize(item.msg) > q.args.maxLengthBytes {
+	if a.maxLengthBytes > 0 && q.readyBytes+messageSize(item.msg) > a.maxLengthBytes {
 		return true
 	}
 	return false
@@ -351,7 +400,7 @@ func (q *queue) dropHeadForRoomLocked(item *queuedMsg) {
 // 普通队列追加到队尾（FIFO）；优先级队列按优先级降序插入，同优先级保持 FIFO。
 func (q *queue) insertLocked(item *queuedMsg) {
 	q.readyBytes += messageSize(item.msg)
-	if q.args.maxPriority == 0 {
+	if q.arg().maxPriority == 0 {
 		q.ready = append(q.ready, item)
 		return
 	}
@@ -372,7 +421,7 @@ func (q *queue) insertFrontLocked(items []*queuedMsg) {
 	if len(items) == 0 {
 		return
 	}
-	if q.args.maxPriority > 0 {
+	if q.arg().maxPriority > 0 {
 		// 优先级队列：重入队同样按优先级归位，否则优先级契约会被打破
 		for _, it := range items {
 			q.insertLocked(it)
@@ -537,6 +586,7 @@ func (q *queue) restore(recovered []store.Recovered) {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	a := q.arg()
 	for _, r := range recovered {
 		msg := r.Message
 		msg.Redelivered = true
@@ -546,7 +596,7 @@ func (q *queue) restore(recovered []store.Recovered) {
 			storeSeq:  r.Seq,
 			persisted: true,
 		}
-		if ttl := q.args.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
+		if ttl := a.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
 			item.expireAt = time.Now().Add(ttl)
 		}
 		q.insertLocked(item)
@@ -697,7 +747,7 @@ func (q *queue) sweep(now time.Time) (expired bool) {
 		q.readyBytes -= messageSize(head.msg)
 		q.deadLetterLocked(head, deathReasonExpired)
 	}
-	if q.args.expires > 0 && len(q.consumers) == 0 && now.Sub(q.lastUsed) >= q.args.expires {
+	if a := q.arg(); a.expires > 0 && len(q.consumers) == 0 && now.Sub(q.lastUsed) >= a.expires {
 		return true
 	}
 	return false
@@ -798,16 +848,33 @@ func (q *queue) selectBatchLocked() []batchItem {
 	return batch
 }
 
-// nextConsumerLocked 按轮询顺序找一个还有额度的消费者。
+// nextConsumerLocked 选出一个"还有额度"的消费者。
+//
+// 选择规则对齐 RabbitMQ 的消费者优先级（x-priority，实测 4.3）：
+//   - 先取优先级最高的那一档，再在档内轮询 —— 两个同优先级的消费者会各分到一半；
+//   - 只有高优先级消费者都没有额度（no-ack / prefetch 用尽）时，才轮到低优先级消费者，
+//     因此"高优先级把低优先级饿死"只会发生在高优先级始终有空闲额度时，与 RabbitMQ 一致。
 func (q *queue) nextConsumerLocked() *consumer {
 	n := len(q.consumers)
 	if n == 0 {
 		return nil
 	}
+	best, found := 0, false
+	for _, c := range q.consumers {
+		if !c.hasCapacity() {
+			continue
+		}
+		if !found || c.sub.Priority > best {
+			best, found = c.sub.Priority, true
+		}
+	}
+	if !found {
+		return nil
+	}
 	for i := 0; i < n; i++ {
 		idx := (q.rr + i) % n
 		c := q.consumers[idx]
-		if c.hasCapacity() {
+		if c.sub.Priority == best && c.hasCapacity() {
 			q.rr = (idx + 1) % n
 			return c
 		}
@@ -840,7 +907,7 @@ func (q *queue) decInFlightLocked(tag string) {
 func (q *queue) deadLetterLocked(item *queuedMsg, reason string) {
 	// 消息离开本队列（无论是否真的进了 DLQ）：索引里要记一笔，否则重启后它会"复活"
 	q.storeAckLocked(item)
-	if q.deadLetter == nil || q.args.deadLetterEx == "" {
+	if q.deadLetter == nil || q.arg().deadLetterEx == "" {
 		return
 	}
 	// 复制一份：原消息可能仍被未确认集合引用，不能就地改它的头

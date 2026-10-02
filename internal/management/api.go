@@ -47,6 +47,8 @@ func (s *Server) registerRoutes() {
 	// ---- vhost ----
 	s.handle(http.MethodGet, "/api/vhosts", s.getVHosts)
 	s.handle(http.MethodGet, "/api/vhosts/{vhost}", s.getVHost)
+	s.handle(http.MethodPut, "/api/vhosts/{vhost}", s.putVHost)
+	s.handle(http.MethodDelete, "/api/vhosts/{vhost}", s.deleteVHost)
 
 	// ---- 队列 ----
 	s.handle(http.MethodGet, "/api/queues", s.getQueues)
@@ -56,6 +58,11 @@ func (s *Server) registerRoutes() {
 	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}/contents", s.purgeQueue)
 	s.handle(http.MethodPost, "/api/queues/{vhost}/{name}/get", s.getQueueMessages)
 	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}/bindings", s.getQueueBindings)
+	// 仲裁队列的副本集运行期操作（M8-15，SwiftMQ 扩展端点，RabbitMQ 用 rabbitmq-queues 命令做同样的事）。
+	//   PUT .../grow      {"count": N} 把副本数扩到 N（只增不减；单机模式返回 501）
+	//   PUT .../rebalance {}           把该队列的 leader 迁到副本集中较空的节点
+	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/grow", s.growQueue)
+	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/rebalance", s.rebalanceQueue)
 
 	// ---- 交换机 ----
 	s.handle(http.MethodGet, "/api/exchanges", s.getExchanges)
@@ -91,9 +98,12 @@ func (s *Server) registerRoutes() {
 	s.handle(http.MethodPut, "/api/permissions/{vhost}/{user}", s.putPermission)
 	s.handle(http.MethodDelete, "/api/permissions/{vhost}/{user}", s.deletePermission)
 
-	// ---- 策略（M5 未实现，返回空数组而不是 404，保持工具链可用）----
+	// ---- 策略 ----
 	s.handle(http.MethodGet, "/api/policies", s.getPolicies)
-	s.handle(http.MethodGet, "/api/policies/{vhost}", s.getPolicies)
+	s.handle(http.MethodGet, "/api/policies/{vhost}", s.getVHostPolicies)
+	s.handle(http.MethodGet, "/api/policies/{vhost}/{name}", s.getPolicy)
+	s.handle(http.MethodPut, "/api/policies/{vhost}/{name}", s.putPolicy)
+	s.handle(http.MethodDelete, "/api/policies/{vhost}/{name}", s.deletePolicy)
 
 	// ---- 插件治理 ----
 	s.handle(http.MethodGet, "/api/plugins", s.getPlugins)
@@ -452,6 +462,55 @@ func (s *Server) getVHost(w http.ResponseWriter, _ *http.Request, p params, au a
 	writeJSON(w, http.StatusOK, vhostObject(s.deps.NodeName, v))
 }
 
+// putVHost 实现 PUT /api/vhosts/{vhost}：新建返回 201、已存在返回 204（幂等，重复 PUT 不报错）。
+//
+// 要求 administrator 标签（与 RabbitMQ 一致）：vhost 是全局对象，新建它会改变
+// "哪些账号能连到哪里"的整体格局，不是某一个 vhost 内的写操作。
+func (s *Server) putVHost(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireAdministrator(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	name := p["vhost"]
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "Bad Request", "vhost 名不能为空")
+		return
+	}
+	existed := s.deps.Broker.VHostExists(name)
+	if err := s.deps.Broker.CreateVHost(name); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusNoContent
+	}
+	s.log.Info("管理面新建 vhost", "actor", au.Name, "vhost", name)
+	w.WriteHeader(status)
+}
+
+// deleteVHost 实现 DELETE /api/vhosts/{vhost}：级联删除 vhost 的全部内容，成功 204、不存在 404。
+//
+// 默认 vhost 会被内核拒绝（400）：它是内核保证存在的连接落点。
+func (s *Server) deleteVHost(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireAdministrator(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	name := p["vhost"]
+	ok, err := s.deps.Broker.DeleteVHost(name)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	if !ok {
+		vhostNotFound(w, name)
+		return
+	}
+	s.log.Info("管理面删除 vhost", "actor", au.Name, "vhost", name)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func vhostObject(node string, v broker.VHostSnapshot) map[string]any {
 	return map[string]any{
 		"name":                            v.Name,
@@ -549,7 +608,13 @@ func queueObject(node string, q broker.QueueSnapshot) map[string]any {
 	if queueType == "" {
 		queueType = "classic"
 	}
-	return map[string]any{
+	// 命中的策略：`policy` 是策略名、`effective_policy_definition` 是策略内容，
+	// 两者是运维回答"这个队列的 TTL 是谁设的"的唯一线索（对齐 RabbitMQ 的字段名）。
+	policyName := any(nil)
+	if q.Policy != "" {
+		policyName = q.Policy
+	}
+	obj := map[string]any{
 		"name":                            q.Name,
 		"vhost":                           q.VHost,
 		"durable":                         q.Durable,
@@ -561,7 +626,7 @@ func queueObject(node string, q broker.QueueSnapshot) map[string]any {
 		"arguments":                       emptyMapIfNil(q.Arguments),
 		"consumers":                       q.ConsumerCount,
 		"consumer_utilisation":            nil,
-		"policy":                          nil,
+		"policy":                          policyName,
 		"exclusive_consumer_tag":          exclusiveConsumer,
 		"single_active_consumer_tag":      nil,
 		"messages":                        q.Ready + q.Unacked,
@@ -574,7 +639,39 @@ func queueObject(node string, q broker.QueueSnapshot) map[string]any {
 		"memory":                          q.MemoryBytes,
 		"idle_since":                      q.IdleSince.Format(apiTimeLayout),
 		"reductions":                      0,
-		"effective_policy_definition":     map[string]any{},
+		"effective_policy_definition":     emptyMapIfNil(q.EffectivePolicyDefinition),
+	}
+	if q.Quorum != nil {
+		// 仲裁队列的副本集：`members` / `leader` 沿用 RabbitMQ 的字段名，
+		// `swiftmq_quorum` 是扩展细节（元数据里记录的副本集、投票/非投票成员划分）。
+		obj["members"] = q.Quorum.Voters
+		obj["leader"] = q.Quorum.Leader
+		obj["swiftmq_quorum"] = quorumObject(*q.Quorum)
+	}
+	return obj
+}
+
+// quorumObject 把仲裁队列的副本集视图翻译成 JSON（grow / rebalance 的响应也复用它）。
+func quorumObject(info broker.QuorumQueueInfo) map[string]any {
+	voters, learners := info.Voters, info.Learners
+	if voters == nil {
+		voters = []string{}
+	}
+	if learners == nil {
+		learners = []string{}
+	}
+	replicas := info.Replicas
+	if replicas == nil {
+		replicas = []string{}
+	}
+	return map[string]any{
+		"vhost":    info.VHost,
+		"queue":    info.Name,
+		"leader":   info.Leader,
+		"replicas": replicas,
+		"count":    len(replicas),
+		"voters":   voters,
+		"learners": learners,
 	}
 }
 
@@ -626,6 +723,70 @@ func (s *Server) purgeQueue(w http.ResponseWriter, _ *http.Request, p params, au
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// growRequest 是 PUT /api/queues/{vhost}/{name}/grow 的请求体。
+type growRequest struct {
+	// Count 是目标副本数（必须大于 0，且不超过集群成员数）。
+	Count int `json:"count"`
+}
+
+// growQueue 实现 PUT /api/queues/{vhost}/{name}/grow：把仲裁队列的副本数扩到 count。
+//
+// 语义对齐 `rabbitmq-queues grow`：只增不减、副本集落进元数据（重启后仍生效）。
+// 非仲裁队列 / 超过集群规模 / 缩容 → 400 PRECONDITION_FAILED，队列不存在 → 404，单机模式 → 501。
+func (s *Server) growQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	var req growRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	if req.Count <= 0 {
+		writeError(w, http.StatusBadRequest, "Bad Request", "缺少 count：目标副本数必须大于 0")
+		return
+	}
+	info, err := s.deps.Broker.GrowQuorumQueue(r.Context(), vhost, name, req.Count)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面扩大仲裁队列副本", "actor", au.Name, "vhost", vhost, "queue", name,
+		"replicas", info.Replicas)
+	writeJSON(w, http.StatusOK, quorumObject(info))
+}
+
+// rebalanceQueue 实现 PUT /api/queues/{vhost}/{name}/rebalance：把该队列的 leader
+// 从承载 leader 最多的节点迁到副本集中较空的投票成员。
+func (s *Server) rebalanceQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	res, err := s.deps.Broker.RebalanceQuorumQueue(r.Context(), vhost, name)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面再平衡仲裁队列", "actor", au.Name, "vhost", vhost, "queue", name,
+		"moved", res.Moved, "from", res.From, "to", res.To)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"vhost": res.VHost, "queue": res.Name,
+		"moved": res.Moved, "from": res.From, "to": res.To, "reason": res.Reason,
+	})
 }
 
 // getRequest 是 POST /api/queues/{vhost}/{name}/get 的请求体。
@@ -883,15 +1044,20 @@ func (s *Server) getExchange(w http.ResponseWriter, _ *http.Request, p params, a
 }
 
 func exchangeObject(e broker.ExchangeSnapshot) map[string]any {
+	policyName := any(nil)
+	if e.Policy != "" {
+		policyName = e.Policy
+	}
 	return map[string]any{
-		"name":        e.Name,
-		"vhost":       e.VHost,
-		"type":        string(e.Type),
-		"durable":     e.Durable,
-		"auto_delete": e.AutoDelete,
-		"internal":    e.Internal,
-		"arguments":   emptyMapIfNil(e.Arguments),
-		"policy":      nil,
+		"name":                        e.Name,
+		"vhost":                       e.VHost,
+		"type":                        string(e.Type),
+		"durable":                     e.Durable,
+		"auto_delete":                 e.AutoDelete,
+		"internal":                    e.Internal,
+		"arguments":                   emptyMapIfNil(e.Arguments),
+		"policy":                      policyName,
+		"effective_policy_definition": emptyMapIfNil(e.EffectivePolicyDefinition),
 		// message_stats 未按交换机维度计数（内核在队列维度计数），
 		// 因此这里不提供该字段，而不是给出一个恒为 0 的假值。
 	}
@@ -1471,19 +1637,140 @@ func permissionObject(p broker.PermissionSnapshot) map[string]any {
 }
 
 // ---------------------------------------------------------------------------
-// 策略（未实现）
+// 策略（policy）
+//
+// 字段名对齐 RabbitMQ 的管理 API：`pattern` / `apply-to` / `definition` / `priority`。
+// 策略的作用是"按名称匹配批量给队列/交换机设参数"，因此它的效果体现在队列/交换机对象的
+// `policy` 与 `effective_policy_definition` 两个字段上（见 queueObject / exchangeObject）。
 // ---------------------------------------------------------------------------
 
-// getPolicies 返回空数组：策略功能尚未实现（设计里它属于 M5 之后的补齐项）。
-//
-// 这里刻意返回 200 + []，而不是 404：管理 UI 与部分监控脚本会无条件拉取策略列表，
-// 404 会被当成"接口不可用"，进而让整个页面报错。
 func (s *Server) getPolicies(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
 	if err := au.requireRead(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, []any{})
+	writeJSON(w, http.StatusOK, policyObjects(s.deps.Broker.Policies()))
+}
+
+func (s *Server) getVHostPolicies(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost := p["vhost"]
+	if !s.deps.Broker.VHostExists(vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	writeJSON(w, http.StatusOK, policyObjects(s.deps.Broker.VHostPolicies(vhost)))
+}
+
+func (s *Server) getPolicy(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	pol, ok := s.deps.Broker.Policy(p["vhost"], p["name"])
+	if !ok {
+		policyNotFound(w, p["vhost"], p["name"])
+		return
+	}
+	writeJSON(w, http.StatusOK, policyObject(pol))
+}
+
+// policyRequest 是 PUT /api/policies/{vhost}/{name} 的请求体。
+//
+// `apply-to` 用连字符（RabbitMQ 的字段名），同时接受下划线写法 ——
+// 手写脚本里两种都常见，没必要为此让调用方踩坑。
+type policyRequest struct {
+	Pattern    string         `json:"pattern"`
+	Definition map[string]any `json:"definition"`
+	ApplyTo    string         `json:"apply-to"`
+	ApplyToAlt string         `json:"apply_to"`
+	Priority   *int           `json:"priority"`
+}
+
+func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, name := p["vhost"], p["name"]
+	if !s.deps.Broker.VHostExists(vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	var req policyRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	applyTo := req.ApplyTo
+	if applyTo == "" {
+		applyTo = req.ApplyToAlt
+	}
+	priority := 0
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
+	rec := broker.PolicySnapshot{
+		VHost: vhost, Name: name, Pattern: req.Pattern,
+		ApplyTo: applyTo, Definition: req.Definition, Priority: priority,
+	}
+	_, existed := s.deps.Broker.Policy(vhost, name)
+	if err := s.deps.Broker.SetPolicy(rec); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	s.log.Info("管理面设置策略", "actor", au.Name, "vhost", vhost, "policy", name, "apply_to", applyTo)
+	// 对齐 RabbitMQ：新建回 201、更新回 204（实测 RabbitMQ 4.3 创建策略返回 201）。
+	status := http.StatusCreated
+	if existed {
+		status = http.StatusNoContent
+	}
+	w.WriteHeader(status)
+}
+
+func (s *Server) deletePolicy(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	ok, err := s.deps.Broker.DeletePolicy(p["vhost"], p["name"])
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	if !ok {
+		policyNotFound(w, p["vhost"], p["name"])
+		return
+	}
+	s.log.Info("管理面删除策略", "actor", au.Name, "vhost", p["vhost"], "policy", p["name"])
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func policyObjects(policies []broker.PolicySnapshot) []map[string]any {
+	out := make([]map[string]any, 0, len(policies))
+	for _, pol := range policies {
+		out = append(out, policyObject(pol))
+	}
+	return out
+}
+
+func policyObject(pol broker.PolicySnapshot) map[string]any {
+	return map[string]any{
+		"vhost":      pol.VHost,
+		"name":       pol.Name,
+		"pattern":    pol.Pattern,
+		"apply-to":   pol.ApplyTo,
+		"definition": emptyMapIfNil(pol.Definition),
+		"priority":   pol.Priority,
+	}
+}
+
+func policyNotFound(w http.ResponseWriter, vhost, name string) {
+	writeError(w, http.StatusNotFound, "Object Not Found",
+		fmt.Sprintf("vhost %s 上没有名为 %s 的策略", vhost, name))
 }
 
 // ---------------------------------------------------------------------------

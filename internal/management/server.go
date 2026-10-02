@@ -332,6 +332,14 @@ func (au authUser) requireWrite() error {
 	return au.requireTag("administrator", "management")
 }
 
+// requireAdministrator 校验 administrator 标签。
+//
+// 用于**全局**对象（vhost、用户）的增删：它们改变的是"谁能连到哪里、谁有什么权力"，
+// 与"某个 vhost 内能不能写"不是一回事，因此不允许 management 标签代劳。
+func (au authUser) requireAdministrator() error {
+	return au.requireTag("administrator")
+}
+
 func (au authUser) requireTag(allow ...string) error {
 	for _, tag := range au.Tags {
 		for _, want := range allow {

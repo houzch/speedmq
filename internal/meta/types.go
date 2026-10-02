@@ -58,6 +58,8 @@ const (
 	OpDeleteUser       Op = "user.delete"
 	OpPutPermission    Op = "permission.put"
 	OpDeletePermission Op = "permission.delete"
+	OpPutPolicy        Op = "policy.put"
+	OpDeletePolicy     Op = "policy.delete"
 )
 
 // VHost 是 vhost 的元数据记录。
@@ -88,6 +90,13 @@ type Queue struct {
 	// Owner 是持有该队列消息数据的节点 ID（队列放置结果）。本期取"声明该队列的节点"。
 	Owner     string    `json:"owner"`
 	CreatedAt time.Time `json:"created_at"`
+	// Replicas 是仲裁队列的**副本集**（Raft 组的投票成员，已排序）。
+	//
+	// 只有仲裁队列（x-queue-type=quorum）会写它；经典队列为空。
+	// 它由声明时的 x-quorum-initial-group-size 决定，之后可由 grow 在运行期扩大；
+	// 落进元数据是为了让"扩到 N 副本"这个决定随日志复制到全体节点、并在重启/新节点加入后仍然生效
+	// （Raft 组自身的成员表也持久化在各自的数据目录里，两者是同一决定的两处记录）。
+	Replicas []string `json:"replicas,omitempty"`
 }
 
 // Binding 是绑定的元数据记录。
@@ -117,6 +126,22 @@ type Permission struct {
 	Read      string `json:"read"`
 }
 
+// Policy 是策略的元数据记录（对齐 RabbitMQ 的 policy 对象）。
+//
+// Definition 里的键是**去 x- 前缀**的形式（`message-ttl` / `max-length` / `dead-letter-exchange` …），
+// 与 RabbitMQ 的管理 API 一致；落到队列参数时才补回 x- 前缀。
+type Policy struct {
+	VHost   string `json:"vhost"`
+	Name    string `json:"name"`
+	Pattern string `json:"pattern"`
+	// ApplyTo 是作用对象：queues / classic_queues / quorum_queues / exchanges / all。
+	ApplyTo string `json:"apply_to"`
+	// Definition 是策略内容。
+	Definition map[string]any `json:"definition,omitempty"`
+	// Priority 是优先级：数字越大越优先，多个策略命中同一个对象时只有最高的生效。
+	Priority int `json:"priority"`
+}
+
 // State 是元数据的完整快照。
 //
 // 这是**只读视图**：调用方不得修改返回的 map/slice（内部需要拷贝时才拷贝，
@@ -128,6 +153,7 @@ type State struct {
 	Bindings    []Binding
 	Users       map[string]User
 	Permissions map[string]Permission
+	Policies    map[string]Policy
 }
 
 // Key 生成 (vhost, name) 的复合键，用于 Exchanges / Queues 的 map。
@@ -135,6 +161,9 @@ func Key(vhost, name string) string { return vhost + "\x00" + name }
 
 // PermissionKey 生成 (vhost, user) 的复合键。
 func PermissionKey(vhost, user string) string { return vhost + "\x00" + user }
+
+// PolicyKey 生成 (vhost, policy) 的复合键。
+func PolicyKey(vhost, name string) string { return vhost + "\x00" + name }
 
 // Applier 由内核实现：元数据变更提交后，用它更新本节点的内存拓扑。
 //

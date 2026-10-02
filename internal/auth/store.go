@@ -26,12 +26,29 @@ type Store struct {
 }
 
 // NewStore 构造用户表。
+//
+// 用户与它的权限表都要**深拷贝**：只拷外层会让 auth 直接改写 config 里的 map
+// （`ApplyPermission` 是原地写入）—— 于是运行期新增的权限会"渗回"配置，
+// 再被首次引导的播种逻辑当成配置内容重新写进元数据，表现为"删掉的权限自己复活"。
 func NewStore(users map[string]config.User) *Store {
 	cp := make(map[string]config.User, len(users))
 	for k, v := range users {
-		cp[k] = v
+		cp[k] = copyUser(v)
 	}
 	return &Store{users: cp}
+}
+
+// copyUser 复制一条用户记录（含权限表），避免与调用方共享可变 map。
+func copyUser(u config.User) config.User {
+	u.Tags = append([]string(nil), u.Tags...)
+	if u.Permissions != nil {
+		perms := make(map[string]config.Permission, len(u.Permissions))
+		for vhost, p := range u.Permissions {
+			perms[vhost] = p
+		}
+		u.Permissions = perms
+	}
+	return u
 }
 
 // Mechanisms 返回支持的 SASL 机制名（顺序即 Connection.Start 中下发的顺序）。

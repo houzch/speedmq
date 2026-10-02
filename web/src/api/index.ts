@@ -2,6 +2,8 @@
 import { request } from './client'
 import type {
   Binding,
+  Cluster,
+  ClusterMembers,
   Connection,
   Consumer,
   Exchange,
@@ -12,8 +14,10 @@ import type {
   Overview,
   PublishRequest,
   PublishResult,
+  QuorumView,
   Queue,
   QueueQuery,
+  RebalanceResult,
   Vhost,
   Whoami,
 } from './types'
@@ -27,6 +31,14 @@ export const api = {
   nodes: (): Promise<NodeInfo[]> => request<NodeInfo[]>('GET', '/api/nodes'),
   whoami: (): Promise<Whoami> => request<Whoami>('GET', '/api/whoami'),
   vhosts: (): Promise<Vhost[]> => request<Vhost[]>('GET', '/api/vhosts'),
+
+  // ---- 集群 ----
+  cluster: (): Promise<Cluster> => request<Cluster>('GET', '/api/cluster'),
+  clusterMembers: (): Promise<ClusterMembers> => request<ClusterMembers>('GET', '/api/cluster/members'),
+  addClusterMember: (nodeId: string, addr: string): Promise<ClusterMembers> =>
+    request<ClusterMembers>('PUT', `/api/cluster/members/${encodePath(nodeId)}`, { body: { addr } }),
+  removeClusterMember: (nodeId: string): Promise<ClusterMembers> =>
+    request<ClusterMembers>('DELETE', `/api/cluster/members/${encodePath(nodeId)}`),
 
   // ---- 队列 ----
   queues: (query?: QueueQuery): Promise<Queue[]> => request<Queue[]>('GET', '/api/queues', { query }),
@@ -42,6 +54,19 @@ export const api = {
     request<GetMessage[]>('POST', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/get`, { body }),
   queueBindings: (vhost: string, name: string): Promise<Binding[]> =>
     request<Binding[]>('GET', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/bindings`),
+  /**
+   * 把仲裁队列的副本数扩到 count（只增不减）。
+   *
+   * 改组要等新副本追平日志，可能耗时较久，因此这里单独放宽超时（默认 10 秒不够）。
+   */
+  growQueue: (vhost: string, name: string, count: number): Promise<QuorumView> =>
+    request<QuorumView>('PUT', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/grow`, {
+      body: { count },
+      timeout: 120_000,
+    }),
+  /** 把仲裁队列的 leader 迁到副本集中较空的节点 */
+  rebalanceQueue: (vhost: string, name: string): Promise<RebalanceResult> =>
+    request<RebalanceResult>('PUT', `/api/queues/${encodePath(vhost)}/${encodePath(name)}/rebalance`),
 
   // ---- 交换机 ----
   exchanges: (query?: ExchangeQuery): Promise<Exchange[]> =>

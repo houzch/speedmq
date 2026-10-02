@@ -48,16 +48,20 @@ func main() {
 	reportAPIVersion := flag.String("api-version", apiVersion, "自报的插件 API 版本（改掉可复现版本不匹配）")
 	reportProtocolVersion := flag.String("protocol-version", sidecar.ProtocolVersion, "自报的线协议版本")
 	deny := flag.String("deny", "", "非空则在握手时拒绝服务（复现插件拒绝路径）")
+	sessionDemo := flag.Bool("session-demo", false, "每条流打开后演示内核语义桥（声明队列→发布→消费→结算）")
+	vhost := flag.String("vhost", "/", "session-demo 使用的 vhost")
 	flag.Parse()
 
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	h := &handler{
-		name:     *name,
-		log:      logger,
-		greeting: "ECHO",
-		apiVer:   *reportAPIVersion,
-		protoVer: *reportProtocolVersion,
-		denyText: *deny,
+		name:        *name,
+		log:         logger,
+		greeting:    "ECHO",
+		apiVer:      *reportAPIVersion,
+		protoVer:    *reportProtocolVersion,
+		denyText:    *deny,
+		sessionDemo: *sessionDemo,
+		vhost:       *vhost,
 	}
 
 	srv, err := sidecar.NewServer(h, sidecar.ServerOptions{
@@ -86,6 +90,10 @@ type handler struct {
 	apiVer   string
 	protoVer string
 	denyText string
+
+	// sessionDemo 为 true 时，每条流打开后在它上面演示一次内核语义桥。
+	sessionDemo bool
+	vhost       string
 
 	mu       sync.Mutex
 	greeting string
@@ -127,8 +135,11 @@ func (h *handler) Hello(_ context.Context, hello sidecar.Hello) (sidecar.HelloAc
 }
 
 // Call 处理控制面方法调用。
-func (h *handler) Call(_ context.Context, method string, params json.RawMessage) (any, error) {
+func (h *handler) Call(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case sidecar.MethodSessionDeliver:
+		// 内核把一条投递回推过来（正向调用）；这里结算它，演示"消费 → 结算"闭环。
+		return h.handleDeliver(ctx, params)
 	case "stats":
 		h.mu.Lock()
 		greeting := h.greeting
@@ -164,9 +175,14 @@ func (h *handler) Call(_ context.Context, method string, params json.RawMessage)
 }
 
 // Open 处理一条新流：逐行读取并回显，直到对端关闭或客户端发送 quit。
+//
+// 若以 -session-demo 启动，还会在这条流上先跑一遍内核语义桥演示（见 runSessionDemo）。
 func (h *handler) Open(ctx context.Context, stream *sidecar.Stream, meta sidecar.Open) error {
 	h.streams.Add(1)
 	h.log.Printf("流已打开 stream=%d remote=%s local=%s", stream.ID(), meta.Remote, meta.Local)
+	if h.sessionDemo {
+		h.runSessionDemo(ctx, stream)
+	}
 
 	sc := bufio.NewScanner(stream)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)

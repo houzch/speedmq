@@ -34,18 +34,27 @@ type HelloAck struct {
 }
 
 // Call 是一次方法调用。
+//
+// Reverse 区分调用方向：false 是内核 → 插件的**正向**调用（插件实现 Handler.Call 处理），
+// true 是插件 → 内核的**反向**调用（内核经 ClientOptions.OnCall 处理）。
 type Call struct {
-	ID     uint64          `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params,omitempty"`
+	ID      uint64          `json:"id"`
+	Method  string          `json:"method"`
+	Reverse bool            `json:"reverse,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 // Reply 是方法调用的结果。
+//
+// Reverse 必须回带 Call 的方向：**正向与反向调用的 ID 由两端各自从 1 开始自增，两个 ID 空间会撞车**，
+// 又都走在同一条连接上。接收方要据此决定"这条应答去哪个 pending 表唤醒等待者"，
+// 否则一个 ID 恰好相同的在途调用会被投给错误的等待者（本实现因此为两个方向各留一张 pending 表）。
 type Reply struct {
-	ID    uint64          `json:"id"`
-	OK    bool            `json:"ok"`
-	Error string          `json:"error,omitempty"`
-	Data  json.RawMessage `json:"data,omitempty"`
+	ID      uint64          `json:"id"`
+	Reverse bool            `json:"reverse,omitempty"`
+	OK      bool            `json:"ok"`
+	Error   string          `json:"error,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // Open 请求为一条客户端连接打开逻辑流。
@@ -56,6 +65,12 @@ type Open struct {
 	Local  string `json:"local,omitempty"`
 	// Peek 是嗅探阶段读到的前几个字节（可能为空）：插件可据此做更细的分支判断。
 	Peek []byte `json:"peek,omitempty"`
+	// Attachment 是内核侧随该流绑定的一枚不透明句柄，**不进帧**（json:"-"），插件侧永远是 nil。
+	//
+	// 内核用它把"流"与"这条连接的 plugin.Core"关联起来：插件随后的反向调用（如 session.open）
+	// 带的是流号，内核据此定位到正确的会话。之所以搭在 Open 上，是为了让绑定发生在 kindOpen
+	// 帧写出**之前**（见 ClientOptions.OnStreamOpen）——否则插件可能在绑定完成前就发起反向调用。
+	Attachment any `json:"-"`
 }
 
 // OpenAck 是逻辑流的打开结果。

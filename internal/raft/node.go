@@ -68,6 +68,19 @@ type installSnapshotReply struct {
 	Success bool   `json:"success"`
 }
 
+// timeoutNowArgs / timeoutNowReply 是 MethodTimeoutNow 的请求与应答体。
+type timeoutNowArgs struct {
+	// Term 是发出方（leader）的任期：接收方据此先推进任期，避免用旧任期竞选。
+	Term     uint64 `json:"term"`
+	LeaderID string `json:"leader_id"`
+}
+
+type timeoutNowReply struct {
+	Term uint64 `json:"term"`
+	// OK 表示接收方确实发起了选举（它是投票成员且未停止）。
+	OK bool `json:"ok"`
+}
+
 // applyResult 是一条日志提交并应用后的结果。
 type applyResult struct {
 	value any
@@ -338,6 +351,9 @@ func (n *Node) serve() error {
 		return err
 	}
 	if err := n.tr.Serve(MethodInstallSnapshot, n.handleInstallSnapshot); err != nil {
+		return err
+	}
+	if err := n.tr.Serve(MethodTimeoutNow, n.handleTimeoutNow); err != nil {
 		return err
 	}
 	return nil
@@ -1778,6 +1794,94 @@ func (n *Node) AwaitCatchUp(ctx context.Context, id string) error {
 		case <-tick.C:
 		}
 	}
+}
+
+// TransferLeadership 把领导者身份主动让给目标节点（仅领导者可用）。
+//
+// 做法：先给目标发一条 TimeoutNow（让它立刻竞选），再把自己降为 follower。
+// 顺序很关键 —— 先通知再卸任，目标才有机会用一个更高的任期拿到多数票；
+// 若目标日志落后（未能当选），本节点已经卸任，集群会在一次随机选举超时内选出新 leader，
+// 不会出现"两个 leader 都认为自己有效"的窗口。
+//
+// 它是 rebalance 的基础能力（把队列的 leader 从承载最多的节点迁走），不是共识安全性的一环。
+func (n *Node) TransferLeadership(ctx context.Context, target string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	n.mu.Lock()
+	if n.closed || n.role == RoleShutdown {
+		n.mu.Unlock()
+		return ErrStopped
+	}
+	if n.role != RoleLeader {
+		n.mu.Unlock()
+		return ErrNotLeader
+	}
+	if target == n.id {
+		n.mu.Unlock()
+		return nil
+	}
+	if !n.isVoterLocked(target) {
+		n.mu.Unlock()
+		return fmt.Errorf("%w: %s（只有投票成员才能接任 leader）", ErrUnknownMember, target)
+	}
+	term := n.term
+	n.mu.Unlock()
+
+	args := timeoutNowArgs{Term: term, LeaderID: n.id}
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return fmt.Errorf("编码 TimeoutNow 请求失败: %w", err)
+	}
+	resp, err := n.tr.Call(ctx, target, MethodTimeoutNow, payload)
+	if err != nil {
+		return fmt.Errorf("通知 %s 竞选失败: %w", target, err)
+	}
+	var reply timeoutNowReply
+	if err := json.Unmarshal(resp, &reply); err != nil {
+		return fmt.Errorf("解析 %s 的 TimeoutNow 应答失败: %w", target, err)
+	}
+	if !reply.OK {
+		return fmt.Errorf("%s 未接受 leader 让位（可能已不是投票成员）", target)
+	}
+
+	n.mu.Lock()
+	// 只在"还是那个任期里的 leader"时卸任：期间可能已经被更高任期接管。
+	if n.role == RoleLeader && n.term == term {
+		n.stepDownLocked(term, "")
+	}
+	n.mu.Unlock()
+	n.log.Info("已把领导者让给", "target", target, "term", term)
+	return nil
+}
+
+// handleTimeoutNow 处理"立即竞选"请求。
+//
+// 只做两件事：推进到请求方的任期（避免用旧任期竞选），然后立刻发起一轮选举。
+// 是否真的能当选仍由标准 RequestVote 规则决定。
+func (n *Node) handleTimeoutNow(_ context.Context, _ string, payload []byte) ([]byte, error) {
+	var args timeoutNowArgs
+	if err := json.Unmarshal(payload, &args); err != nil {
+		return nil, fmt.Errorf("解析 TimeoutNow 请求失败: %w", err)
+	}
+	n.mu.Lock()
+	if n.role == RoleShutdown {
+		term := n.term
+		n.mu.Unlock()
+		return json.Marshal(timeoutNowReply{Term: term})
+	}
+	if args.Term > n.term {
+		n.stepDownLocked(args.Term, args.LeaderID)
+	}
+	voter := n.selfIsVoterLocked()
+	term := n.term
+	n.mu.Unlock()
+	if !voter {
+		return json.Marshal(timeoutNowReply{Term: term})
+	}
+	n.log.Info("收到 TimeoutNow，立即发起选举", "id", n.id, "from", args.LeaderID)
+	n.startElection()
+	return json.Marshal(timeoutNowReply{Term: term, OK: true})
 }
 
 // takeSnapshot 调用状态机快照并压缩日志前缀。调用方必须已持有 fsmMu。

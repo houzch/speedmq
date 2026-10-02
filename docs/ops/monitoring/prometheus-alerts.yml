@@ -1,0 +1,146 @@
+# SwiftMQ Prometheus 告警规则
+#
+# 用法：放到 Prometheus 的 rules 目录（或写进 prometheus.yml 的 rule_files），reload 即可。
+# 约定：抓取任务名固定为 job="swiftmq"（如用别的 job 名，请全文替换）。
+#
+# ⚠️ 指标名全部来自 /metrics 的真实输出（internal/management/metrics.go），
+#    对照证据见同目录 README.md 的「/metrics 真实片段」。
+#    本文**不编造**任何指标；当前 /metrics **没有**集群类指标（多数派/leader），
+#    相关告警见文件末尾「集群失去多数派 / 无 leader」的说明。
+
+groups:
+  - name: swiftmq
+    rules:
+      # ---------- 节点 / 进程 ----------
+      - alert: SwiftMQScrapeDown
+        # 抓取目标整个不可达（节点宕机、端口不通、认证失败）。
+        # 注意：节点真挂了时 /metrics 根本抓不到，因此用 Prometheus 自带的 up 而不是 swiftmq_up。
+        expr: up{job="swiftmq"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwiftMQ 节点不可达（{{ $labels.instance }}）"
+          description: "Prometheus 已连续 1 分钟抓不到 {{ $labels.instance }} 的 /metrics。请检查进程是否存活、端口是否监听、管理面认证是否被改。"
+
+      - alert: SwiftMQProcessNotUp
+        # 抓取成功，但进程自报 swiftmq_up=0（当前实现恒为 1，留作兜底）。
+        expr: swiftmq_up{job="swiftmq"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwiftMQ 进程自报不存活（{{ $labels.instance }}）"
+          description: "指标 swiftmq_up=0。检查进程与启动日志。"
+
+      - alert: SwiftMQPluginDown
+        # 插件状态不是 enabled（disabled / failed / down）。failed 常见于 API 版本不匹配、依赖缺失/成环。
+        expr: swiftmq_plugin_up{job="swiftmq"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 插件 {{ $labels.name }} 未在服务（state={{ $labels.state }}）"
+          description: "插件 {{ $labels.name }} 的 swiftmq_plugin_up=0，state={{ $labels.state }}。用 `swiftmqctl plugins show {{ $labels.name }}` 看 runtime_note。若为外部进程插件且 restart=always，通常会自动恢复；持续为 0 需人工介入。"
+
+      # ---------- 资源水位 ----------
+      - alert: SwiftMQResourceBlocked
+        # 内存或磁盘水位触发，生产者被阻塞（客户端会收到 Connection.Blocked）。
+        expr: swiftmq_resource_blocked{job="swiftmq"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 资源水位阻塞了生产者（{{ $labels.instance }}）"
+          description: "swiftmq_resource_blocked=1 持续 5 分钟。核对 swiftmq_process_memory_bytes/swiftmq_memory_total_bytes 与 swiftmq_disk_free_bytes；确认消费者是否还在推进（积压导致内存上涨）。"
+
+      - alert: SwiftMQMemoryWatermarkHigh
+        # 快接近内存水位（默认 0.4×物理内存）。swiftmq_process_memory_bytes 是「在用内存」(HeapInuse+StackInuse)，
+        # 与内核水位判定同一口径。
+        expr: (swiftmq_process_memory_bytes / swiftmq_memory_total_bytes) > (0.9 * swiftmq_memory_high_watermark)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 内存逼近水位（{{ $labels.instance }}）"
+          description: "在用内存已超过水位的 90%。留意队列积压与消费者速度，避免触发 Connection.Blocked。"
+
+      - alert: SwiftMQDiskFreeLow
+        # 数据目录可用空间逼近下限（默认 50 MiB）。低于下限会阻塞生产者。
+        expr: swiftmq_disk_free_bytes < (1.5 * swiftmq_disk_free_limit_bytes)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 数据目录可用空间不足（{{ $labels.instance }}）"
+          description: "swiftmq_disk_free_bytes 已低于磁盘下限的 1.5 倍。及时扩容或清理，否则触发生产者阻塞。"
+
+      # ---------- 队列积压 / 消费者 / 未确认 ----------
+      - alert: SwiftMQQueueBacklogGrowing
+        # 某队列就绪消息持续增长（积压越堆越多）。
+        # 用 per-queue 序列 {queue=~".+"} 以排除全局同名「就绪总数」序列。
+        # 注意：两侧用**同一个** selector，标签集完全一致，`and` 才能正确按标签配对；
+        # 若一侧做了 sum by(...)，标签集会与另一侧不同，`and` 将永远匹配不到（规则永不触发）。
+        expr: |
+          swiftmq_queue_messages_ready{job="swiftmq", queue=~".+"} > 10000
+          and
+          deriv(swiftmq_queue_messages_ready{job="swiftmq", queue=~".+"}[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 队列积压且持续增长（{{ $labels.vhost }}/{{ $labels.queue }}）"
+          description: "就绪消息 >10000 且在 15 分钟内仍单调增长。检查消费者数量与处理速度，或是否存在死信/TTL 异常。"
+
+      - alert: SwiftMQQueueNoConsumers
+        # 有积压但一个消费者都没有（消息无人消费，通常意味着消费者挂光或消费进程未启动）。
+        expr: |
+          swiftmq_queue_consumers{job="swiftmq", queue=~".+"} == 0
+          and
+          swiftmq_queue_messages_ready{job="swiftmq", queue=~".+"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 队列有积压但无消费者（{{ $labels.vhost }}/{{ $labels.queue }}）"
+          description: "该队列有就绪消息但 swiftmq_queue_consumers=0 持续 15 分钟。请检查消费端进程与消费者是否掉线。"
+
+      - alert: SwiftMQUnackedPileUp
+        # 未确认消息堆积（消费者拿了消息但不 ack，常见于消费者卡死或 prefetch 过大 + 处理慢）。
+        expr: swiftmq_queue_messages_unacknowledged{job="swiftmq", queue=~".+"} > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 未确认消息堆积（{{ $labels.vhost }}/{{ $labels.queue }}）"
+          description: "未确认消息 >1000 持续 15 分钟。检查消费者是否卡住/未 ack，必要时用管理 API 关闭连接或重投。"
+
+      # ---------- 连接 ----------
+      - alert: SwiftMQConnectionSpike
+        # 连接数异常升高（阈值需按部署规模调整；仅作起点）。
+        # 也可改成对增长速率告警：deriv(swiftmq_connections[10m]) > 0
+        expr: swiftmq_connections{job="swiftmq"} > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwiftMQ 连接数异常升高（{{ $labels.instance }}）"
+          description: "swiftmq_connections >10000 持续 10 分钟。核对是否连接泄漏（客户端未复用连接/未关闭）。"
+
+  # ------------------------------------------------------------------
+  # 集群失去多数派 / 无 leader —— ⚠️ 当前 /metrics 未暴露集群指标，无法直接用规则表达
+  # ------------------------------------------------------------------
+  # /metrics 里**没有**任何集群类指标（无 swiftmq_cluster_*）；集群状态只在 GET /api/cluster 的 JSON 里：
+  #   {"enabled":true,"mode":"raft","role":"leader","leader":"...","has_quorum":true,"paused":false, ...}
+  # 因此本文件**故意不写**基于集群指标的告警规则——写了也永远不会触发（Prometheus 不会因为
+  # 指标名不存在而报错），属于"看起来对、其实无效"的交付，必须避免。
+  #
+  # 落地方式（二选一，需你自建导出：不在本仓库范围内）：
+  #   A. 用通用 JSON exporter（如 prometheus-community/json_exporter）抓 /api/cluster，
+  #      把它映射成一个指标（示例命名 swiftmq_cluster_has_quorum），再写：
+  #         - alert: SwiftMQClusterNoQuorum
+  #           expr: swiftmq_cluster_has_quorum == 0
+  #           for: 1m
+  #   B. 用 Blackbox/脚本探针定期调 /api/cluster，缺多数派（has_quorum=false）或
+  #      paused=true 时打点，再由上面 A 的规则消费。
+  # 该指标名是本文件**建议你自建**的名字，并非 SwiftMQ 已有指标，请勿直接当现有指标使用。

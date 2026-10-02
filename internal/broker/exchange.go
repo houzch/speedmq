@@ -33,6 +33,13 @@ type exchange struct {
 	// exchBindings 是"交换机 → 交换机"的绑定，binding.queue 字段存放目标交换机名。
 	// 声明 exchange_exchange_bindings 能力就必须真的按它路由，否则是静默的语义缺失。
 	exchBindings []binding
+
+	// alternateExchange 是策略设置的备用交换机：消息在本交换机上未命中任何队列时改从它路由。
+	// 它可以在运行期被策略改，因此与绑定共用 e.mu（读侧在 routeAll 里一并取出）。
+	alternateExchange string
+	// policy / policyDefinition 只用于管理面展示"这个交换机的行为是哪条策略给的"。
+	policy           string
+	policyDefinition map[string]any
 }
 
 func newExchange(name string, typ plugin.ExchangeType, durable, autoDelete, internal bool, args map[string]any) *exchange {
@@ -132,6 +139,9 @@ type ExchangeSnapshot struct {
 	Arguments        map[string]any
 	QueueBindings    int
 	ExchangeBindings int
+	// Policy / EffectivePolicyDefinition 是命中的策略（管理面展示用，字段名与队列侧一致）。
+	Policy                    string
+	EffectivePolicyDefinition map[string]any
 }
 
 // snapshot 返回交换机的只读快照。
@@ -139,15 +149,17 @@ func (e *exchange) snapshot(vhostName string) ExchangeSnapshot {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return ExchangeSnapshot{
-		VHost:            vhostName,
-		Name:             e.name,
-		Type:             e.typ,
-		Durable:          e.durable,
-		AutoDelete:       e.autoDelete,
-		Internal:         e.internal,
-		Arguments:        e.arguments,
-		QueueBindings:    len(e.bindings),
-		ExchangeBindings: len(e.exchBindings),
+		VHost:                     vhostName,
+		Name:                      e.name,
+		Type:                      e.typ,
+		Durable:                   e.durable,
+		AutoDelete:                e.autoDelete,
+		Internal:                  e.internal,
+		Arguments:                 e.arguments,
+		QueueBindings:             len(e.bindings),
+		ExchangeBindings:          len(e.exchBindings),
+		Policy:                    e.policy,
+		EffectivePolicyDefinition: e.policyDefinition,
 	}
 }
 
@@ -301,6 +313,29 @@ func (e *exchange) routeAll(routingKey string, props plugin.Properties) (queues,
 		exchanges = append(exchanges, b.queue)
 	}
 	return queues, exchanges
+}
+
+// alternateExchangeName 返回策略设置的备用交换机名（未设置为空串）。
+func (e *exchange) alternateExchangeName() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.alternateExchange
+}
+
+// applyPolicy 换掉交换机的策略归属与备用交换机。
+func (e *exchange) applyPolicy(alternate, policy string, definition map[string]any) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.alternateExchange = alternate
+	e.policy = policy
+	e.policyDefinition = definition
+}
+
+// policyInfo 返回交换机的策略名与定义（管理面展示用）。
+func (e *exchange) policyInfo() (string, map[string]any) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.policy, e.policyDefinition
 }
 
 // ---------------------------------------------------------------------------

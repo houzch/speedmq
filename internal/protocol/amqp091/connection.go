@@ -235,6 +235,14 @@ func (c *connection) handshakeTune() error {
 
 	c.channelMax = negotiateLimit16(ok.ChannelMax, codec.ChannelMaxDefault)
 	c.frameMax = negotiateLimit32(ok.FrameMax, codec.FrameMaxDefault)
+	if c.frameMax < codec.FrameMaxNegotiatedMin {
+		// 对齐 RabbitMQ 4.x：低于下限的 frame-max 在 Tune 阶段就被拒绝（见 codec.FrameMaxNegotiatedMin）。
+		// 放在这里而不是"默默按最小值放大"，是因为客户端的收发缓冲是按它自己请求的值分配的：
+		// 服务端单方面放大，客户端仍按小值发帧 —— 表面能用，实际把不一致藏了起来。
+		return c.failConnection(spec.NotAllowed, fmt.Sprintf(
+			"NOT_ALLOWED - negotiated frame_max = %d is lower than the minimum allowed value (%d)",
+			c.frameMax, codec.FrameMaxNegotiatedMin), m.ClassID, m.MethodID)
+	}
 	c.heartbeat = negotiateHeartbeat(ok.Heartbeat, codec.HeartbeatDefault)
 	c.fr.SetMax(c.frameMax)
 	return nil

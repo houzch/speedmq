@@ -40,6 +40,8 @@ type channel struct {
 	txOps []txOp
 	// pending 是正在组装的内容（basic.publish 之后等 header 与 body 帧）
 	pending *pendingContent
+	// directReply 非 nil 表示本通道消费着 direct reply-to 伪队列（每通道至多一条）。
+	directReply *directReply
 	// closing 表示已因软错误关闭，等待客户端的 Channel.Close-Ok
 	closing bool
 }
@@ -157,6 +159,12 @@ func (ch *channel) finishPublish() error {
 		RoutingKey: p.pub.RoutingKey,
 		Properties: p.header.Properties,
 		Body:       p.body,
+	}
+
+	// direct reply-to：把请求里的伪队列名换成真正可路由的应答队列名。
+	// 必须在这里做（而不是等投递时），因为改写结果要随消息属性一起到达应答方。
+	if err := ch.rewriteReplyTo(msg); err != nil {
+		return err
 	}
 
 	// 事务模式：先缓冲，等 Tx.Commit 再真正投递给内核。

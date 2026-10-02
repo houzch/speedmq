@@ -17,6 +17,10 @@ var (
 		"仲裁队列验证第一步：声明该名字的仲裁队列、发布 3 条已确认消息后退出")
 	quorumVerify = flag.String("quorum-verify", "",
 		"仲裁队列验证第二步：消费该名字的仲裁队列并核对 3 条消息")
+	// quorumGroupSize 声明仲裁队列时附带 x-quorum-initial-group-size。
+	// 0 表示不带该参数（跟随集群规模）—— 保持默认行为不变，供 M8-15 的扩副本验证使用。
+	quorumGroupSize = flag.Int("quorum-group-size", 0,
+		"声明仲裁队列时的初始副本数（x-quorum-initial-group-size）；0 表示不带该参数")
 )
 
 const quorumProbeCount = 3
@@ -37,8 +41,11 @@ func runQuorumProduce() error {
 	}
 	defer ch.Close()
 
-	if _, err := ch.QueueDeclare(*quorumProduce, true, false, false, false,
-		amqp.Table{"x-queue-type": "quorum"}); err != nil {
+	args := amqp.Table{"x-queue-type": "quorum"}
+	if *quorumGroupSize > 0 {
+		args["x-quorum-initial-group-size"] = int32(*quorumGroupSize)
+	}
+	if _, err := ch.QueueDeclare(*quorumProduce, true, false, false, false, args); err != nil {
 		return fmt.Errorf("在 %s 上声明仲裁队列 %s 失败: %w", *addr, *quorumProduce, err)
 	}
 	if err := ch.Confirm(false); err != nil {

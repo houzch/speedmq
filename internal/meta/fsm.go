@@ -135,6 +135,7 @@ func newState() State {
 		Bindings:    []Binding{},
 		Users:       map[string]User{},
 		Permissions: map[string]Permission{},
+		Policies:    map[string]Policy{},
 	}
 }
 
@@ -167,6 +168,9 @@ func normalizeState(st *State) {
 	}
 	if st.Permissions == nil {
 		st.Permissions = map[string]Permission{}
+	}
+	if st.Policies == nil {
+		st.Policies = map[string]Policy{}
 	}
 }
 
@@ -300,6 +304,19 @@ func applyToState(st *State, op Op, payload []byte) error {
 			return err
 		}
 		delete(st.Permissions, PermissionKey(rec.VHost, rec.User))
+
+	case OpPutPolicy:
+		rec, err := decodeRecord[Policy](op, payload)
+		if err != nil {
+			return err
+		}
+		st.Policies[PolicyKey(rec.VHost, rec.Name)] = rec
+	case OpDeletePolicy:
+		rec, err := decodeRecord[Policy](op, payload)
+		if err != nil {
+			return err
+		}
+		delete(st.Policies, PolicyKey(rec.VHost, rec.Name))
 
 	default:
 		// 未知 Op 是确定性错误：所有节点会对同一条日志做同样的失败，

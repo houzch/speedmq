@@ -4,12 +4,13 @@
 // 于是**内核不需要知道自己托管的是外部进程** —— 注册、依赖排序、能力审计、启停、
 // 失败隔离、管理面展示全都复用 A 形态那套机制（这正是设计 §10.2 想要的"形态对内核透明"）。
 //
-// 与 A 形态的边界（**当前已知限制，见 README**）：
+// 与 A 形态的边界（**已知限制，见 README**）：
 //   - 协议插件的嗅探留在内核侧（接入层职责），其余一切远程；
 //   - 客户端字节流通过本机连接**代理**转发给插件进程（没有 fd 传递，跨平台一致）；
-//   - 外部协议插件目前拿到的是原始字节流，**还不能调用内核语义**（队列/路由/权限）——
-//     把 plugin.Session 桥成 RPC 是后续步骤；因此现阶段它适合做"接入/转换类"插件，
-//     而不是"需要内核存储与路由"的协议。
+//   - 插件除字节流外，还能经**反向调用**触达内核语义（队列 / 路由 / 权限）：
+//     内核侧宿主把 plugin.Session 桥成一组 RPC（见 bridge.go），插件在自己的流上
+//     session.open 后即可声明/绑定/发布/消费/结算，语义与进程内协议插件完全同一套。
+//     代价是每次调用多一次本机 RPC（JSON 编解码 + 内存拷贝）。
 package sidecar
 
 import (
@@ -103,6 +104,16 @@ type Plugin struct {
 	// ack 是最近一次成功握手时插件自报的元数据（版本/协议/方法）。
 	ack sidecar.HelloAck
 
+	// sessMu 保护下列"内核语义桥"的运行时状态（与 mu 分开：桥的操作会等 RPC/落盘，
+	// 不能占着状态查询用的 mu）。
+	sessMu sync.Mutex
+	// streams 按流号记录该流的内核操作面与已打开的会话（见 bridge.go）。
+	streams map[uint32]*bridgeStream
+	// deliveries 记录已回推给插件、尚未结算的投递（按投递编号全局唯一）。
+	deliveries map[uint64]*pendingDelivery
+	// nextDelivery 是投递编号的来源。
+	nextDelivery uint64
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
@@ -152,13 +163,15 @@ func FromConfig(cfg *config.Config, log *slog.Logger, kernelVersion string) ([]s
 			return nil, fmt.Errorf("插件 %s 的 sidecar.spawn 首个元素必须是可执行文件", name)
 		}
 		out = append(out, &Plugin{
-			name:      name,
-			cfg:       sc,
-			log:       log.With("plugin", name, "form", "sidecar"),
-			kernelVer: kernelVersion,
-			state:     sdk.StateDown,
-			reason:    "尚未连接",
-			stopCh:    make(chan struct{}),
+			name:       name,
+			cfg:        sc,
+			log:        log.With("plugin", name, "form", "sidecar"),
+			kernelVer:  kernelVersion,
+			state:      sdk.StateDown,
+			reason:     "尚未连接",
+			streams:    map[uint32]*bridgeStream{},
+			deliveries: map[uint64]*pendingDelivery{},
+			stopCh:     make(chan struct{}),
 		})
 	}
 	return out, nil
@@ -240,6 +253,8 @@ func (p *Plugin) Stop(context.Context) error {
 		_ = c.Close()
 	}
 	p.wg.Wait()
+	// 连接关闭后回收桥上的会话与未结算投递。
+	p.resetStreams()
 	p.killChild()
 	return nil
 }
@@ -281,7 +296,11 @@ func (p *Plugin) connect(ctx context.Context) error {
 	if err := p.spawn(); err != nil {
 		return err
 	}
-	opts := sidecar.ClientOptions{Logger: &slogLogger{log: p.log}}
+	opts := sidecar.ClientOptions{
+		Logger:       &slogLogger{log: p.log},
+		OnCall:       p.onCall,
+		OnStreamOpen: p.onStreamOpen,
+	}
 	if p.cfg.HandshakeTimeoutSeconds > 0 {
 		opts.HandshakeTimeout = time.Duration(p.cfg.HandshakeTimeoutSeconds) * time.Second
 	}
@@ -346,6 +365,8 @@ func (p *Plugin) supervise() {
 				p.reason = reason
 			}
 			p.mu.Unlock()
+			// 连接已死：回收桥上的会话与未结算投递（未结算的按"回队"处理，避免消息滞留）。
+			p.resetStreams()
 			// 内核进程不因插件崩溃而做任何事：只记录、标记 down，然后按策略重连/重启。
 			p.log.Warn("外部插件已断开（内核不受影响）", "err", reason, "restart", p.cfg.Restart)
 		}
@@ -523,18 +544,29 @@ func (ph *protocolHost) Sniff(peek []byte) bool {
 
 // Serve 实现 sdk.Protocol：把这条连接的双向字节流代理给插件进程。
 //
-// 注意：**不做任何协议解析**。内核在这里只当"搬运工"，协议语义完全在插件进程里 ——
+// 注意：**内核在这里不做任何协议解析**。内核只当"搬运工"，协议语义完全在插件进程里 ——
 // 这正是 B 形态的意义（插件可以用任何语言、任何实现），也是它的代价（多一次本机拷贝）。
-func (ph *protocolHost) Serve(ctx context.Context, conn net.Conn, _ sdk.Core) error {
+//
+// 与纯代理不同的是：这里把 core（这条连接的内核操作面）随流一并交给插件侧，
+// 于是插件可以经反向调用（session.*）触达内核语义（队列/路由/权限），而不只是读写字节。
+func (ph *protocolHost) Serve(ctx context.Context, conn net.Conn, core sdk.Core) error {
 	c := ph.p.Client()
 	if c == nil {
 		_, reason := ph.p.ReportState()
 		return fmt.Errorf("外部插件 %s 当前不可用（%s）", ph.p.name, reason)
 	}
-	stream, err := c.Open(ctx, sidecar.Open{Remote: addrString(conn.RemoteAddr()), Local: addrString(conn.LocalAddr())})
+	stream, err := c.Open(ctx, sidecar.Open{
+		Remote:     addrString(conn.RemoteAddr()),
+		Local:      addrString(conn.LocalAddr()),
+		Attachment: core, // 随流携带内核操作面（不进帧），供插件反向调用时定位会话
+	})
 	if err != nil {
+		// Open 失败时拿不到流号，用 core 身份反查回收可能已绑定的桥状态。
+		ph.p.releaseCore(core)
 		return fmt.Errorf("请求插件 %s 打开连接失败: %w", ph.p.name, err)
 	}
+	// 流结束：释放该流的会话、取消其消费者，并把未结算投递重新入队。
+	defer ph.p.releaseStream(stream.ID())
 	defer stream.Close()
 
 	// 双向转发：任一方向结束即收尾（对端关闭 / 插件返回 / 连接断开）。

@@ -49,9 +49,13 @@ func appendAndWait(t *testing.T, st *store.QueueStore, seq uint64, size int) {
 }
 
 // waitUntil 轮询等待条件成立（Ack 是异步刷盘的，断言不能依赖精确时序）。
+//
+// 期限给得比较宽（15s）：这里等的是**后台**的刷盘与索引压缩，它本身没有延迟承诺，
+// 期限只是"卡死"的兜底。原先的 3s 在全量测试并行跑（十几个包同时压机器）时会偶发超时
+// —— 那是测试的时序假设太紧，不是产品行为变化。
 func waitUntil(t *testing.T, desc string, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return

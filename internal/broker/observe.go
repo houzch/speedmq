@@ -316,9 +316,9 @@ func (b *Broker) StorageFsync() string { return b.stores.Options().Fsync.String(
 
 // VHostNames 返回全部 vhost 名（已排序）。
 func (b *Broker) VHostNames() []string {
-	out := make([]string, 0, len(b.vhosts))
-	for name := range b.vhosts {
-		out = append(out, name)
+	out := make([]string, 0, len(b.vhostList()))
+	for _, v := range b.vhostList() {
+		out = append(out, v.name)
 	}
 	sort.Strings(out)
 	return out
@@ -326,7 +326,7 @@ func (b *Broker) VHostNames() []string {
 
 // VHostExists 判断 vhost 是否存在。
 func (b *Broker) VHostExists(name string) bool {
-	_, ok := b.vhosts[name]
+	_, ok := b.vhostOf(name)
 	return ok
 }
 
@@ -335,7 +335,7 @@ func (b *Broker) VHostSnapshots() []VHostSnapshot {
 	names := b.VHostNames()
 	out := make([]VHostSnapshot, 0, len(names))
 	for _, name := range names {
-		if v, ok := b.vhosts[name]; ok {
+		if v, ok := b.vhostOf(name); ok {
 			out = append(out, v.snapshot())
 		}
 	}
@@ -344,7 +344,7 @@ func (b *Broker) VHostSnapshots() []VHostSnapshot {
 
 // VHostSnapshot 返回单个 vhost 的快照。
 func (b *Broker) VHostSnapshot(name string) (VHostSnapshot, bool) {
-	v, ok := b.vhosts[name]
+	v, ok := b.vhostOf(name)
 	if !ok {
 		return VHostSnapshot{}, false
 	}
@@ -354,7 +354,7 @@ func (b *Broker) VHostSnapshot(name string) (VHostSnapshot, bool) {
 // QueueSnapshots 返回队列快照；vhost 为空表示全部 vhost。
 func (b *Broker) QueueSnapshots(vhost string) []QueueSnapshot {
 	if vhost != "" {
-		v, ok := b.vhosts[vhost]
+		v, ok := b.vhostOf(vhost)
 		if !ok {
 			return nil
 		}
@@ -362,14 +362,16 @@ func (b *Broker) QueueSnapshots(vhost string) []QueueSnapshot {
 	}
 	var out []QueueSnapshot
 	for _, name := range b.VHostNames() {
-		out = append(out, b.vhosts[name].queueSnapshots()...)
+		if v, ok := b.vhostOf(name); ok {
+			out = append(out, v.queueSnapshots()...)
+		}
 	}
 	return out
 }
 
 // QueueSnapshot 返回单个队列的快照。
 func (b *Broker) QueueSnapshot(vhost, name string) (QueueSnapshot, bool) {
-	v, ok := b.vhosts[vhost]
+	v, ok := b.vhostOf(vhost)
 	if !ok {
 		return QueueSnapshot{}, false
 	}
@@ -384,7 +386,7 @@ func (b *Broker) QueueSnapshot(vhost, name string) (QueueSnapshot, bool) {
 // ExchangeSnapshots 返回交换机快照；vhost 为空表示全部 vhost。
 func (b *Broker) ExchangeSnapshots(vhost string) []ExchangeSnapshot {
 	if vhost != "" {
-		v, ok := b.vhosts[vhost]
+		v, ok := b.vhostOf(vhost)
 		if !ok {
 			return nil
 		}
@@ -392,7 +394,9 @@ func (b *Broker) ExchangeSnapshots(vhost string) []ExchangeSnapshot {
 	}
 	var out []ExchangeSnapshot
 	for _, name := range b.VHostNames() {
-		out = append(out, b.vhosts[name].exchangeSnapshots()...)
+		if v, ok := b.vhostOf(name); ok {
+			out = append(out, v.exchangeSnapshots()...)
+		}
 	}
 	return out
 }
@@ -402,7 +406,7 @@ func (b *Broker) ExchangeSnapshots(vhost string) []ExchangeSnapshot {
 // 默认交换机在管理 API 里用 "amq.default" 指代（RabbitMQ 的约定），
 // 因此这里接受两种写法："" 与 "amq.default"。
 func (b *Broker) ExchangeSnapshot(vhost, name string) (ExchangeSnapshot, bool) {
-	v, ok := b.vhosts[vhost]
+	v, ok := b.vhostOf(vhost)
 	if !ok {
 		return ExchangeSnapshot{}, false
 	}
@@ -416,7 +420,7 @@ func (b *Broker) ExchangeSnapshot(vhost, name string) (ExchangeSnapshot, bool) {
 // BindingSnapshots 返回绑定快照；vhost 为空表示全部 vhost。
 func (b *Broker) BindingSnapshots(vhost string) []BindingSnapshot {
 	if vhost != "" {
-		v, ok := b.vhosts[vhost]
+		v, ok := b.vhostOf(vhost)
 		if !ok {
 			return nil
 		}
@@ -424,7 +428,9 @@ func (b *Broker) BindingSnapshots(vhost string) []BindingSnapshot {
 	}
 	var out []BindingSnapshot
 	for _, name := range b.VHostNames() {
-		out = append(out, b.vhosts[name].bindingSnapshots()...)
+		if v, ok := b.vhostOf(name); ok {
+			out = append(out, v.bindingSnapshots()...)
+		}
 	}
 	return out
 }
@@ -455,7 +461,7 @@ func (b *Broker) ExchangeSourceBindings(vhost, exchange string) []BindingSnapsho
 // ConsumerSnapshots 返回消费者快照；vhost 为空表示全部 vhost。
 func (b *Broker) ConsumerSnapshots(vhost string) []ConsumerSnapshot {
 	if vhost != "" {
-		v, ok := b.vhosts[vhost]
+		v, ok := b.vhostOf(vhost)
 		if !ok {
 			return nil
 		}
@@ -463,7 +469,9 @@ func (b *Broker) ConsumerSnapshots(vhost string) []ConsumerSnapshot {
 	}
 	var out []ConsumerSnapshot
 	for _, name := range b.VHostNames() {
-		out = append(out, b.vhosts[name].consumerSnapshots()...)
+		if v, ok := b.vhostOf(name); ok {
+			out = append(out, v.consumerSnapshots()...)
+		}
 	}
 	return out
 }
@@ -538,7 +546,7 @@ func splitAddr(addr net.Addr) (string, int) {
 // 内核语义与权限检查**，而不是另开一条特权旁路 —— 否则"管理面能做的操作"会与
 // AMQP 客户端能做的逐渐分叉，最终演变成两套语义。
 func (b *Broker) SessionFor(user, vhost string) (plugin.Session, error) {
-	vh, ok := b.vhosts[vhost]
+	vh, ok := b.vhostOf(vhost)
 	if !ok {
 		return nil, plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - vhost '%s' not found", vhost)

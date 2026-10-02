@@ -7,7 +7,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// m8Cases 返回 M8 的用例：AMQP 事务（tx.select / tx.commit / tx.rollback）。
+// m8Cases 返回 M8 的用例：AMQP 事务（tx.select / tx.commit / tx.rollback）与 frame-max 协商。
 //
 // 事务的核心语义不在报文里而在时序上，所以这三条用例断言的都是"客户端观察到什么"：
 // 提交前不可见、回滚即丢弃、与发布确认互斥。
@@ -16,7 +16,69 @@ func m8Cases() []testCase {
 		{"M8 事务：commit 前的发布对外不可见，commit 后可消费", testTxCommitVisibility},
 		{"M8 事务：rollback 丢弃已缓冲的发布", testTxRollbackDiscards},
 		{"M8 事务：与发布确认互斥（406，只关 channel）", testTxConfirmMutuallyExclusive},
+		{"M8-5 frame-max 协商：低于下限被拒（8192），下限值可用且大消息可分片", testFrameMaxNegotiation},
 	}
+}
+
+// testFrameMaxNegotiation 覆盖 frame-max 的协商下限与大消息分片。
+//
+// 下限来自 RabbitMQ 4.x：协商值 < 8192 时服务端在 Tune 之后就关闭连接
+// （实测日志："negotiated frame_max = 4096 is lower than the minimum allowed value (8192)"）。
+// 这条差异是双跑对照（M8-5）抓到的，之前本实现会默默接受 4096。
+func testFrameMaxNegotiation() error {
+	_, tlsConf, err := dialConfig()
+	if err != nil {
+		return err
+	}
+	// 低于下限：必须连不上
+	if conn, err := amqp.DialConfig(probeURL(), amqp.Config{FrameSize: 4096, TLSClientConfig: tlsConf}); err == nil {
+		_ = conn.Close()
+		return fmt.Errorf("frame_max=4096 低于协商下限（8192），连接竟然成功了")
+	}
+
+	// 下限值本身必须可用，且 300 KiB 的消息（远超 frame_max）要能完整往返 —— 即分片正确。
+	conn, err := amqp.DialConfig(probeURL(), amqp.Config{FrameSize: 8192, TLSClientConfig: tlsConf})
+	if err != nil {
+		return fmt.Errorf("frame_max=8192 应当被接受: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("打开 channel 失败: %w", err)
+	}
+	defer func() { _ = ch.Close() }()
+
+	q, err := declareTempQueue(ch)
+	if err != nil {
+		return err
+	}
+	small := []byte("frame-min")
+	big := make([]byte, 300*1024)
+	for i := range big {
+		big[i] = byte(i)
+	}
+	for _, body := range [][]byte{small, big} {
+		if err := ch.Publish("", q, false, false, amqp.Publishing{Body: body}); err != nil {
+			return fmt.Errorf("发布 %d 字节失败: %w", len(body), err)
+		}
+		d, ok, err := ch.Get(q, true)
+		if err != nil {
+			return fmt.Errorf("取回 %d 字节的消息失败: %w", len(body), err)
+		}
+		if !ok {
+			return fmt.Errorf("未取回 %d 字节的消息", len(body))
+		}
+		if len(d.Body) != len(body) {
+			return fmt.Errorf("消息长度不符: 收到 %d，发出 %d", len(d.Body), len(body))
+		}
+		for i := range body {
+			if d.Body[i] != body[i] {
+				return fmt.Errorf("%d 字节的消息在第 %d 个字节起内容不一致", len(body), i)
+			}
+		}
+	}
+	return nil
 }
 
 func testTxCommitVisibility() error {

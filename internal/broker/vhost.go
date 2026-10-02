@@ -86,6 +86,33 @@ func newVHost(b *Broker, name string, log *slog.Logger, stores *store.Manager, d
 	return v
 }
 
+// teardown 关闭 vhost 的全部队列（含仲裁队列的 Raft 组）并清空它的拓扑表。
+//
+// 只在 vhost 被删除时调用（见 applyVHostDelete）：它把 vhost 内部的资源一次性释放干净，
+// 包括那些不属于集群元数据、因而不会被逐条删除的会话本地对象（transient / exclusive 队列）。
+func (v *vhost) teardown() {
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	for _, q := range queues {
+		if q.quorum != nil {
+			q.quorum.stop()
+		}
+		v.removeQueue(q)
+	}
+
+	v.mu.Lock()
+	v.exchanges = map[string]*exchange{}
+	v.queues = map[string]*queue{}
+	v.consumers = map[string]*queue{}
+	v.sweepSet = map[string]*queue{}
+	v.mu.Unlock()
+}
+
 func (v *vhost) getExchange(name string) (*exchange, bool) {
 	v.mu.RLock()
 	defer v.mu.RUnlock()
@@ -181,6 +208,23 @@ func newVHostSession(vh *vhost, id, user string, perm *permissionSet, log *slog.
 	}
 }
 
+// newQueueWithPolicy 创建队列并把命中的策略一并落上（返回生效参数供调用方登记扫描集）。
+//
+// 策略与队列自身参数叠加的计算放在 broker 侧（policy.go）：队列一条路径、
+// 元数据恢复另一条路径，两处共用同一段计算才不会出现"重启后策略丢了"。
+func (s *vhostSession) newQueueWithPolicy(name string, req plugin.QueueDeclare) (*queue, queueArgs, error) {
+	args, polName, polDef, err := s.vh.broker.queuePolicyArgs(s.vh.name, name, req.Arguments)
+	if err != nil {
+		return nil, queueArgs{}, err
+	}
+	q, err := s.newQueueIn(name, req, args)
+	if err != nil {
+		return nil, queueArgs{}, err
+	}
+	q.applyPolicy(args, polName, polDef)
+	return q, args, nil
+}
+
 // newQueueIn 创建队列：接线死信派发，并为 durable 队列打开持久化存储。
 //
 // 死信走"异步入队 + 内核后台派发"，而不是在队列持锁时同步路由 ——
@@ -263,11 +307,14 @@ func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
 			"ACCESS_REFUSED - operation not permitted on the default exchange")
 	}
 	if exists, ok := s.vh.getExchange(req.Name); ok {
+		if req.Passive {
+			// 被动声明只校验"存在"：RabbitMQ 不比较 type / durable / auto_delete / arguments
+			// （实测：用 directive→fanout、durable 相反 的参数被动声明同一名字仍然成功）。
+			// 这与队列侧是同一套语义，对齐口径见 existingQueue 的说明。
+			return nil
+		}
 		if err := checkExchangeEquivalence(exists, req); err != nil {
 			return err
-		}
-		if req.Passive {
-			return nil
 		}
 		return nil
 	}
@@ -305,6 +352,10 @@ func (s *vhostSession) DeclareExchange(req plugin.ExchangeDeclare) error {
 	}
 
 	ex := newExchange(req.Name, typ, req.Durable, req.AutoDelete, req.Internal, req.Arguments)
+	// 命中的策略在这里就生效（例如 alternate-exchange），不必等下一次策略变更。
+	if alt, pol, def := s.vh.broker.exchangePolicyArgs(s.vh.name, req.Name); pol != "" {
+		ex.applyPolicy(alt, pol, def)
+	}
 	s.vh.mu.Lock()
 	// 并发声明的竞争：谁先写入谁生效
 	if _, dup := s.vh.exchanges[req.Name]; dup {
@@ -481,13 +532,13 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		if managedQueue(req) {
 			return s.declareManagedQueue(name, req, args)
 		}
-		q, err := s.newQueueIn(name, req, args)
+		q, effArgs, err := s.newQueueWithPolicy(name, req)
 		if err != nil {
 			return plugin.QueueInfo{}, err
 		}
-		s.addQueue(q, args)
+		s.addQueue(q, effArgs)
 		s.log.Debug("队列已声明（服务端命名）", "queue", name,
-			"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
+			"ttl", effArgs.messageTTL, "dlx", effArgs.deadLetterEx, "max_length", effArgs.maxLength)
 		ready, consumers := q.stats()
 		return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
 	}
@@ -515,11 +566,11 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		return s.declareManagedQueue(req.Name, req, args)
 	}
 
-	q, err := s.newQueueIn(req.Name, req, args)
+	q, effArgs, err := s.newQueueWithPolicy(req.Name, req)
 	if err != nil {
 		return plugin.QueueInfo{}, err
 	}
-	if !s.addQueue(q, args) {
+	if !s.addQueue(q, effArgs) {
 		// 并发声明竞争：另一个会话已抢先创建。
 		// 这里只能关掉自己刚打开的存储，绝不能删磁盘数据 —— 那份数据属于已存在的队列。
 		q.discardStore()
@@ -530,7 +581,7 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 		return plugin.QueueInfo{Name: req.Name}, nil
 	}
 	s.log.Debug("队列已声明", "queue", req.Name,
-		"ttl", args.messageTTL, "dlx", args.deadLetterEx, "max_length", args.maxLength)
+		"ttl", effArgs.messageTTL, "dlx", effArgs.deadLetterEx, "max_length", effArgs.maxLength)
 	// 恢复出来的持久消息也要体现在声明响应里：客户端常据此判断"队列里是否还有存量"
 	ready, consumers := q.stats()
 	return plugin.QueueInfo{Name: req.Name, MessageCount: ready, ConsumerCount: consumers}, nil
@@ -538,6 +589,14 @@ func (s *vhostSession) DeclareQueue(req plugin.QueueDeclare) (plugin.QueueInfo, 
 
 // existingQueue 处理"队列已存在"的声明：等价性校验、独占校验，并返回 Owner 侧的统计。
 func (s *vhostSession) existingQueue(q *queue, req plugin.QueueDeclare) (plugin.QueueInfo, error) {
+	if req.Passive {
+		// 被动声明**只**校验"存在 + 是否被别的连接独占"，不比较任何声明参数。
+		// 实测（M8-5 对照）：RabbitMQ 对 passive 声明会忽略 durable / auto_delete / arguments，
+		// 连 exclusive 标志本身都不比较（同一个连接用 exclusive=false 被动声明自己的独占队列也成功）——
+		// 客户端"先探一下队列在不在"往往只写队列名，比较参数会把这类调用全部挡在门外。
+		// 但独占**归属**仍要拦：别的连接访问独占队列是 405（对齐 RabbitMQ）。
+		return s.passiveQueueInfo(q)
+	}
 	// exclusive 标志不一致一律 405（**两个方向都是**）：RabbitMQ 把它归为"无法获得独占访问"。
 	// 实测（M8-5b 探测）：exclusive→非 exclusive 是 405、非 exclusive→exclusive 也是 405。
 	// 注意 exclusive **不参与**等价性比较（见 checkQueueEquivalence），否则这里会先被判成 406。
@@ -549,10 +608,15 @@ func (s *vhostSession) existingQueue(q *queue, req plugin.QueueDeclare) (plugin.
 	if err := checkQueueEquivalence(q, req); err != nil {
 		return plugin.QueueInfo{}, err
 	}
+	return s.passiveQueueInfo(q)
+}
+
+// passiveQueueInfo 返回被动声明/已存在声明的应答：独占归属检查 + 统计。
+func (s *vhostSession) passiveQueueInfo(q *queue) (plugin.QueueInfo, error) {
 	if q.exclusive && q.owner != s.id {
 		return plugin.QueueInfo{}, plugin.Errorf(plugin.KindResourceLocked,
 			"RESOURCE_LOCKED - cannot obtain exclusive access to locked queue '%s' in vhost '%s'",
-			req.Name, s.vh.name)
+			q.name, s.vh.name)
 	}
 	return s.queueInfo(q), nil
 }
@@ -564,14 +628,18 @@ func (s *vhostSession) existingQueue(q *queue, req plugin.QueueDeclare) (plugin.
 // 因此这里在提交成功后要等一下本地应用 —— follower 的应用滞后于 leader 的提交。
 func (s *vhostSession) declareManagedQueue(name string, req plugin.QueueDeclare, args queueArgs) (plugin.QueueInfo, error) {
 	owner := s.vh.broker.queueOwner()
+	var replicas []string
 	if args.queueType == queueTypeQuorum {
 		// 仲裁队列没有"声明者即 Owner"这回事：服务节点是它 Raft 组**当前**的 leader。
 		owner = ""
+		// 副本集在此刻一次性定死并写进元数据（对齐 RabbitMQ 的 x-quorum-initial-group-size）：
+		// 之后只能用 grow 扩大，重启或新节点加入时按这份记录建组。
+		replicas = s.vh.broker.quorumReplicaSet(args.quorumGroupSize)
 	}
 	rec := meta.Queue{
 		VHost: s.vh.name, Name: name, Durable: req.Durable, AutoDelete: req.AutoDelete,
 		Exclusive: req.Exclusive, Arguments: req.Arguments,
-		Owner: owner, CreatedAt: time.Now().UTC(),
+		Owner: owner, CreatedAt: time.Now().UTC(), Replicas: replicas,
 	}
 	if err := s.vh.broker.submitMeta(meta.OpPutQueue, rec); err != nil {
 		return plugin.QueueInfo{}, err
@@ -803,7 +871,7 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		return res, nil
 	}
 
-	targets := s.vh.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{})
+	targets := s.vh.routeTargets(ex, routingKey, msg.Properties)
 	s.log.Debug("发布消息", "exchange", exchangeName, "routing_key", routingKey, "targets", len(targets))
 
 	var waits []func() error
@@ -875,6 +943,31 @@ func cloneForQueue(msg *plugin.Message) *plugin.Message {
 	clone := *msg
 	clone.Redelivered = false
 	return &clone
+}
+
+// routeTargets 解析一次发布的落点：**未命中任何队列**时按 alternate-exchange 兜底。
+//
+// 只走一跳：不递归使用"备用交换机的备用交换机的……"。RabbitMQ 同样如此，
+// 否则一条配错的链路就能把消息绕成环。备用交换机不存在时等同于"未路由"
+// （与 RabbitMQ 一致：不报错，消息按未路由处理，mandatory 下会 basic.return）。
+func (v *vhost) routeTargets(ex *exchange, routingKey string, props plugin.Properties) []string {
+	targets := v.resolveQueues(ex, routingKey, props, map[string]struct{}{})
+	if len(targets) > 0 {
+		return targets
+	}
+	alt := ex.alternateExchangeName()
+	if alt == "" {
+		return nil
+	}
+	ae, ok := v.getExchange(alt)
+	if !ok {
+		v.log.Debug("alternate-exchange 不存在，按未路由处理",
+			"exchange", ex.name, "alternate", alt)
+		return nil
+	}
+	v.log.Debug("消息未路由，改投 alternate-exchange",
+		"exchange", ex.name, "alternate", alt, "routing_key", routingKey)
+	return v.resolveQueues(ae, routingKey, props, map[string]struct{}{})
 }
 
 // resolveQueues 展开交换机路由，递归处理交换机到交换机的绑定。
@@ -981,6 +1074,13 @@ func (v *vhost) queueSnapshot(q *queue) QueueSnapshot {
 		// 展示路径不等待（见 queueOwnerBestEffort）。
 		s.Owner = v.queueOwnerBestEffort(q)
 		s.Remote = v.queueRemote(q)
+		m := q.quorum.membership()
+		s.Quorum = &QuorumQueueInfo{
+			VHost: v.name, Name: q.name, Leader: s.Owner,
+			Replicas: v.broker.quorumReplicasOf(v.name, q.name, q),
+			Voters:   append([]string{}, m.Voters...),
+			Learners: append([]string{}, m.Learners...),
+		}
 		if s.Remote {
 			v.fillRemoteStats(&s, q)
 		}
@@ -1178,7 +1278,7 @@ func (v *vhost) routeInternal(msg *plugin.Message, exchangeName, routingKey stri
 	if !ok {
 		return false, false
 	}
-	for _, name := range v.resolveQueues(ex, routingKey, msg.Properties, map[string]struct{}{}) {
+	for _, name := range v.routeTargets(ex, routingKey, msg.Properties) {
 		q, ok := v.getQueue(name)
 		if !ok {
 			continue

@@ -19,6 +19,8 @@ const (
 	argMaxPriority    = "x-max-priority"
 	argQueueExpires   = "x-expires"
 	argQueueType      = "x-queue-type"
+	// argQuorumInitialGroupSize 是声明仲裁队列时的初始副本数（对齐 RabbitMQ）。
+	argQuorumInitialGroupSize = "x-quorum-initial-group-size"
 )
 
 // 溢出策略。
@@ -46,6 +48,9 @@ type queueArgs struct {
 	maxPriority uint8
 	// queueType 是 x-queue-type：classic（默认）或 quorum。
 	queueType string
+	// quorumGroupSize 是 x-quorum-initial-group-size：仲裁队列声明时的初始副本数。
+	// 0 表示"跟随集群规模"（单机为 1，集群为当前全部成员）。
+	quorumGroupSize int
 }
 
 // 队列类型取值。
@@ -140,6 +145,14 @@ func parseQueueArgs(args map[string]any) (queueArgs, error) {
 	if a.queueType == queueTypeQuorum {
 		if err := validateQuorumArgs(args, a); err != nil {
 			return a, err
+		}
+		if v, ok, err := intArg(args, argQuorumInitialGroupSize); err != nil {
+			return a, err
+		} else if ok {
+			if v <= 0 {
+				return a, precondition("%s 必须大于 0", argQuorumInitialGroupSize)
+			}
+			a.quorumGroupSize = int(v)
 		}
 	}
 

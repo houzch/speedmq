@@ -31,6 +31,11 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ExchangeDetailView.vue'),
   },
   {
+    path: '/cluster',
+    name: 'cluster',
+    component: () => import('@/views/ClusterView.vue'),
+  },
+  {
     path: '/connections',
     name: 'connections',
     component: () => import('@/views/ConnectionsView.vue'),

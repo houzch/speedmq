@@ -107,6 +107,10 @@ type Subscription struct {
 	Exclusive bool
 	// Prefetch 是该消费者的 in-flight 上限；0 表示不限制。
 	Prefetch uint16
+	// Priority 是该消费者的优先级（AMQP 0-9-1 的 x-priority，默认 0，数值越大越优先）。
+	// 只在多个消费者**同时还有投递额度**时决定谁先拿消息：优先级高的先拿，
+	// 同优先级之间仍轮询；高优先级消费者没有额度时低优先级消费者照常收消息，不会被饿死。
+	Priority int
 	// Deliver 由内核调用以投递一条消息。返回错误表示投递失败（连接已断），
 	// 内核会据此把消息重新入队。
 	Deliver func(*Delivery) error

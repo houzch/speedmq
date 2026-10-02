@@ -348,7 +348,7 @@ func (b *Broker) waitForQueueCatchUp(vhost, name string) bool {
 	}
 	deadline := time.Now().Add(fwdCatchUpTimeout)
 	for time.Now().Before(deadline) {
-		if v, ok := b.vhosts[vhost]; ok {
+		if v, ok := b.vhostOf(vhost); ok {
 			if _, ok := v.getQueue(name); ok {
 				return true
 			}
@@ -506,7 +506,7 @@ func (b *Broker) handleForwardPublish(_ context.Context, _ string, payload []byt
 		// 编解码失败是协议级错误：报给调用方，让它按"发布失败"处理，绝不能静默丢消息。
 		return nil, err
 	}
-	v, ok := b.vhosts[req.VHost]
+	v, ok := b.vhostOf(req.VHost)
 	if !ok {
 		return fwdJSON(fwdPublishResp{fwdEnvelope: fwdOK})
 	}
@@ -539,7 +539,7 @@ func (b *Broker) handleForwardGet(_ context.Context, from string, payload []byte
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析主动拉取转发请求失败: %w", err)
 	}
-	v, ok := b.vhosts[req.VHost]
+	v, ok := b.vhostOf(req.VHost)
 	if !ok {
 		return fwdJSON(fwdGetResp{fwdEnvelope: fwdOK, Empty: true})
 	}
@@ -575,7 +575,7 @@ func (b *Broker) handleForwardConsume(_ context.Context, from string, payload []
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析消费者注册转发请求失败: %w", err)
 	}
-	v, ok := b.vhosts[req.VHost]
+	v, ok := b.vhostOf(req.VHost)
 	if !ok {
 		return fwdErr(plugin.KindNotFound, "NOT_FOUND - vhost '%s' 不存在", req.VHost)
 	}
@@ -651,7 +651,7 @@ func (b *Broker) handleForwardStats(_ context.Context, _ string, payload []byte)
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析统计请求失败: %w", err)
 	}
-	v, ok := b.vhosts[req.VHost]
+	v, ok := b.vhostOf(req.VHost)
 	if !ok {
 		return fwdErr(plugin.KindNotFound, "NOT_FOUND - vhost '%s' 不存在", req.VHost)
 	}
@@ -671,7 +671,7 @@ func (b *Broker) handleForwardPurge(_ context.Context, _ string, payload []byte)
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析清空请求失败: %w", err)
 	}
-	v, ok := b.vhosts[req.VHost]
+	v, ok := b.vhostOf(req.VHost)
 	if !ok {
 		return fwdErr(plugin.KindNotFound, "NOT_FOUND - vhost '%s' 不存在", req.VHost)
 	}
@@ -692,7 +692,7 @@ func (b *Broker) handleForwardExists(_ context.Context, _ string, payload []byte
 		return nil, fmt.Errorf("解析存在性查询失败: %w", err)
 	}
 	exists := false
-	if v, ok := b.vhosts[req.VHost]; ok {
+	if v, ok := b.vhostOf(req.VHost); ok {
 		_, exists = v.getQueue(req.Queue)
 	}
 	return fwdJSON(fwdExistsResp{fwdEnvelope: fwdOK, Exists: exists})
@@ -889,7 +889,7 @@ func (b *Broker) dropRemoteProxy(p *remoteProxy, reason string) {
 
 // dropRemoteProxyLocal 执行摘除动作：清持有、取消队列上的消费者、通知代理节点。
 func (b *Broker) dropRemoteProxyLocal(p *remoteProxy, reason string) {
-	v, ok := b.vhosts[p.vhost]
+	v, ok := b.vhostOf(p.vhost)
 	if !ok {
 		return
 	}

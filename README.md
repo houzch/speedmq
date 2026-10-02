@@ -27,9 +27,9 @@
 - **崩溃恢复（M4）**：重启后重新声明 durable 队列即恢复磁盘上的消息；未确认的消息回到队头并置 `redelivered=true`
 - **资源水位流控（M4）**：内存水位（进程占用 vs 物理内存比例）与磁盘剩余空间下限触发时**阻塞生产者**（读循环停读 → TCP 背压），并向连接下发 `Connection.Blocked` / `Unblocked`
 - **管理 HTTP API（M5）**：RabbitMQ Management API 兼容子集（`/api/overview`、`queues`、`exchanges`、`bindings`、`connections`、`channels`、`consumers`、`users`、`permissions`、`vhosts`、`plugins`、`whoami`），Basic Auth + 标签与 vhost 权限双重校验
-- **管理 UI（M5）**：Vue 3 + Vite + TypeScript + Element Plus，四个页面（Overview / Queues / Exchanges / Connections）+ 队列详情，产物经 `go:embed` 打进二进制，**单个二进制即可访问**，无额外静态服务
+- **管理 UI（M5，M8-15 扩展）**：Vue 3 + Vite + TypeScript + Element Plus，五个页面（Overview / Queues / Exchanges / Connections / **集群**）+ 队列详情，产物经 `go:embed` 打进二进制，**单个二进制即可访问**，无额外静态服务。集群页展示元数据层状态（模式/角色/任期/leader/共识进度/元数据规模）、成员划分与节点资源，并可在界面上**增删集群成员**（单机模式下按钮禁用并说明原因，不会点了才报错）
 - **可观测性（M5）**：Prometheus 文本格式 `/metrics`（队列深度、未确认、投递/确认计数、磁盘/内存水位、插件状态）；`-log-format json` 结构化日志
-- **运维 CLI（M5）**：`swiftmqctl`（`status` / `list_queues` / `list_connections` / `list_exchanges` / `list_bindings` / `add_user` / `set_permissions` / `close_connection` / `plugins list|show|enable|disable`），集群相关另有 `cluster_status` / `list_members` / `add_member` / `remove_member`（M6d）
+- **运维 CLI（M5）**：`swiftmqctl`（`status` / `list_queues` / `list_connections` / `list_exchanges` / `list_bindings` / `list_vhosts` / `add_vhost` / `delete_vhost` / `add_user` / `set_permissions` / `close_connection` / `plugins list|show|enable|disable`），集群相关另有 `cluster_status` / `list_members` / `add_member` / `remove_member`（M6d）与 `grow_queue` / `rebalance_queue`（M8-15）
 - **插件治理（M5）**：`swiftmqctl plugins` 与管理 API 均可**不重启内核**热启用/停用插件（落到实处是关闭/恢复它的 listener），配置可声明 `enabled` / `required` / `builtin`
 - **动态用户与权限（M5）**：通过管理 API / CLI 增删用户与权限
 - **集群与高可用（M6，地基）**：`cluster` 配置段定义节点身份与**静态成员表**；自研 Raft（零依赖）负责元数据一致性；**durable 拓扑**（durable 交换机 / durable 非 exclusive 队列 / 绑定）经 Raft 复制到全体节点，在 follower 上写入会自动**转发给 leader**；元数据在**单机模式下也落盘**（`<data_dir>/meta/state.json`），因此交换机与绑定重启后不再丢失
@@ -52,18 +52,40 @@
 - **AMQP 事务（M8-2）**：`tx.select / tx.commit / tx.rollback` 完整可用；事务在**协议层缓冲**实现（内核零改动），提交前对外不可见、回滚即丢弃，且与发布确认互斥（406）
 - **TLS（M8-3）**：协议监听与管理面都可走 TLS，配置项 `cert_file` / `key_file` / `ca_file` / `client_auth` / `min_version`（`client_auth: require_and_verify` 即双向认证）；证书在**启动时**读取校验 —— 配错了内核直接拒绝启动，而不是等客户端连上来才暴露
 - **用户 / 权限的集群复制与持久化（M8-4）**：账号与权限的增删改走元数据层（集群下经 Raft 复制到全体节点，单机下落 `meta/state.json`），**重启后保留**；配置文件里的 `users` 只在**首次引导**时作为初始账号写进元数据，此后以元数据为准（改密码请用管理 API / CLI，不要再改配置文件）
+- **策略 policies（M8-6）**：`/api/policies` 的完整 CRUD（`GET /api/policies`、`GET|PUT|DELETE /api/policies/{vhost}/{name}`，字段名与 RabbitMQ 一致：`pattern` / `apply-to` / `definition` / `priority`）。按**名称正则**匹配把一批配置施加到队列与交换机上并**秒级内生效**（已存在的对象会立刻跟着变，不用等重建）：队列侧支持 `max-length` / `max-length-bytes` / `message-ttl` / `expires` / `dead-letter-exchange` / `dead-letter-routing-key` / `overflow`，交换机侧支持 `alternate-exchange`（未路由消息的兜底交换机）。多个策略命中同一对象时**优先级高者生效**；队列自己声明的同名参数**覆盖**策略。策略同样存在元数据层，集群复制、重启保留；命中的策略会体现在队列/交换机对象的 `policy` 与 `effective_policy_definition` 字段上
+- **vhost 的动态增删（M8-7）**：`PUT|DELETE /api/vhosts/{vhost}`（新建 201、重复 PUT 204、删除 204、不存在 404，仅 `administrator` 标签可用）与 `swiftmqctl add_vhost / delete_vhost / list_vhosts`。删除是**显式级联**：该 vhost 内的队列 / 交换机 / 绑定 / 权限 / 策略逐条从元数据删除，磁盘上的消息存储目录（`msg_stores/vhosts/<vhost>/`）一并回收，打开着它的连接会被服务端主动断开。**默认 vhost 不可删除**（400）—— 它是内核保证存在的连接落点。vhost 集合由此改为「配置首引导 + 元数据为准」（与账号同一约定）：配置文件里的 `vhosts` 只在首次启动时播种，之后增删请走管理 API / CLI
+
+- **性能基线（M8-10，Linux 容器）**：按第 8 章目标在**容器化 Linux**（WSL2 内核）上实测。1 KiB 消息：**非持久 + confirm 164k msg/s**（限 4C/8G 时 175k）、**持久 + confirm 50.9k**（4C8G 55.2k）、非持久不开 confirm 308k；**P99 发布确认延迟 147–185 µs**（目标 < 5 ms，余量约 30×）。连接规模：双客户端容器合计**建立 100,000 条**连接（broker 侧峰值 86,356）。瓶颈结论有测量支撑：**不是 CPU**（4C 限额下吞吐反而更高）；写路径成本来自**持久化**；连接规模卡在**负载发生器的临时端口**而非 broker。**顺带修掉一个真实缺陷**：内存水位闸门原先按 `MemStats.Sys`（只升不降）判定，一旦触发**永不解除**、生产者被永久阻塞 —— 已改为按在用内存判定并加回归测试。**局限**：容器化 Linux / 单宿主 / 内部网桥（非真实网络）、未测集群与 TLS、无 pprof。详见 `swiftmq-test/bench/REPORT.md`
+- **外部进程插件可调用内核语义（M8-12）**：外部进程（B 形态）插件不再只能拿原始字节流 —— 它可以经一次**反向调用**（插件 → 内核，与内核 → 插件的正向调用共用同一条连接、各自编号）触达内核语义：开关会话（`session.open` / `session.close`，走与协议插件**相同**的 vhost 与权限校验）、交换机/队列的声明与删除、交换机/队列绑定、发布（持久化等待在应答前完成，与 `confirm` 语义一致）、主动拉取、消费（内核把投递经 `session.deliver` 回推，插件用 `session.settle` 结算 `ack` / `requeue` / `reject`）、清空队列。`pkg/sidecar` 只新增方法名常量与自包含 JSON DTO（**仍零依赖**），类型化的友好封装由插件自己写（`test/integration/echosidecar` 里有一份薄封装与 `-session-demo` 演示）
+- **长稳与混沌（M8-9，缩比口径）**：配套工程新增 `swiftmq-test/soak/`（一键编排 + 报告）。**单节点长稳**：持续「发布(confirm) + 消费(手动 ack)」5 分钟共 **87,533** 条，`missing=0`；每 5s 采样 RSS / 进程句柄数 / 数据目录磁盘，**句柄 60 个采样点恒为 11（零增长）**、RSS 无单调趋势、磁盘涨到 ~8 MiB 段上限即**整段回收**（5 分钟内 3 次）—— 三项均判定**不泄漏**。**三节点集群混沌**：Raft 集群 + 仲裁队列，5 轮随机 `docker kill`（其中 3 轮杀中的正是 leader），5/5 轮客户端自动重连、业务继续推进、多数派 1.2–5.4s 恢复、被重启节点 3.0–9.3s 归队，**已确认消息一条不丢**（`missing=0`；重复投递 ~20% 属"至少一次"语义）。**这是缩比验证**（5 分钟 vs 7×24、单机 Docker Desktop），**未覆盖**网络分区、磁盘写满、慢消费者、10 万连接，详见 `swiftmq-test/soak/REPORT.md` 的「未覆盖」一节
+- **跨语言客户端矩阵：Java（M8-8）**：官方客户端 `com.rabbitmq:amqp-client` 5.37.0 的 12 个用例（`swiftmq-test/java/`），与 Python 一样纳入 `compare.py` 的**双跑对照**（同一份用例分别打 RabbitMQ 与 SwiftMQ，逐条比对客户端观察到的行为）。它**当场抓到并修掉一个真实缺陷**：SwiftMQ 把"放行暂存投递"写在了"回 `basic.consume-ok`"之前，两个协程抢着写帧，于是投递可能先于 `consume-ok` 到达 —— amqp-client 在 consumer-tag 为空时由**服务端**生成 tag（只能从 `consume-ok` 得知），必然踩中并报 `unsolicited delivery` 断开连接；而 pika / amqp091-go 自己生成 tag，侥幸避开了这个竞态。修复见 `internal/protocol/amqp091/channel_methods.go` 的 `handleConsume`
+- **Direct Reply-To 与消费者优先级（M8-14）**：两项 RPC 场景常用能力，语义全部由**双跑对照实测**钉死（不照抄文档）。
+  ① `amq.rabbitmq.reply-to` 伪队列 —— 属于 AMQP 0-9-1 专有约定，因此实现在协议层（`internal/protocol/amqp091/direct_reply.go`），内核只看到"一条每 channel 独占的普通队列"；`server-properties.capabilities` 已声明 `direct_reply_to: true`。实测规则：伪队列是**每 channel**的（同一连接的两个 channel 各有一份，跨 channel 发布请求会 406）；必须 `no-ack=true` 消费（`no-ack=false` → 406 `reply consumer cannot acknowledge`，同 channel 重复消费 → 406 `reply consumer already set`）；应答能回来的真正机制是**属性改写** —— 服务端发布把请求里的 `reply_to` 换成该 channel 的应答队列名，应答方（可以是**另一条连接**，甚至另一个用户）按这个值发布到默认交换机即可回到发起方；某个 channel 没有伪队列消费者却发布带该 `reply_to` 的消息 → 406 `fast reply consumer does not exist`（软错误，只关 channel）；把 `amq.rabbitmq.reply-to` 直接当 routing key 发布**没有**特殊语义（就是一条未路由消息，`mandatory` 时回 312）。伪队列名的 `queue.declare` 被当作被动探测（一定回 `message_count=0` / `consumer_count=1`），`queue.delete` 回 `Delete-Ok(0)`。
+  ② 消费者优先级 `x-priority` —— `basic.consume` 的 arguments 里带整数优先级（缺省 0，越大越优先；只校验类型不校验范围，实测 300 / -1 都被 RabbitMQ 接受，非整数回 406 且报文里带队列名与 vhost）；`capabilities` 已声明 `consumer_priorities: true`。实测规则：**只在多个消费者都还有投递额度时**决定谁先拿消息 —— 优先给优先级最高的那个（与注册顺序无关），同优先级之间仍是**轮询**；高优先级消费者把 `prefetch` 额度占满后，低优先级消费者照常收到消息（**不会被饿死**）。内核侧的分配规则在 `internal/broker/queue.go` 的 `nextConsumerLocked`
+  两项均有 Go 单测（`test/unit/amqp091/`、`test/unit/broker/consumer_priority_test.go`）与 Python 对照用例（`direct_reply_to` / `direct_reply_to_roundtrip` / `consumer_priority`，两侧一致）覆盖；真实客户端探针 25 项照常全通过
+- **集群管理 UI 页面 + 仲裁队列扩副本 / 再平衡（M8-15）**：
+  ① **集群页**（`web/src/views/ClusterView.vue`，路由 `#/cluster`）：展示模式 / 角色 / 任期 / leader / 投票与非投票成员 / 是否有多数派 / 是否暂停服务 / 共识进度（commit、applied、累计条数）/ 元数据规模（队列/交换机/绑定/用户）/ 跨节点转发计数 / 各节点资源（`GET /api/nodes`），并支持在界面上**增删集群成员**（走已有的 `PUT|DELETE /api/cluster/members/{name}`）。单机模式（`enabled=false`）下成员操作**直接禁用并给出说明**，而不是点了才收到 501。
+  ② **仲裁队列副本集可见**：`GET /api/queues/{vhost}/{name}` 的队列对象上为仲裁队列增加 `members`（投票成员，沿用 RabbitMQ 字段名）、`leader` 与扩展字段 `swiftmq_quorum`（`replicas` / `voters` / `learners` / `count`）。
+  ③ **`grow`（扩副本）**：`PUT /api/queues/{vhost}/{name}/grow`（body `{"count":N}`）与 `swiftmqctl grow_queue <vhost> <name> <count>`。声明时可用 `x-quorum-initial-group-size`（对齐 RabbitMQ）指定初始副本数；`grow` 把目标节点从 learner **提升为投票成员**并把副本集写进**元数据**（`meta.Queue.Replicas`，经 Raft 复制、重启后仍是 N 副本）。**只增不减**：缩小副本数、超过集群成员数、对经典队列操作分别返回 400 / 400 / 400，队列不存在 404，单机模式 501。
+  ④ **`rebalance`（leader 再平衡）**：`PUT /api/queues/{vhost}/{name}/rebalance` 与 `swiftmqctl rebalance_queue <vhost> <name>`。把该队列的 leader 从"承担 leader 最多的节点"迁到同组中较空的投票成员（raft 新增最小化的 `TimeoutNow` + `TransferLeadership`）。**边界见下文「集群的已知边界」**。
+  ⑤ 单测：`test/unit/broker/quorum_replication_test.go`（初始副本数、扩副本、幂等、边界、重启后仍是 N 副本、杀一台机器后队列仍可用、rebalance 契约、单机模式拒绝）。真实集群验证记录见交付说明。
+
+- **运维配套（M8-16）**：新增 [`docs/ops/`](docs/ops/) —— `upgrade.md`（升级/迁移：裸机与容器步骤、灰度与回滚、**数据兼容性**按代码与实测写明、集群滚动升级顺序）、`backup-restore.md`（备份什么、一致性要求、单机/集群恢复步骤、恢复后如何校验，附**一次真实演练全文**：5 条持久消息 + vhost/用户/权限/策略 全部恢复）、`monitoring/`（10 条 Prometheus 告警规则 + 14 面板 Grafana 仪表盘；**指标名逐条对照真实 `/metrics` 输出**，集群类告警**故意不写**因为 `/metrics` 里没有集群指标）、`security-baseline.md`（可勾选清单：TLS/权限/暴露面/容器加固，每条给"为什么 + 怎么验证"，并**明确列出当前做不到的**：口令明文、无审计日志、无 LDAP/OAuth2、SASL EXTERNAL 未实现等）
+
+**本轮的明确非目标（已结项，不是遗漏）**
+
+- **AMQP 1.0 / STOMP 协议插件**、**流队列 / Stream 协议**：P2 项，**不开工** —— 插件化架构已由「AMQP 0-9-1 + MQTT 两个协议插件 + 外部进程插件 + M8-12 的内核语义桥」证明成立；这两项属于**新增协议/新消费模型**，工作量接近独立里程碑，放在 P1 收口后单独排期（不阻塞"可用于生产"的出口条件）
+- **YAML 配置**：**不引入** —— 需要引入解析依赖，与"内核零第三方依赖"的硬约束冲突。替代口径是现有的 JSON 配置 + 完整字段表 + `SWIFTMQ_*` 环境变量覆盖（未做 JSONC / 配置热重载，记录为后续可选项）
+  理由与验证方式的完整记录见设计文档的 M8-11 / M8-13 / M8-17 行
 
 **尚未实现**
 
-- Direct Reply-To（`amq.rabbitmq.reply-to`）、消费者优先级（`x-priority`）
-- **集群的剩余能力**：集群管理 UI 页面（成员的增删已有 CLI 与 API，但还没有界面）
-- vhost 的动态增删（vhost 集合仍由配置驱动，因此也不参与集群复制）
-- 策略（policies）接口：`/api/policies` 返回空数组，功能未实现
+- **集群的剩余能力**：集群管理 UI 页面与仲裁队列 `grow` / `rebalance` 已在 M8-15 落地（见上文）；仍缺：仲裁队列**缩容**与副本在节点间**迁移数据**、跨节点转发的流水线/批量优化、以及真实网络下的分区演练（见下「集群的已知边界」）
 - 流队列与 Stream 协议
 - AMQP 1.0 / STOMP（计划以插件形态提供）；MQTT 3.1.1 已落地（见上文）
-- **外部进程插件的已知边界（M7b/M7c）**：外部协议插件拿到的是**原始字节流**，目前还**不能调用内核语义**（队列 / 路由 / 权限）—— 把 `plugin.Session` 桥成 RPC 是后续步骤；因此现阶段它适合做"接入 / 转换类"插件，而不是"需要内核存储与路由"的协议。另外数据面走本机连接**代理转发**（没有文件描述符传递，这是跨平台与零依赖之间的取舍），每次转发多一次内存拷贝。`swiftmqctl` 目前只能通过管理 API 观测外部插件，**不能**代为拉起进程（拉起只能由内核按配置 `spawn`）
+- **外部进程插件的已知边界（M7b/M7c/M8-12）**：外部协议插件**已能调用内核语义**（队列 / 路由 / 权限，见 M8-12），不再只做"接入 / 转换类"插件。剩余边界：**数据面仍走本机连接代理转发**（没有文件描述符传递，这是跨平台与零依赖之间的取舍），每次转发多一次内存拷贝；内核语义调用是**一次本机 RPC**，比进程内调用多一次 JSON 编解码与内存拷贝，且同一消费者上的投递逐条串行回推（等插件应答后才推下一条，顺序性有保证但吞吐受 RTT 限制），**性能开销未单独度量**；内核**主动取消**消费者（队列被删等）时只停止回推，**不向插件下发取消通知**（插件不会收到 `basic.cancel` 式的告知）；`swiftmqctl` 目前只能通过管理 API 观测外部插件，**不能**代为拉起进程（拉起只能由内核按配置 `spawn`）
 - **MQTT 的已知边界**：保留消息存在插件内存（重启丢失）；QoS2 按"至少一次"处理（不做去重）；`x-mqtt-topic` 之外的跨协议主题映射按"."↔"/"反推，主题本身含点号时有歧义（与 RabbitMQ 的 MQTT 插件同）
-- **性能：只有单机基线，没有 P99 与长稳数据**。M7d 给出的是本机（windows/386）**吞吐基准与相对改进**，以及 15 轮的插件反复崩溃混沌；**7×24 soak、延迟 P99、真实网络下的连接规模上限均未测**，因此任何绝对性能数字都不应外推
+- **性能：已有容器化 Linux 的基线数字，但仍不是承诺平台的定论**。M7d 给的是本机（windows/386）的相对改进；M8-9 给了缩比的长稳与混沌证据；**M8-10 给了容器化 Linux 上的吞吐 / P99 / 连接规模与瓶颈分析**（见上文与 `swiftmq-test/bench/REPORT.md`）。**仍未做**：裸机 Linux（当前是 WSL2 容器）、真实网络（当前是 Docker 内部网桥）、真实生产硬件上的**稳定持有 10 万连接**、集群/仲裁队列/TLS 下的性能、以及真正的 7×24 长稳。因此这些数字可以说明"量级达标"，**不应外推**为你环境里的容量承诺
 - YAML 配置（当前支持 JSON 文件 + `SWIFTMQ_*` 环境变量；YAML 需要引入解析依赖，暂缓）
 
 完整路线图见下文「路线图」一节。
@@ -101,7 +123,7 @@ go build -o bin/swiftmqctl ./cmd/swiftmqctl
 启动后日志应包含：
 
 ```
-msg="SwiftMQ 启动中" version=0.13.0 data_dir=data vhost=/ fsync=os
+msg="SwiftMQ 启动中" version=0.14.0 data_dir=data vhost=/ fsync=os
 msg="插件 amqp091 v0.1.0（API v1）能力: [net.listen]"
 msg="监听已启动" protocol=amqp091 listener=amqp addr=[::]:5672
 msg="MQTT 插件已初始化" plugin=mqtt exchange=amq.topic max_packet_size=8388608 prefetch=32
@@ -167,7 +189,7 @@ cd test/integration/amqp091probe
 go run .
 ```
 
-期望输出（21 个用例）：
+期望输出（25 个用例）：
 
 ```
 PASS  M1 正常连接 + Channel 开关 + 优雅关闭
@@ -191,8 +213,12 @@ PASS  M3 长度限制 reject-publish：第二条被 basic.nack
 PASS  M3 mandatory 未命中：Basic.Return 必须先于 confirm 到达
 PASS  M4 durable 队列 + 持久消息：confirm 逐条 ack 且消息可正常消费
 PASS  M4 服务端如实声明 connection.blocked 能力
+PASS  M8 事务：commit 前的发布对外不可见，commit 后可消费
+PASS  M8 事务：rollback 丢弃已缓冲的发布
+PASS  M8 事务：与发布确认互斥（406，只关 channel）
+PASS  M8-5 frame-max 协商：低于下限被拒（8192），下限值可用且大消息可分片
 
-全部通过（21/21）
+全部通过（25/25）
 ```
 
 > 崩溃恢复需要重启 broker，无法在探针里覆盖；它由内核单测（`test/unit/broker/`）
@@ -231,8 +257,8 @@ PASS  畸形报文（SUBSCRIBE 标志位非法）断开连接
 | 位置                     | 内容                               |
 | ---------------------- | -------------------------------- |
 | `swiftmq/test/`        | 只放 Go 测试（内核单测 + `amqp091-go` 探针） |
-| `swiftmq-test/python/` | Python（`pika`）冒烟测试，7 个用例         |
-| `swiftmq-test/java/`   | Java 用例清单（待补）                    |
+| `swiftmq-test/python/` | Python（`pika`）用例，33 个，已纳入双跑对照   |
+| `swiftmq-test/java/`   | Java（`amqp-client`）用例，12 个，已纳入双跑对照 |
 
 这么切分是因为这些测试依赖各语言的运行时与包管理器，与 Go module 的生命周期无关；
 放进本仓库会污染 `docker build` 的上下文与 `go vet ./...` 的扫描范围。详见 `swiftmq-test/README.md`。
@@ -328,7 +354,7 @@ conn.close()
 | 字段          | 说明                                                      |
 | ----------- | ------------------------------------------------------- |
 | `data_dir`  | 节点数据目录（对齐 RabbitMQ 的 `RABBITMQ_MNESIA_DIR` 定位，M4 起真正落盘） |
-| `vhosts`    | vhost 清单；`default_vhost` 会自动加入，不会因漏写而连不上                |
+| `vhosts`    | vhost 清单，**只在首次引导时生效**（随后 vhost 集合以元数据为准，见 M8-7）；`default_vhost` 会自动加入，不会因漏写而连不上。给已有实例加 vhost 请用管理 API / `swiftmqctl add_vhost` |
 | `listeners` | 按**插件名**声明监听清单：第 i 项沿用该插件第 i 个默认监听的名字，多出来的项是**新增**监听（于是"同一插件明文 + TLS 并存"只要列两个 `addr` 即可） |
 | `users`     | 内置用户表，**只在首次引导时生效**（随后账号以元数据为准，见下文持久化说明）；**默认内置 `guest` / `guest`（标签 `administrator`）**，`remote_access: false` 时仅允许本机登录（管理面同样受限） |
 | `plugins`   | 各插件的配置段；内核只读其中的治理开关（`enabled` / `required` / `builtin`），其余原样交给插件 |
@@ -356,7 +382,7 @@ conn.close()
 | ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------- |
 | `fsync`                 | `os`      | 落盘档位：`none` / `os` / `batch` / `always`。它同时决定 publisher confirm 的时机：`os` 对齐 RabbitMQ 经典队列"confirm 前不 fsync"，`batch` / `always` 才承诺"收到 confirm 即已落盘" |
 | `flush_interval_ms`     | `200`     | 兜底刷盘间隔：消息在内存里最多待多久的上界                                                                                       |
-| `memory_high_watermark` | `0.4`     | 内存水位：本进程占用超过"该比例 × 物理内存"即阻塞生产者；`0` 关闭                                                         |
+| `memory_high_watermark` | `0.4`     | 内存水位：本进程**在用**内存（Go 的 live heap + 栈）超过"该比例 × 物理内存"即阻塞生产者，回落到阈值以下自动解除；`0` 关闭。**口径说明**：用的是"在用"而不是"申请过的地址空间（`MemStats.Sys`）"—— 后者是只升不降的高水位，会让闸门一旦触发就再也解除不了（M8-10 实测到的缺陷，已修并加回归测试 `TestWatermarkGateIsRecoverable`） |
 | `disk_free_limit`       | `52428800` | 数据目录剩余空间下限（字节，默认 50 MiB），低于它即阻塞生产者；`0` 关闭                                                  |
 
 `management` 字段：
@@ -414,7 +440,9 @@ conn.close()
 > 需要**跨节点冗余**时使用**仲裁队列**（`x-queue-type=quorum`）：消息按 Raft 复制到多数派，
 > 单节点故障不丢已确认消息（见下文「仲裁队列」小节）。
 
-开启集群只需在每个节点配置 `cluster` 段，并保证**各节点的 `vhosts` 列表一致**：
+开启集群只需在每个节点配置 `cluster` 段。`vhosts` 自 M8-7 起只是**首次引导**的种子
+（vhost 集合以元数据为准，经 Raft 复制到全体节点），因此不必再强求各节点列表逐字一致 ——
+但首次启动前把各节点配成同一份仍然更省心：
 
 ```json
 {
@@ -450,10 +478,11 @@ conn.close()
 - **投递是同步 RPC**：Owner 的队列投递会等代理节点写客户端 socket，慢客户端会拖慢该队列的投递节奏（批量/流水线转发留给性能里程碑）。
 - **至少一次**：转发应答丢失时消息会被重新入队并重投（客户端看到 `redelivered=true`），与 AMQP 自身语义同级，不承诺"恰好一次"。
 - **成员变更逐次进行**：一次只允许一个未提交的配置变更（无 joint consensus）；变更期间可能出现短暂的角色抖动（leader 被移除时尤其明显，客户端按 AMQP 语义重连即可）。
-- **仲裁队列组的成员不随集群成员变更自动调整**：仲裁队列组在**创建时**按当时的集群投票成员固定下来（`grow`/`rebalance` 留给后续里程碑）。新节点加入后，**新建**的仲裁队列会包含它；把既有仲裁队列扩到新节点需要删除重建。
+- **仲裁队列的副本集**：声明时由 `x-quorum-initial-group-size` 定下（默认 = 当时的集群成员数），之后可用 `grow` **只增不减**地扩大；副本集存在元数据里（`meta.Queue.Replicas`），因此重启后仍是 N 副本。**边界**：不支持缩容；副本只在 `cluster.peers` 地址簿内的节点之间选择；非副本节点以 learner 身份一直在复制该组日志（因此 `grow` 只是"提权"，不搬数据，也没有数据迁移窗口）；`grow` 不改变拓扑的 Owner / 绑定关系。
+- **`rebalance` 只迁移 leader**：把某条仲裁队列的 leader 从"承担 leader 最多的节点"迁到同组中较空的投票成员（raft 的 `TimeoutNow` + `TransferLeadership`）。**边界**：不改变副本集、不搬数据、不做全局最优调度、不做流量控制；目标是该队列自己的投票成员（选谁接任由 Raft 选举规则保证安全）；当 leader 的负载不比最空的投票成员多时不做无谓换届（响应里 `moved=false` + `reason`）。
+- **集群管理 UI / API 的集群专属操作在单机模式下不可用**：单机没有 Raft 成员表也没有副本集，成员增删、`grow`、`rebalance` 一律返回 **501 NOT_IMPLEMENTED**；UI 上对应的按钮直接禁用。
 - 用户 / 权限已随元数据复制（M8-4），但**口令是明文**存储与复制的（与配置文件口径一致，见设计 10.2）；哈希与外部认证后端留给认证插件。
 - **经典队列**的消息数据不复制：Owner 宕机时它持有的（非 durable 或未复制的）消息不可用 —— 需要冗余请改用仲裁队列。
-- 集群管理 UI 页面尚未提供（可先用下面的接口与 CLI）。
 
 **动态成员变更（M6d）**
 
@@ -498,10 +527,38 @@ channel.queue_declare(
 - **确认语义**：`basic.publish` 在消息被**多数派**接收后才回 `basic.ack`；因此单节点（少数派）故障不会丢已确认消息。
 - **声明约束**（对齐 RabbitMQ）：仲裁队列必须 `durable=true`，且不能用 `exclusive` / `auto-delete`；不支持 `x-expires` / `x-max-priority` / `reject-publish-dlx`，声明这些参数会返回 `406`。
 - **leader 变更**：组 leader 变化时，旧 leader 上的消费者被服务端取消（`CONSUMER_CANCELLED`），未确认消息由新 leader 重投 —— 语义为**至少一次**。
-- **`/api/queues` 视角**：仲裁队列的 `type` 为 `quorum`，`node` 指向当前组 leader；`messages` / `consumers` 为 leader 上的实时值。
+- **`/api/queues` 视角**：仲裁队列的 `type` 为 `quorum`，`node` 指向当前组 leader；`messages` / `consumers` 为 leader 上的实时值。队列对象上另有 `members`（投票成员）、`leader` 与扩展字段 `swiftmq_quorum`（`replicas` / `voters` / `learners` / `count`）。
 - **与经典队列的取舍**：仲裁队列以「写放大 + 内存占用」换「跨节点冗余」；它更适合对可靠性敏感、队列深度可控的场景。经典队列吞吐更高、更省内存，但不复制。
 
 > 仲裁队列当前的状态（ready 列表）在内存中，受队列深度约束；**分段存储与内存/磁盘流控**留在 M7。因此本阶段请把仲裁队列用于「关键但深度可控」的队列。
+
+**仲裁队列的扩副本与再平衡（M8-15）**
+
+副本数在声明时用 `x-quorum-initial-group-size` 指定（省略 = 当时的集群成员数）；此后可在运行期**扩副本**（`grow`，只增不减）与**再平衡 leader**（`rebalance`）：
+
+```python
+# 1 副本起步（仅 3 节点集群里的一个节点持有投票权）
+channel.queue_declare(queue="orders", durable=True, arguments={
+    "x-queue-type": "quorum",
+    "x-quorum-initial-group-size": 1,
+})
+```
+
+```bash
+# 扩到 3 副本：把另外两个节点从 learner 提升为投票成员（副本集写进元数据，重启后仍生效）
+swiftmqctl grow_queue / orders 3
+curl -u guest:guest -X PUT http://127.0.0.1:15672/api/queues/%2F/orders/grow \
+     -H 'Content-Type: application/json' -d '{"count":3}'
+
+# 把 leader 从"承担 leader 最多的节点"迁到同组中较空的投票成员
+swiftmqctl rebalance_queue / orders
+curl -u guest:guest -X PUT http://127.0.0.1:15672/api/queues/%2F/orders/rebalance
+```
+
+- `grow` 的响应（与队列对象上的 `swiftmq_quorum` 同构）：`{"vhost":"/","queue":"orders","leader":"swiftmq@n1","replicas":[...],"count":3,"voters":[...],"learners":[]}`。
+- 错误码：不是仲裁队列 / 目标超过集群成员数 / 试图缩容 → **400 PRECONDITION_FAILED**；队列不存在 → **404**；单机模式 → **501 NOT_IMPLEMENTED**。
+- `rebalance` 的响应：`{"vhost":"/","queue":"orders","moved":true,"from":"swiftmq@n2","to":"swiftmq@n1","reason":""}`；无需迁移时 `moved=false` 并给出 `reason`。
+- 边界（不做的部分）：**不支持缩容**；不在 `cluster.peers` 之外的节点上放副本；`grow` 不搬数据（非副本节点本来就是 learner，一直在复制）；`rebalance` 只迁 leader、不做全局最优调度与流量控制。
 
 **观测**
 
@@ -588,7 +645,7 @@ MQTT 的"主题"直接复用内核的 **`amq.topic` 交换机**，而不是另�
 
 ***
 
-## 外部进程插件（B 形态，M7b / M7c）
+## 外部进程插件（B 形态，M7b / M7c / M8-12）
 
 内核不仅能加载编译进来的 Go 插件（A 形态），也能托管**独立进程**作为插件（B 形态）。两者对内核是同一件事：外部进程插件在宿主侧被包装成一个普通的 `plugin.Plugin`，因此注册、依赖排序、能力审计、热启停、失败隔离、管理面展示全部复用同一套机制。
 
@@ -627,7 +684,7 @@ MQTT 的"主题"直接复用内核的 **`amq.topic` 交换机**，而不是另�
 
 `configs/swiftmqd.json` 里带了一段默认停用的示例（`enabled: false`，不指向任何真实进程），可以直接照着改。
 
-**参考实现**：`test/integration/echosidecar` 是一个**独立 module**（`replace` 指回仓库根，只依赖 `pkg/sidecar` 与标准库）的最小外部插件 —— 它把客户端发来的每一行原样回显，并提供 `stats` / `set_greeting` 两个控制面方法。编译后按上面的 `spawn` 配置指过去即可跑通"嗅探 → 代理 → 外部进程 → 回显"整条链路。
+**参考实现**：`test/integration/echosidecar` 是一个**独立 module**（`replace` 指回仓库根，只依赖 `pkg/sidecar` / `pkg/plugin` 与标准库）的最小外部插件 —— 它把客户端发来的每一行原样回显，并提供 `stats` / `set_greeting` 两个控制面方法。编译后按上面的 `spawn` 配置指过去即可跑通"嗅探 → 代理 → 外部进程 → 回显"整条链路；加 `-session-demo` 启动时，它还会在每条流上演示一次下面的内核语义桥（声明队列 → 发布 → 消费 → 结算，见 `session.go`）。
 
 **崩溃之后会发生什么**（这是 B 形态与 A 形态最本质的差别）
 
@@ -638,7 +695,30 @@ MQTT 的"主题"直接复用内核的 **`amq.topic` 交换机**，而不是另�
 | `restart: always` | 按 500 ms → 10 s 退避重连，必要时重新拉起进程；恢复后状态回到 `enabled` |
 | `restart: never` | 一直保持 `down`，等运维处理 |
 
-**怎么验证**：`test/unit/sidecar`（握手成功/被拒/线协议版本不符/API 版本不符/插件名不符、控制面调用、双向流回显、连接断开可观测、心跳超时判死、宿主状态 enabled→down→自愈）；`test/integration/echosidecar`（参考插件本体）；内核侧真进程 e2e（`spawn` 拉起 → 回显正常 → `kill` 插件 → 指标转 0 且内核端口仍可连 → 自动重启并恢复），外加 15 轮反复杀进程的混沌。
+**把 `plugin.Session` 桥成 RPC（M8-12）**
+
+外部进程插件最初只能拿到**原始字节流**。M8-12 之后，它可以在自己的流上打开一个内核会话，用**反向调用**（插件 → 内核）直接调用内核语义 —— 这些调用在内核侧**一对一映射**到 `plugin.Session`，因此 vhost、权限、路由、队列语义、确认、死信、TTL 与进程内协议插件**完全同一套**，不存在"外部插件另有一套简化语义"。
+
+协议层面：正向调用（内核 → 插件）与反向调用（插件 → 内核）走在同一条连接上，两端**各自从 1 开始编号**，因此应答帧带 `reverse` 标志、两端按标志路由到各自的等待表（否则 ID 撞车会唤醒错误的等待者）。这一点有专门的并发回归用例。
+
+插件侧拿到的句柄：`sidecar.BridgeFromContext(ctx)`（挂在 `Handler` 的 `ctx` 上，**不改** `Handler` 接口，老插件实现在新宿主下仍旧可用）。可用的内核语义调用：
+
+| 方法 | 参数要点 | 说明 |
+| --- | --- | --- |
+| `session.open` / `session.close` | `{stream, vhost}` / `{stream}` | 打开 / 释放该流上的会话（走与协议插件相同的 vhost 与权限校验） |
+| `session.declare_exchange` / `delete_exchange` / `bind_exchange` / `unbind_exchange` | `{stream, ...}` | 交换机的声明 / 删除 / 绑定 |
+| `session.declare_queue` / `delete_queue` / `bind_queue` / `unbind_queue` / `purge_queue` | `{stream, ...}` | 队列的声明 / 删除 / 绑定 / 清空（返回 `queue_info` / 条数） |
+| `session.publish` | `{stream, exchange, routing_key, mandatory, message}` | 发布；返回 `{routed, rejected}`，**持久化等待在应答前完成**（返回即已按 fsync 档位落盘） |
+| `session.get` | `{stream, queue, no_ack}` | 主动拉取；命中时返回带投递编号的 `delivery` |
+| `session.consume` / `session.cancel` | `{stream, queue, tag, no_ack, exclusive, prefetch}` / `{stream, tag}` | 注册 / 取消消费者（返回内核最终使用的标签） |
+| `session.settle` | `{delivery_id, action}` | 结算投递（`ack` / `requeue` / `reject`）；编号在整条连接上全局唯一，故不必带流号 |
+| `session.deliver`（**正向**：内核 → 插件） | `{stream, delivery_id, queue, consumer_tag, redelivered, message}` | 内核回推一条投递；插件处理后调 `session.settle` |
+
+错误**保留语义分类**：内核的 `plugin.Error.Kind` 随应答回传，插件侧可还原成 `plugin.Errorf(kind, ...)`，而不是被压成一句字符串。消息属性（`Timestamp` / `Headers` / 各类 ID）与消息体（base64）在自包含 JSON DTO 里**无损往返**。未结算的投递在流关闭 / 插件断开时由内核**重新入队**（与进程内协议插件的 `drainPending` 同一口径）。
+
+代价：每次内核调用多一次本机 RPC（JSON 编解码 + 内存拷贝），且同一消费者上的投递逐条串行回推（顺序有保证，吞吐受一次 RTT 限制）。
+
+**怎么验证**：`test/unit/sidecar`（握手成功/被拒/线协议版本不符/API 版本不符/插件名不符、控制面调用、双向流回显、连接断开可观测、心跳超时判死、宿主状态 enabled→down→自愈；**M8-12 追加**：反向调用基本通路、未配置处理器时明确报错、`session.open` 成功与 vhost 不存在返回 `invalid_path`、声明队列→发布→消费→内核回推投递→`settle(ack)` 后消息不再重投、断流后未结算投递重新入队、正向与反向调用并发不串台）；`test/integration/echosidecar`（参考插件本体 + `-session-demo`）；内核侧真进程 e2e（`spawn` 拉起 → 回显正常 → `kill` 插件 → 指标转 0 且内核端口仍可连 → 自动重启并恢复），外加 15 轮反复杀进程的混沌。
 
 **插件合约错误的影响面（M7c）**
 
@@ -766,7 +846,7 @@ npm run type-check    # TypeScript 严格模式检查
 构建镜像：
 
 ```bash
-docker build -t swiftmq:0.13.0 .
+docker build -t swiftmq:0.14.0 .
 ```
 
 镜像约 13 MB：静态链接二进制 + alpine，**以非 root（uid 10001）运行**，数据目录挂载在 `/var/lib/swiftmq`。
@@ -791,11 +871,11 @@ docker build -t swiftmq:0.13.0 .
 | 二期 | M7c | 插件 DoD 收口：错误影响面仅限该插件、越权拒绝留痕、依赖边界可验证             | ✅ 已完成 |
 | 二期 | M7d | 性能打磨：可复现基准、大消息与连接规模、一处数据驱动优化、短时混沌              | ✅ 已完成 |
 
-| 三期 | M8 | **生产就绪**：M8-1 段回收 ✅、M8-2 AMQP 事务 ✅、M8-3 TLS ✅、M8-4 用户/权限复制与持久化 ✅、M8-5 双跑对照 ✅；余下 M8-6~M8-10（清单与优先级见设计文档 M8 章节） | 进行中 |
+| 三期 | M8 | **生产就绪**：M8-1 段回收 ✅、M8-2 AMQP 事务 ✅、M8-3 TLS ✅、M8-4 用户/权限复制与持久化 ✅、M8-5 双跑对照 ✅、M8-6 policies ✅、M8-7 vhost 动态增删 ✅、M8-8 跨语言矩阵（Java）✅、M8-9 长稳与混沌（缩比）✅、M8-10 性能基线（Linux）✅、M8-12 `plugin.Session` 桥成 RPC ✅、M8-14 Direct Reply-To 与消费者优先级 ✅、M8-15 集群管理 UI + 仲裁队列 `grow`/`rebalance` ✅、M8-16 运维配套 ✅；M8-11 / M8-13 / M8-17 **已结项不开工**（另立里程碑，理由见设计文档） | **P0/P1/P2 全部收口** |
 
 每个里程碑的完成标准是"**真实客户端跑通 + 与 RabbitMQ 行为一致**"，而非"代码写完"。
 
-> 二期（M6 / M7）已全部完成，三期（M8）进行中，但**这还不等于可用于生产**。在 M8 完成之前，README 顶部会一直保留"不可用于生产"的声明。M8 的出口条件 = **磁盘回收 ✅、AMQP 事务 ✅、TLS ✅、用户/权限的复制与持久化 ✅** 这四类硬缺口补齐，且**双跑对照 ✅**与长稳压测给出可复现证据；当前剩下的是长稳与性能验证（M8-8 跨语言矩阵 / M8-9 长稳与混沌 / M8-10 性能达标）。
+> 二期（M6 / M7）已全部完成，三期（M8）进行中，但**这还不等于可用于生产**。在 M8 完成之前，README 顶部会一直保留"不可用于生产"的声明。M8 的出口条件 = **磁盘回收 ✅、AMQP 事务 ✅、TLS ✅、用户/权限的复制与持久化 ✅** 这四类硬缺口补齐，且**双跑对照 ✅**与长稳压测给出可复现证据；当前剩下的是长稳与性能验证（M8-9 长稳与混沌 / M8-10 性能达标）。
 >
 > 其中「与 RabbitMQ 双跑对照」的编排（两个 broker 同编排 + 各语言用例容器）与"已知差异"清单在配套工程 **`swiftmq-test/`**（独立于本仓库，含 `compare.py` 一键运行器），落地方式与判定口径见设计文档 §13.3。
 

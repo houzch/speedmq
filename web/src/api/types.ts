@@ -86,6 +86,75 @@ export interface Whoami {
   auth_backend: string
 }
 
+/** 集群元数据规模（GET /api/cluster 的 object_totals） */
+export interface ClusterObjectTotals {
+  queues: number
+  exchanges: number
+  bindings: number
+  users: number
+}
+
+/** 跨节点转发运行态（GET /api/cluster 的 forwarding） */
+export interface ClusterForwarding {
+  proxy_consumers: number
+  remote_consumers: number
+  held_deliveries: number
+  forwarded_out: number
+  forwarded_in: number
+  deliveries: number
+}
+
+/**
+ * GET /api/cluster：本节点的集群/元数据层状态。
+ *
+ * 单机模式也会返回（enabled=false、mode="local"、role="single"），
+ * 界面据此禁用成员增删等集群专属操作 —— 服务端对这些操作返回 501。
+ */
+export interface Cluster {
+  enabled: boolean
+  mode: string
+  node_id: string
+  role: string
+  term: number
+  leader: string
+  has_quorum: boolean
+  paused: boolean
+  peers: string[]
+  learners: string[]
+  commit_index: number
+  last_applied: number
+  applied_records: number
+  object_totals: ClusterObjectTotals
+  forwarding: ClusterForwarding
+}
+
+/** GET /api/cluster/members：成员划分 */
+export interface ClusterMembers {
+  voters: string[]
+  learners: string[]
+}
+
+/** 仲裁队列副本集视图（队列对象的 swiftmq_quorum 字段） */
+export interface QuorumView {
+  vhost: string
+  queue: string
+  leader: string
+  replicas: string[]
+  count: number
+  voters: string[]
+  learners: string[]
+}
+
+/** PUT /api/queues/{vhost}/{name}/rebalance 的响应 */
+export interface RebalanceResult {
+  vhost: string
+  queue: string
+  moved: boolean
+  from: string
+  to: string
+  reason?: string
+}
+
 /** GET /api/vhosts */
 export interface Vhost {
   name: string
@@ -122,6 +191,12 @@ export interface Queue {
   memory: number
   idle_since: string
   reductions: number
+  /** RabbitMQ 字段：仲裁队列的投票成员（经典队列没有该字段） */
+  members?: string[]
+  /** RabbitMQ 字段：仲裁队列当前的服务节点 */
+  leader?: string
+  /** SwiftMQ 扩展：仲裁队列的副本集细节 */
+  swiftmq_quorum?: QuorumView
 }
 
 /** 交换机对象 */

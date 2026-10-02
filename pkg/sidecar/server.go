@@ -110,6 +110,8 @@ func (s *Server) Serve(ctx context.Context) error {
 			fw:      &frameWriter{w: conn},
 			br:      bufio.NewReaderSize(conn, 4096),
 			streams: map[uint32]*Stream{},
+			pending: map[uint64]chan Reply{},
+			done:    make(chan struct{}),
 		}
 		s.mu.Lock()
 		s.conns = append(s.conns, sc)
@@ -152,6 +154,13 @@ type serverConn struct {
 	acked   bool
 	closed  bool
 	closeWG sync.WaitGroup
+
+	// 反向调用（插件 → 内核）的编号与等待表。与"正向调用"（内核 → 插件）分属两个 ID 空间，
+	// 两边都从 1 开始自增，因此应答必须靠 Reply.Reverse 判断该唤醒哪张表（见 proto.go）。
+	nextCall uint64
+	pending  map[uint64]chan Reply
+	// done 在连接关闭时关闭，用来唤醒仍在等待应答的反向调用者。
+	done chan struct{}
 }
 
 func (c *serverConn) serve(ctx context.Context) {
@@ -159,6 +168,10 @@ func (c *serverConn) serve(ctx context.Context) {
 		c.close(ErrClosed)
 		c.closeWG.Wait()
 	}()
+	// 把 Bridge 挂进 ctx：Handler 的 Call/Open 通过 BridgeFromContext 取到它，
+	// 从而能在处理请求时回调内核（这正是"薄封装"的入口）。用 ctx 传而非改 Handler 签名，
+	// 是为了不破坏既有的插件实现。
+	ctx = context.WithValue(ctx, bridgeCtxKey{}, &Bridge{c: c})
 	for {
 		// 静默超时：内核进程被强杀时 socket 可能不及时关闭，靠它兜底回收。
 		_ = c.conn.SetReadDeadline(time.Now().Add(c.srv.opts.IdleTimeout))
@@ -180,6 +193,24 @@ func (c *serverConn) serve(ctx context.Context) {
 			c.handleCall(ctx, payload)
 		case kindOpen:
 			c.handleOpen(ctx, payload)
+		case kindReply:
+			// 这是插件发起的反向调用（插件 → 内核）的应答：只路由 Reverse 应答，
+			// 与内核发来的正向应答（插件侧不会收到）严格区分开。
+			var reply Reply
+			if err := json.Unmarshal(payload, &reply); err != nil {
+				return
+			}
+			if !reply.Reverse {
+				c.srv.log.Warn("收到意外的正向应答，已丢弃", "id", reply.ID)
+				continue
+			}
+			c.mu.Lock()
+			ch := c.pending[reply.ID]
+			delete(c.pending, reply.ID)
+			c.mu.Unlock()
+			if ch != nil {
+				ch <- reply
+			}
 		case kindData:
 			id, data, err := splitData(payload)
 			if err != nil {
@@ -305,6 +336,110 @@ func (c *serverConn) forgetStream(s *Stream) {
 	c.mu.Unlock()
 }
 
+// ---------------------------------------------------------------------------
+// 反向调用（插件 → 内核）
+// ---------------------------------------------------------------------------
+
+// bridgeCtxKey 是 Bridge 在 ctx 里的键（未导出，外部只能经 BridgeFromContext 取）。
+type bridgeCtxKey struct{}
+
+// Bridge 是插件进程发起反向调用（插件 → 内核）的句柄。
+//
+// 它绑定在"一条来自内核的连接"上：Handler 的 Call/Open 拿到的 ctx 里就挂着当前连接对应的
+// Bridge（见 BridgeFromContext）。插件用它把请求打到内核的 plugin.Session 上。
+type Bridge struct {
+	c *serverConn
+}
+
+// BridgeFromContext 取出当前请求所属连接的 Bridge。第二个返回值为 false 表示 ctx 里没有
+// （例如不是由内核连接触发的调用）。
+func BridgeFromContext(ctx context.Context) (*Bridge, bool) {
+	b, ok := ctx.Value(bridgeCtxKey{}).(*Bridge)
+	return b, ok
+}
+
+// Call 发起一次反向调用：method 为 MethodSession* 之一，params 为该方法的参数（会被 JSON 序列化），
+// out 非 nil 时接收应答的 Data。
+//
+// 返回错误分两类：传输/解码类错误（连接已断、应答无法解析）返回普通 error；
+// 内核明确拒绝时返回 *RPCError（含 Kind 与 Text），插件可据此还原错误分类。
+func (b *Bridge) Call(ctx context.Context, method string, params any, out any) error {
+	if b == nil || b.c == nil {
+		return errors.New("sidecar: 当前上下文没有内核连接桥")
+	}
+	return b.c.reverseCall(ctx, method, params, out)
+}
+
+// reverseCall 是反向调用的实现：分配编号 → 登记等待 → 发送 → 等待应答。
+func (c *serverConn) reverseCall(ctx context.Context, method string, params any, out any) error {
+	var raw json.RawMessage
+	if params != nil {
+		b, err := json.Marshal(params)
+		if err != nil {
+			return err
+		}
+		raw = b
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrClosed
+	}
+	c.nextCall++
+	id := c.nextCall
+	wait := make(chan Reply, 1)
+	c.pending[id] = wait
+	c.mu.Unlock()
+
+	payload, err := json.Marshal(Call{ID: id, Method: method, Reverse: true, Params: raw})
+	if err != nil {
+		c.dropPending(id)
+		return err
+	}
+	if err := c.fw.write(kindCall, payload); err != nil {
+		c.dropPending(id)
+		return err
+	}
+
+	select {
+	case reply := <-wait:
+		if !reply.OK {
+			return replyError(reply)
+		}
+		if out != nil && len(reply.Data) > 0 {
+			return json.Unmarshal(reply.Data, out)
+		}
+		return nil
+	case <-ctx.Done():
+		c.dropPending(id)
+		return ctx.Err()
+	case <-c.done:
+		c.dropPending(id)
+		return ErrClosed
+	}
+}
+
+// replyError 把失败应答还原成 error：带分类时返回 *RPCError，否则返回纯文本错误。
+func replyError(reply Reply) error {
+	if reply.Error == "" {
+		return errors.New("sidecar: 反向调用失败")
+	}
+	if len(reply.Data) > 0 {
+		var payload ErrorPayload
+		if err := json.Unmarshal(reply.Data, &payload); err == nil && payload.Text != "" {
+			return &RPCError{Kind: payload.Kind, Text: payload.Text}
+		}
+	}
+	return errors.New(reply.Error)
+}
+
+func (c *serverConn) dropPending(id uint64) {
+	c.mu.Lock()
+	delete(c.pending, id)
+	c.mu.Unlock()
+}
+
 func (c *serverConn) close(err error) {
 	c.mu.Lock()
 	if c.closed {
@@ -317,9 +452,20 @@ func (c *serverConn) close(err error) {
 		streams = append(streams, s)
 	}
 	c.streams = map[uint32]*Stream{}
+	pending := c.pending
+	c.pending = map[uint64]chan Reply{}
 	c.mu.Unlock()
 
 	_ = c.conn.Close()
+	// 唤醒仍在等待反向调用应答的协程，避免它们挂到超时。
+	close(c.done)
+	reason := err.Error()
+	for _, ch := range pending {
+		select {
+		case ch <- Reply{OK: false, Error: reason}:
+		default:
+		}
+	}
 	for _, s := range streams {
 		s.fail(err)
 	}

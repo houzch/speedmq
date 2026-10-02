@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -88,6 +89,48 @@ func (m *Manager) CloseAll() {
 
 func (m *Manager) queueDir(vhost, queue string) string {
 	return filepath.Join(m.root, "vhosts", safeDirName(vhost), "queues", safeDirName(queue))
+}
+
+// vhostDir 返回某 vhost 的存储根目录（其下是各队列目录）。
+func (m *Manager) vhostDir(vhost string) string {
+	return filepath.Join(m.root, "vhosts", safeDirName(vhost))
+}
+
+// RemoveVHost 关闭该 vhost 下全部已打开的队列存储，并删除它的整个存储目录。
+//
+// 只对名称做了一次目录编码（safeDirName 是单射），因此"某存储是否属于该 vhost"
+// 用路径前缀判断是可靠的；用分隔符边界比较而不是裸字符串前缀，
+// 避免 vhost="a" 误伤 vhost="ab"（编码后分别为 q_a 与 q_ab）。
+func (m *Manager) RemoveVHost(vhost string) error {
+	base := m.vhostDir(vhost)
+	prefix := base + string(filepath.Separator)
+
+	m.mu.Lock()
+	victims := make([]*QueueStore, 0, len(m.open))
+	for st := range m.open {
+		dir := filepath.Clean(st.Dir())
+		if dir == base || startsWithSep(dir, prefix) {
+			victims = append(victims, st)
+			delete(m.open, st)
+		}
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, st := range victims {
+		if err := st.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("关闭队列存储 %s 失败: %w", st.Dir(), err))
+		}
+	}
+	if err := os.RemoveAll(base); err != nil {
+		errs = append(errs, fmt.Errorf("删除 vhost 存储目录失败: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// startsWithSep 判断 path 是否以 prefix 开头；调用方保证 prefix 以分隔符结尾。
+func startsWithSep(path, prefix string) bool {
+	return len(path) >= len(prefix) && path[:len(prefix)] == prefix
 }
 
 func indexlessPath(dir, name string) string { return filepath.Join(dir, name) }

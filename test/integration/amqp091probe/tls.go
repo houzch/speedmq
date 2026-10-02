@@ -30,28 +30,51 @@ var (
 	gcert = flag.String("gencert", "", "只生成自签证书（cert.pem / key.pem）到该目录后退出")
 )
 
+// dialConfig 给出连接所需的 scheme 与 TLS 配置（由 -tls-ca 决定）。
+//
+// 抽出来是为了让需要自定义 amqp.Config 的用例（如 frame-max）复用同一份 TLS 判断 ——
+// 各写一份迟早会出现"TLS 只在一个用例里生效"的假绿。
+func dialConfig() (scheme string, tlsConf *tls.Config, err error) {
+	if *tlsCA == "" {
+		return "amqp", nil, nil
+	}
+	pemBytes, err := os.ReadFile(*tlsCA)
+	if err != nil {
+		return "", nil, fmt.Errorf("读取 -tls-ca 失败: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return "", nil, fmt.Errorf("-tls-ca 不是有效的 PEM 证书: %s", *tlsCA)
+	}
+	return "amqps", &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil
+}
+
+// probeURL 是按当前模式（明文 / TLS）拼好的目标地址。
+func probeURL() string {
+	scheme, _, err := dialConfig()
+	if err != nil {
+		scheme = "amqp"
+	}
+	return strings.Replace(url(""), "amqp://", scheme+"://", 1) //nolint:gocritic // 明确只换一次前缀
+}
+
 // dial 按 -tls-ca 决定走明文还是 TLS。
 //
 // 刻意不依赖系统根证书池：e2e 用的是自签证书，只有显式给出 CA 才应该通过校验 ——
 // 这同时验证了"服务端确实用了我们配置的那张证书"。
 func dial(u string) (*amqp.Connection, error) {
-	if *tlsCA == "" {
-		return amqp.Dial(u)
-	}
-	pemBytes, err := os.ReadFile(*tlsCA)
+	_, tlsConf, err := dialConfig()
 	if err != nil {
-		return nil, fmt.Errorf("读取 -tls-ca 失败: %w", err)
+		return nil, err
 	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(pemBytes) {
-		return nil, fmt.Errorf("-tls-ca 不是有效的 PEM 证书: %s", *tlsCA)
+	if tlsConf == nil {
+		return amqp.Dial(u)
 	}
 	// 必须把 scheme 换成 amqps —— 该库的 DialTLS **只在 URL 是 amqps:// 时才真正启用 TLS**
 	// （见 connection.go 的注释）。传 amqp:// 进去会得到一条**明文**连接，
 	// 而服务端是 TLS 端口，表现为握手层 "first record does not look like a TLS handshake"。
 	// 这个坑实测踩过一次。
-	return amqp.DialTLS(strings.Replace(u, "amqp://", "amqps://", 1),
-		&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+	return amqp.DialTLS(strings.Replace(u, "amqp://", "amqps://", 1), tlsConf)
 }
 
 // generateCert 生成一对自签证书（证书同时充当 CA），写入 dir。

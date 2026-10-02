@@ -38,8 +38,16 @@ const (
 	// FrameMaxAuthInitial 是认证完成前的初始帧上限。
 	// 对齐 RabbitMQ 4.1+：该值从 4096 提升到 8192，客户端若自定义 frame-max 必须 ≥ 此值。
 	FrameMaxAuthInitial uint32 = 8192
-	// FrameMinSize 是 AMQP 规范允许的最小 frame-max。
+	// FrameMinSize 是 AMQP 规范允许的最小 frame-max（协议事实，不等于本实现接受的下限）。
 	FrameMinSize uint32 = 4096
+	// FrameMaxNegotiatedMin 是协商时**接受**的最小 frame-max（对齐 RabbitMQ 4.x）。
+	//
+	// 规范允许 4096，但 RabbitMQ 4.1 起把协商下限提到了 8192：客户端请求更小的值时，
+	// 服务端在收到 Tune-Ok 后以 530 关闭连接（实测 4.3 的日志：
+	// "negotiated frame_max = 4096 is lower than the minimum allowed value (8192)"）。
+	// 不设这条下限，客户端在 Python/Go 库上都察觉不到差异，但从 SwiftMQ 迁回 RabbitMQ 就会连不上 ——
+	// 这是双跑对照（M8-5）抓到的差异，按"对齐 RabbitMQ 4.x 语义"处理。
+	FrameMaxNegotiatedMin uint32 = 8192
 	// ChannelMaxDefault 是协商默认的 channel 上限。
 	ChannelMaxDefault uint16 = 2047
 	// HeartbeatDefault 是协商默认的心跳间隔（秒）。

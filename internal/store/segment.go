@@ -208,6 +208,11 @@ func (s *QueueStore) compactIndex() error {
 		_, aerr := tmp.append(encodeIndexEntry(e))
 		return aerr
 	})
+	if werr != nil {
+		// 带上"内存计数 vs 文件实际大小"：这两个数字不一致，说明索引文件被别处改动过。
+		werr = fmt.Errorf("遍历索引失败（valid=%d, 文件大小=%d）: %w",
+			s.idx.size(), s.idx.fileSize(), werr)
+	}
 	if werr == nil {
 		// 只有 batch / always 档位才需要把新索引真正刷到盘上；
 		// os 档位下"写 tmp + 原子替换"已经足够保证索引不无限增长。

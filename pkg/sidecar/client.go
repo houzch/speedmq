@@ -43,6 +43,16 @@ type ClientOptions struct {
 	Dial func(ctx context.Context, address string) (net.Conn, error)
 	// Logger 记录连接级事件（可空）。
 	Logger Logger
+	// OnCall 处理插件发来的**反向调用**（插件 → 内核）。内核用它把插件请求映射成 plugin.Session
+	// 上的操作。未配置时，反向调用会收到一条明确的错误应答，而不是被静默丢弃。
+	//
+	// 实现会在独立协程里被调用（不阻塞读循环），且可能并发；返回值若非 nil 会被 JSON 序列化进应答。
+	OnCall func(ctx context.Context, method string, params json.RawMessage) (any, error)
+	// OnStreamOpen 在流号分配后、kindOpen 帧写出**之前**被同步调用，携带该流的元数据
+	// （含 Open.Attachment）。内核借此把"流"与"这条连接的内核操作面"绑定起来，
+	// 使插件随后的反向调用能定位到正确会话 —— 之所以要早于帧写出，是为了避免
+	// "插件一发反向调用、内核还没绑定"的竞态。可能并发调用，实现要自己保证安全。
+	OnStreamOpen func(stream uint32, meta Open)
 }
 
 // Logger 是 sidecar 的最小日志接口（避免本包依赖内核的日志类型）。
@@ -78,6 +88,10 @@ type Client struct {
 
 	done chan struct{}
 
+	// ctx 是连接级生命周期上下文：反向调用处理器在它下面运行，连接关闭时一起取消。
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	ack HelloAck
 }
 
@@ -101,6 +115,9 @@ func Dial(ctx context.Context, address string, hello Hello, opts ClientOptions) 
 	if err != nil {
 		return nil, fmt.Errorf("连接插件进程失败（%s）: %w", address, err)
 	}
+	// 连接级上下文刻意以 Background 为父：Dial 传入的 ctx 常常是启动窗口用的短命 ctx，
+	// 它一取消就会连反向调用处理器一起取消。这条 ctx 的寿命跟着连接本身（shutdown 时取消）。
+	connCtx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		conn:     conn,
 		fw:       &frameWriter{w: conn},
@@ -112,6 +129,8 @@ func Dial(ctx context.Context, address string, hello Hello, opts ClientOptions) 
 		pending:  map[uint64]chan Reply{},
 		lastPong: time.Now(),
 		done:     make(chan struct{}),
+		ctx:      connCtx,
+		cancel:   cancel,
 	}
 	// 先把握手做完再开读循环：握手的应答就走在同一条连接上，
 	// 此时还没有并发读，逻辑最简单也最不容易出错。
@@ -216,6 +235,12 @@ func (c *Client) Open(ctx context.Context, meta Open) (*Stream, error) {
 	wait := make(chan OpenAck, 1)
 	c.opens[meta.Stream] = wait
 	c.mu.Unlock()
+
+	// 在写出 kindOpen 之前通知绑定：此刻插件还不知道这个流号，因此不会出现
+	// "插件已经拿这个流号发起反向调用、内核却还没绑定"的竞态。
+	if c.opts.OnStreamOpen != nil {
+		c.opts.OnStreamOpen(meta.Stream, meta)
+	}
 
 	payload, err := json.Marshal(meta)
 	if err != nil {
@@ -363,6 +388,50 @@ func (c *Client) heartbeatLoop(interval time.Duration) {
 	}
 }
 
+// handleReverseCall 执行一次插件发起的反向调用并把结果写回（由 readLoop 起协程调用）。
+//
+// 未配置 OnCall 时**明确回一条错误**而不是静默丢弃：插件会因此收到一个失败应答，
+// 从而知道自己依赖的内核能力没打开，而不是永远等下去。
+func (c *Client) handleReverseCall(call Call) {
+	reply := Reply{ID: call.ID, Reverse: true, OK: true}
+	if !call.Reverse {
+		// 插件把一条"正向调用"发给了内核：内核不处理正向调用，明确拒绝而不是误当成反向。
+		reply.OK = false
+		reply.Error = "sidecar: 内核不处理非反向（正向）调用"
+	} else if c.opts.OnCall == nil {
+		reply.OK = false
+		reply.Error = "sidecar: 内核未提供反向调用处理器"
+	} else {
+		data, err := c.opts.OnCall(c.ctx, call.Method, call.Params)
+		switch {
+		case err != nil:
+			reply.OK = false
+			reply.Error = err.Error()
+			// 能把语义分类带回去就带上：插件侧据此还原成 plugin.Error，而不是只剩一句文本。
+			var kc ErrorKindCarrier
+			if errors.As(err, &kc) {
+				if payload, merr := json.Marshal(ErrorPayload{Kind: kc.RPCErrorKind(), Text: err.Error()}); merr == nil {
+					reply.Data = payload
+				}
+			}
+		case data != nil:
+			raw, merr := json.Marshal(data)
+			if merr != nil {
+				reply.Error = merr.Error()
+			} else {
+				reply.Data = raw
+			}
+		}
+	}
+	raw, err := json.Marshal(reply)
+	if err != nil {
+		return
+	}
+	if err := c.fw.write(kindReply, raw); err != nil {
+		c.shutdown(err)
+	}
+}
+
 func (c *Client) readLoop() {
 	for {
 		k, payload, err := readFrame(c.br)
@@ -384,11 +453,25 @@ func (c *Client) readLoop() {
 				c.shutdown(err)
 				return
 			}
+		case kindCall:
+			// 插件发起的反向调用。执行必须放到独立协程，否则一个慢方法会卡死整条连接的读循环。
+			var call Call
+			if err := json.Unmarshal(payload, &call); err != nil {
+				c.shutdown(fmt.Errorf("%w: 调用无法解析: %v", ErrProtocol, err))
+				return
+			}
+			go c.handleReverseCall(call)
 		case kindReply:
 			var reply Reply
 			if err := json.Unmarshal(payload, &reply); err != nil {
 				c.shutdown(fmt.Errorf("%w: 应答无法解析: %v", ErrProtocol, err))
 				return
+			}
+			if reply.Reverse {
+				// 反向应答只会由内核写出（回应插件的反向调用），内核自己不会发出反向调用，
+				// 因此这里收到 Reverse 应答属于协议异常：记一条日志并丢弃，不去污染正向 pending 表。
+				c.log.Warn("收到意外的反向应答，已丢弃", "id", reply.ID)
+				continue
 			}
 			c.mu.Lock()
 			ch := c.pending[reply.ID]
@@ -468,6 +551,8 @@ func (c *Client) shutdown(err error) {
 	c.mu.Unlock()
 
 	_ = c.conn.Close()
+	// 取消连接级上下文：让仍在执行的反向调用处理器尽快退出。
+	c.cancel()
 	close(c.done)
 	reason := ErrClosed.Error()
 	if err != nil {

@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/houzch/swiftmq/internal/meta"
 	"github.com/houzch/swiftmq/internal/raft"
 	"github.com/houzch/swiftmq/internal/store"
 	"github.com/houzch/swiftmq/pkg/plugin"
@@ -135,6 +137,9 @@ type quorumGroup struct {
 	dir string
 	q   *queue
 	log *slog.Logger
+	// tr 是该组在共享集群端口上的传输（方法名带组前缀），组自身还要在它上面注册
+	// 一个"运行期改组"的处理器（见 serveReconfig）。
+	tr groupTransport
 
 	mu        sync.Mutex
 	node      *raft.Node
@@ -143,18 +148,27 @@ type quorumGroup struct {
 }
 
 // startQuorumGroup 启动一条仲裁队列的 Raft 组（每个节点都会为同一条队列启动自己的一份）。
-func (b *Broker) startQuorumGroup(v *vhost, q *queue) error {
+//
+// 组的投票成员就是该队列在元数据里记录的**副本集**（rec.Replicas）；集群里其余节点
+// 以 learner 身份加入同一个组 —— learner 照常复制日志（因此扩副本不需要搬数据），
+// 但不计入多数派、不参与选举。运行期的 grow 就是把目标节点提升为 voter（见 growTo）。
+func (b *Broker) startQuorumGroup(v *vhost, q *queue, rec meta.Queue) error {
 	id := v.name + "\x00" + q.name
 	dir := filepath.Join(b.cfg.DataDir, "quorum",
 		store.SafeDirName(v.name), store.SafeDirName(q.name))
-	g := &quorumGroup{b: b, id: id, dir: dir, q: q, log: b.log}
+	voters, learners := b.quorumGroupMembers(rec)
+	g := &quorumGroup{
+		b: b, id: id, dir: dir, q: q, log: b.log,
+		tr: groupTransport{prefix: "quorum:" + id + ":", inner: b.cluster},
+	}
 
 	node, err := raft.New(raft.Options{
-		ID:    b.nodeID,
-		Peers: b.quorumMembers(),
-		Dir:   dir,
+		ID:       b.nodeID,
+		Peers:    voters,
+		Learners: learners,
+		Dir:      dir,
 		// 方法名带组前缀：同一个集群端口上可以并存任意多条队列的组。
-		Transport:         groupTransport{prefix: "quorum:" + id + ":", inner: b.cluster},
+		Transport:         g.tr,
 		FSM:               &quorumFSM{g: g},
 		ElectionTimeout:   quorumElectionTimeout,
 		HeartbeatInterval: quorumHeartbeat,
@@ -165,21 +179,58 @@ func (b *Broker) startQuorumGroup(v *vhost, q *queue) error {
 		return err
 	}
 	g.node = node
+	if err := g.serveReconfig(); err != nil {
+		node.Stop()
+		return err
+	}
 	if err := node.Start(); err != nil {
 		node.Stop()
 		return err
 	}
 	q.quorum = g
 	b.log.Debug("仲裁队列的 Raft 组已启动", "vhost", v.name, "queue", q.name,
-		"members", len(b.quorumMembers()), "dir", dir)
+		"voters", voters, "learners", learners, "dir", dir)
 	return nil
 }
 
-// quorumMembers 返回仲裁队列 Raft 组的投票成员。
+// quorumGroupMembers 解析一条仲裁队列的 Raft 组成员：投票成员取元数据里的副本集，
+// 集群里其余节点作为 learner。
 //
-// 与元数据组保持一致：集群全部成员；单机部署时就是自己（单机组，日志仍然持久化）。
-// 成员动态增删属 M6c —— 本期是静态成员，与 cluster.peers 同进同退。
-func (b *Broker) quorumMembers() []string {
+// 为什么让非副本节点以 learner 身份一起复制：这样"扩副本"只是提权，不需要在运行期
+// 让一个从未跑过该组、也没有任何数据的节点冷启动接入 —— 少一类容易出错的中间态。
+// 副本数（voter 数）仍严格等于元数据里的 Replicas，故障容错口径因此是清晰的。
+//
+// 防御：本节点既不在副本集里、又不在集群成员表里时（成员表与副本集短暂不一致），
+// 至少把它自己算作 learner，否则 raft.New 会因为"成员表不含本节点"直接报错。
+func (b *Broker) quorumGroupMembers(rec meta.Queue) (voters, learners []string) {
+	members := b.quorumClusterMembers()
+	if len(rec.Replicas) == 0 {
+		return members, nil
+	}
+	voters = append([]string(nil), rec.Replicas...)
+	sort.Strings(voters)
+	inReplicas := make(map[string]struct{}, len(voters))
+	for _, id := range voters {
+		inReplicas[id] = struct{}{}
+	}
+	for _, id := range members {
+		if _, ok := inReplicas[id]; !ok {
+			learners = append(learners, id)
+		}
+	}
+	if !containsID(voters, b.nodeID) && !containsID(learners, b.nodeID) {
+		learners = append(learners, b.nodeID)
+		sort.Strings(learners)
+	}
+	return voters, learners
+}
+
+// quorumClusterMembers 返回仲裁队列组可以放置副本的节点（已排序）。
+//
+// 取 cluster.peers 地址簿：它同时定义了"谁能被联系上"，因此跨节点复制才可能成立。
+// 运行期经 add_member 加入、未写进各节点配置地址簿的成员不在其列 —— 这是本期的已知边界
+// （与"仲裁队列成员跟随集群成员表"的现状一致）。
+func (b *Broker) quorumClusterMembers() []string {
 	if !b.clusterOn {
 		return []string{b.nodeID}
 	}
@@ -189,6 +240,29 @@ func (b *Broker) quorumMembers() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// quorumReplicaSet 从集群成员里挑出 size 个节点作为副本集（已排序、确定性）。
+//
+// 必须确定性：副本集要写进元数据、并成为每个节点建组时的初始投票成员，
+// 各节点独立算出的结果必须完全一致（否则会分叉成两个多数派）。
+// 同一个元数据状态 + 同一个 size ⇒ 同一份 Replicas。
+func (b *Broker) quorumReplicaSet(size int) []string {
+	members := b.quorumClusterMembers()
+	if size <= 0 || size > len(members) {
+		size = len(members)
+	}
+	return append([]string(nil), members[:size]...)
+}
+
+// containsID 判断切片里是否有该 ID。
+func containsID(ids []string, id string) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // stop 停掉 Raft 组并删除它的日志与快照目录。可重复调用。
@@ -421,9 +495,10 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 		return true, nil, nil
 	}
 	candidate := &queuedMsg{msg: msg}
+	a := q.arg()
 	var drop []uint64
 	if q.wouldExceedLocked(candidate) {
-		if q.args.overflow == overflowRejectPublish {
+		if a.overflow == overflowRejectPublish {
 			q.mu.Unlock()
 			return false, nil, nil
 		}
@@ -437,7 +512,7 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 	q.nextSeq++
 	seq := q.nextSeq
 	var expireAt int64
-	if ttl := q.args.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
+	if ttl := a.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
 		expireAt = time.Now().Add(ttl).UnixMilli()
 	}
 	q.mu.Unlock()
@@ -514,7 +589,7 @@ func (q *queue) sweepQuorum(now time.Time) {
 
 	for _, item := range expired {
 		// 配了死信就按队列配置转出去（死信路由由派发器异步完成），随后把确认写进日志。
-		if q.args.hasDeadLetter() {
+		if q.arg().hasDeadLetter() {
 			q.deadLetter(item.msg, deathReasonExpired)
 		}
 		g.proposeAck(item.seq)
@@ -590,7 +665,7 @@ func (q *queue) cancelConsumersWithReason(reason string) {
 
 // checkQuorumLeadership 在后台周期检查各仲裁队列的 leader 变化并收拾本地状态。
 func (b *Broker) checkQuorumLeadership() {
-	for _, v := range b.vhosts {
+	for _, v := range b.vhostList() {
 		v.mu.RLock()
 		queues := make([]*queue, 0, len(v.queues))
 		for _, q := range v.queues {
@@ -626,7 +701,7 @@ func (b *Broker) checkQuorumLeadership() {
 
 // stopQuorumGroups 停掉全部仲裁队列的 Raft 组（不删除数据）。进程退出时调用。
 func (b *Broker) stopQuorumGroups() {
-	for _, v := range b.vhosts {
+	for _, v := range b.vhostList() {
 		v.mu.RLock()
 		groups := make([]*quorumGroup, 0)
 		for _, q := range v.queues {
@@ -639,4 +714,579 @@ func (b *Broker) stopQuorumGroups() {
 			g.stop()
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 运行期扩副本（grow）与 leader 再平衡（rebalance）
+//
+// 语义边界（有意写清，避免被理解成 RabbitMQ 的全量能力）：
+//   - grow 只扩大副本数，**不支持缩容**（要减少副本先删队列重建）；
+//   - 副本只在 cluster.peers 地址簿内的节点之间选择，且不改变已选节点的相对顺序（确定性）；
+//   - 因集群里其余节点本来就是 learner（一直在复制日志），grow 只做"提权"，
+//     **不需要搬数据**，因此不涉及流量控制与数据迁移窗口；
+//   - rebalance 只迁移 **leader**（服务节点），不改副本集、不搬数据。
+// ---------------------------------------------------------------------------
+
+// 组内的改组 / 让位 RPC 方法名（真实方法名由 groupTransport 补上组前缀）。
+const (
+	quorumReconfigMethod = "reconfig"
+	quorumTransferMethod = "transfer"
+)
+
+const (
+	// quorumReconfigTimeout 是单次改组（含等新成员追平）的上限。
+	quorumReconfigTimeout = 60 * time.Second
+	// quorumTransferTimeout 是 leader 让位的上限。
+	quorumTransferTimeout = 10 * time.Second
+	// quorumVotersWait 是"等本地组看到新投票成员"的上限（尽力而为，超时只告警）。
+	quorumVotersWait = 3 * time.Second
+)
+
+type quorumReconfigRequest struct {
+	// Add 是要提升为投票成员的节点 ID。
+	Add []string `json:"add"`
+}
+
+type quorumReconfigResponse struct {
+	OK       bool     `json:"ok"`
+	Err      string   `json:"err,omitempty"`
+	Voters   []string `json:"voters,omitempty"`
+	Learners []string `json:"learners,omitempty"`
+}
+
+type quorumTransferRequest struct {
+	Target string `json:"target"`
+}
+
+type quorumTransferResponse struct {
+	OK  bool   `json:"ok"`
+	Err string `json:"err,omitempty"`
+}
+
+// serveReconfig 在组自己的传输前缀上注册改组与让位处理器。
+//
+// 单机模式下 groupTransport.inner 为 nil，Serve 是空实现（没有邻居需要服务），
+// 因此这里不需要分支。
+func (g *quorumGroup) serveReconfig() error {
+	if err := g.tr.Serve(quorumReconfigMethod, g.handleReconfig); err != nil {
+		return fmt.Errorf("注册仲裁队列改组处理器失败 (%s): %w", g.id, err)
+	}
+	if err := g.tr.Serve(quorumTransferMethod, g.handleTransfer); err != nil {
+		return fmt.Errorf("注册仲裁队列让位处理器失败 (%s): %w", g.id, err)
+	}
+	return nil
+}
+
+// raftNode 返回底层 Raft 节点（已停止时为 nil）。
+func (g *quorumGroup) raftNode() *raft.Node {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.stopped {
+		return nil
+	}
+	return g.node
+}
+
+// membership 返回组当前的成员划分。
+func (g *quorumGroup) membership() raft.Membership {
+	node := g.raftNode()
+	if node == nil {
+		return raft.Membership{}
+	}
+	return node.Membership()
+}
+
+// awaitLeaderNode 等本节点知道组 leader（最多 quorumLeaderWait）。
+//
+// learner 与 follower 都是从 leader 的心跳里"学到" leader 的，声明队列后立刻在本节点
+// 发起改组/让位时，这个信息可能还没到 —— 短暂等一会儿比直接甩一个"正在选主"更好。
+func (g *quorumGroup) awaitLeaderNode() string {
+	deadline := time.Now().Add(quorumLeaderWait)
+	for {
+		if leader := g.leaderNode(); leader != "" {
+			return leader
+		}
+		if !time.Now().Before(deadline) {
+			return ""
+		}
+		time.Sleep(quorumLeaderPoll)
+	}
+}
+
+// growTo 把给定的节点提升为该组的投票成员（幂等）。
+//
+// 若本节点就是组 leader 直接在本地做；否则把请求转给 leader —— 只有 leader 能提交配置变更。
+func (g *quorumGroup) growTo(ctx context.Context, add []string) (raft.Membership, error) {
+	node := g.raftNode()
+	if node == nil {
+		return raft.Membership{}, errors.New("仲裁队列的 Raft 组未运行")
+	}
+	if len(add) == 0 {
+		return node.Membership(), nil
+	}
+	if node.IsLeader() {
+		cctx, cancel := context.WithTimeout(ctx, quorumReconfigTimeout)
+		defer cancel()
+		if err := g.promote(cctx, add); err != nil {
+			return raft.Membership{}, err
+		}
+		return node.Membership(), nil
+	}
+	leader := g.awaitLeaderNode()
+	if leader == "" {
+		return raft.Membership{}, errors.New("该仲裁队列的 Raft 组当前没有 leader（可能正在选主），请稍后重试")
+	}
+	payload, err := json.Marshal(quorumReconfigRequest{Add: add})
+	if err != nil {
+		return raft.Membership{}, fmt.Errorf("编码改组请求失败: %w", err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, quorumReconfigTimeout)
+	defer cancel()
+	raw, err := g.tr.Call(cctx, leader, quorumReconfigMethod, payload)
+	if err != nil {
+		return raft.Membership{}, fmt.Errorf("把改组请求转给 leader %s 失败: %w", leader, err)
+	}
+	var resp quorumReconfigResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return raft.Membership{}, fmt.Errorf("解析 leader %s 的改组应答失败: %w", leader, err)
+	}
+	if resp.Err != "" {
+		return raft.Membership{}, fmt.Errorf("leader %s 拒绝改组: %s", leader, resp.Err)
+	}
+	return node.Membership(), nil
+}
+
+// promote 在 leader 上把成员提升为投票成员：learner（必要时先加入）→ 等追平 → 提升。
+func (g *quorumGroup) promote(ctx context.Context, ids []string) error {
+	node := g.raftNode()
+	if node == nil {
+		return errors.New("仲裁队列的 Raft 组未运行")
+	}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		current := node.Membership()
+		if containsID(current.Voters, id) {
+			continue // 已是投票成员：幂等跳过
+		}
+		if !containsID(current.Learners, id) {
+			err := node.ChangeMembership(ctx, raft.ConfChange{Op: raft.ConfAddLearner, ID: id})
+			if err != nil && !errors.Is(err, raft.ErrMemberExists) {
+				return fmt.Errorf("把 %s 加入该组失败: %w", id, err)
+			}
+		}
+		if err := node.AwaitCatchUp(ctx, id); err != nil {
+			return fmt.Errorf("等待 %s 追上该组日志失败: %w", id, err)
+		}
+		err := node.ChangeMembership(ctx, raft.ConfChange{Op: raft.ConfPromote, ID: id})
+		if err != nil && !errors.Is(err, raft.ErrNotLearner) {
+			return fmt.Errorf("把 %s 提升为投票成员失败: %w", id, err)
+		}
+		g.log.Info("仲裁队列副本已提升为投票成员", "queue", g.q.name, "node", id)
+	}
+	return nil
+}
+
+// handleReconfig 是 quorumReconfigMethod 的处理器（只在 leader 上真正生效）。
+func (g *quorumGroup) handleReconfig(ctx context.Context, from string, payload []byte) ([]byte, error) {
+	var req quorumReconfigRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("解析改组请求失败 (from=%s): %w", from, err)
+	}
+	if !g.isLeader() {
+		return encodeQuorumResponse(quorumReconfigResponse{Err: "本节点已不是该组的 leader"})
+	}
+	if err := g.promote(ctx, req.Add); err != nil {
+		return encodeQuorumResponse(quorumReconfigResponse{Err: err.Error()})
+	}
+	m := g.membership()
+	return encodeQuorumResponse(quorumReconfigResponse{
+		OK: true, Voters: m.Voters, Learners: m.Learners,
+	})
+}
+
+// transferTo 让该组的 leader 让位给 target。
+func (g *quorumGroup) transferTo(ctx context.Context, target string) error {
+	node := g.raftNode()
+	if node == nil {
+		return errors.New("仲裁队列的 Raft 组未运行")
+	}
+	if node.IsLeader() {
+		cctx, cancel := context.WithTimeout(ctx, quorumTransferTimeout)
+		defer cancel()
+		return node.TransferLeadership(cctx, target)
+	}
+	leader := g.awaitLeaderNode()
+	if leader == "" {
+		return errors.New("该仲裁队列的 Raft 组当前没有 leader（可能正在选主），请稍后重试")
+	}
+	payload, err := json.Marshal(quorumTransferRequest{Target: target})
+	if err != nil {
+		return fmt.Errorf("编码让位请求失败: %w", err)
+	}
+	cctx, cancel := context.WithTimeout(ctx, quorumTransferTimeout)
+	defer cancel()
+	raw, err := g.tr.Call(cctx, leader, quorumTransferMethod, payload)
+	if err != nil {
+		return fmt.Errorf("把让位请求转给 leader %s 失败: %w", leader, err)
+	}
+	var resp quorumTransferResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("解析 leader %s 的让位应答失败: %w", leader, err)
+	}
+	if resp.Err != "" {
+		return fmt.Errorf("leader %s 拒绝让位: %s", leader, resp.Err)
+	}
+	return nil
+}
+
+// handleTransfer 是 quorumTransferMethod 的处理器（只在 leader 上真正生效）。
+func (g *quorumGroup) handleTransfer(ctx context.Context, from string, payload []byte) ([]byte, error) {
+	var req quorumTransferRequest
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, fmt.Errorf("解析让位请求失败 (from=%s): %w", from, err)
+	}
+	if !g.isLeader() {
+		return encodeQuorumResponse(quorumTransferResponse{Err: "本节点已不是该组的 leader"})
+	}
+	cctx, cancel := context.WithTimeout(ctx, quorumTransferTimeout)
+	defer cancel()
+	node := g.raftNode()
+	if node == nil {
+		return encodeQuorumResponse(quorumTransferResponse{Err: "仲裁队列的 Raft 组未运行"})
+	}
+	if err := node.TransferLeadership(cctx, req.Target); err != nil {
+		return encodeQuorumResponse(quorumTransferResponse{Err: err.Error()})
+	}
+	return encodeQuorumResponse(quorumTransferResponse{OK: true})
+}
+
+// encodeQuorumResponse 编码组内 RPC 的应答体。
+func encodeQuorumResponse(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("编码仲裁队列组应答失败: %w", err)
+	}
+	return raw, nil
+}
+
+// ---------------------------------------------------------------------------
+// 对内核外部的接口：副本集查询 / grow / rebalance
+// ---------------------------------------------------------------------------
+
+// QuorumQueueInfo 是仲裁队列副本集的只读视图（管理 API 与 CLI 展示用）。
+type QuorumQueueInfo struct {
+	VHost string
+	Name  string
+	// Leader 是组当前的服务节点（未知为空串）。
+	Leader string
+	// Replicas 是元数据里记录的副本集（声明时定死、grow 时扩大）。
+	Replicas []string
+	// Voters / Learners 是组**当前**的投票成员与非投票成员。
+	Voters   []string
+	Learners []string
+}
+
+// QuorumQueueInfo 返回一条仲裁队列的副本集视图；非仲裁队列返回 false。
+func (b *Broker) QuorumQueueInfo(vhost, name string) (QuorumQueueInfo, bool) {
+	v, ok := b.vhostOf(vhost)
+	if !ok {
+		return QuorumQueueInfo{}, false
+	}
+	q, ok := v.getQueue(name)
+	if !ok || q.quorum == nil {
+		return QuorumQueueInfo{}, false
+	}
+	info := QuorumQueueInfo{
+		VHost:    vhost,
+		Name:     name,
+		Leader:   q.quorum.leaderNode(),
+		Replicas: b.quorumReplicasOf(vhost, name, q),
+	}
+	m := q.quorum.membership()
+	info.Voters = append([]string{}, m.Voters...)
+	info.Learners = append([]string{}, m.Learners...)
+	return info, true
+}
+
+// quorumReplicasOf 返回该队列的副本集：元数据里记录的（声明意图）与组当前投票成员
+// （既成事实）的**并集**。
+//
+// 两者最终一致，取并集是为了稳妥：元数据在 follower 上落后于组的状态时（grow 刚发起、
+// 或本节点不是元数据 leader），既不能把副本数看小（会误判成"缩容"），也不能漏掉已生效的成员。
+func (b *Broker) quorumReplicasOf(vhost, name string, q *queue) []string {
+	var metaReplicas []string
+	if rec, ok := b.metaRecord(vhost, name); ok {
+		metaReplicas = rec.Replicas
+	}
+	var voters []string
+	if q != nil && q.quorum != nil {
+		voters = q.quorum.membership().Voters
+	}
+	return unionSorted(metaReplicas, voters)
+}
+
+// unionSorted 合并两个 ID 列表：去重并排序（副本集的表示必须稳定、可比）。
+func unionSorted(a, b []string) []string {
+	set := make(map[string]struct{}, len(a)+len(b))
+	for _, id := range a {
+		set[id] = struct{}{}
+	}
+	for _, id := range b {
+		set[id] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// metaRecord 返回某队列在元数据里的记录。
+func (b *Broker) metaRecord(vhost, name string) (meta.Queue, bool) {
+	if b.meta == nil {
+		return meta.Queue{}, false
+	}
+	rec, ok := b.meta.State().Queues[meta.Key(vhost, name)]
+	return rec, ok
+}
+
+// GrowQuorumQueue 把一条仲裁队列的副本数扩到 size。
+//
+// 对齐 `rabbitmq-queues grow` 的语义：只扩大，不缩小；副本集落进元数据，
+// 因此重启后仍是 size 副本，新加入集群的节点也按这份记录建组。
+func (b *Broker) GrowQuorumQueue(ctx context.Context, vhost, name string, size int) (QuorumQueueInfo, error) {
+	if !b.clusterOn || b.cluster == nil {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindNotImplemented,
+			"NOT_IMPLEMENTED - 单机模式没有副本可扩（仲裁队列的组就在本节点）")
+	}
+	if size <= 0 {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 副本数必须大于 0")
+	}
+	v, ok := b.vhostOf(vhost)
+	if !ok {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindNotFound,
+			"NOT_FOUND - vhost '%s' not found", vhost)
+	}
+	q, ok := v.getQueue(name)
+	if !ok {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindNotFound,
+			"NOT_FOUND - no queue '%s' in vhost '%s'", name, vhost)
+	}
+	if q.quorum == nil {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 队列 '%s' 不是仲裁队列（x-queue-type=quorum），没有副本集可扩", name)
+	}
+	members := b.quorumClusterMembers()
+	if size > len(members) {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 目标副本数 %d 超过集群成员数 %d", size, len(members))
+	}
+	current := b.quorumReplicasOf(vhost, name, q)
+	if size < len(current) {
+		return QuorumQueueInfo{}, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 不支持缩容（当前 %d 副本，请求 %d）：本期只实现 grow", len(current), size)
+	}
+
+	// 目标副本集：保留已有副本，按成员表顺序补齐（确定性，所有节点算出的结果一致）。
+	target := append([]string(nil), current...)
+	for _, id := range members {
+		if len(target) >= size {
+			break
+		}
+		if !containsID(target, id) {
+			target = append(target, id)
+		}
+	}
+	sort.Strings(target)
+
+	// 需要真正提升的节点 = 目标副本集 − 组当前投票成员（以**组的事实**为准：
+	// 元数据可能领先于组，例如上一次 grow 只写完了元数据就中断了）。
+	groupVoters := q.quorum.membership().Voters
+	var add []string
+	for _, id := range target {
+		if !containsID(groupVoters, id) {
+			add = append(add, id)
+		}
+	}
+
+	// 先做真正的改组（Raft 配置变更会复制给组内所有成员并各自落盘），
+	// 再把"目标是 N 副本"写进元数据。顺序上"先事实、后记录"：即使元数据写入失败，
+	// 组本身已经被正确扩大（重启也保持），不会留下"元数据说 3 副本、实际只有 1 个投票成员"的假象。
+	if _, err := q.quorum.growTo(ctx, add); err != nil {
+		return QuorumQueueInfo{}, mapQuorumOpErr(err)
+	}
+	if rec, ok := b.metaRecord(vhost, name); ok {
+		rec.Replicas = target
+		if err := b.submitMeta(meta.OpPutQueue, rec); err != nil {
+			return QuorumQueueInfo{}, err
+		}
+		// 等**本节点**的元数据状态反映这次变更：本节点可能不是元数据 leader，
+		// 不同步等待会让紧随其后的查询（与下一次 grow 的副本数判断）看到旧值。
+		if err := b.awaitMeta(func() bool {
+			r, ok := b.metaRecord(vhost, name)
+			return ok && sameIDSet(r.Replicas, target)
+		}); err != nil {
+			return QuorumQueueInfo{}, err
+		}
+	} else {
+		b.log.Warn("队列不在元数据中，副本集只落在 Raft 组自身", "vhost", vhost, "queue", name)
+	}
+
+	b.awaitQuorumVoters(q, target)
+	b.log.Info("仲裁队列副本已扩大", "vhost", vhost, "queue", name,
+		"from", len(current), "to", len(target), "replicas", target)
+	info, _ := b.QuorumQueueInfo(vhost, name)
+	return info, nil
+}
+
+// awaitQuorumVoters 等本地组看到目标投票成员集合（尽力而为，超时只告警）。
+//
+// 与成员变更同一理由：本节点可能不是组 leader，要等一轮复制才看到新成员。
+// 不等待的话，紧随其后的查询会返回一份**旧**的成员表，运维会以为没生效。
+func (b *Broker) awaitQuorumVoters(q *queue, target []string) {
+	g := q.quorum
+	if g == nil {
+		return
+	}
+	deadline := time.Now().Add(quorumVotersWait)
+	for {
+		if sameIDSet(g.membership().Voters, target) {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			b.log.Warn("仲裁队列副本集已在组内生效，但本地成员表未在超时内更新",
+				"queue", q.name, "target", target)
+			return
+		}
+		time.Sleep(metaApplyPollInterval)
+	}
+}
+
+// sameIDSet 判断两个已排序的 ID 列表是否相等。
+func sameIDSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mapQuorumOpErr 把组操作错误收敛成 *plugin.Error（内核对外错误一律是 *Error）。
+func mapQuorumOpErr(err error) error {
+	var pe *plugin.Error
+	if errors.As(err, &pe) {
+		return pe
+	}
+	return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - 仲裁队列副本调整失败: %v", err)
+}
+
+// RebalanceResult 是一次 rebalance 的结果（管理 API 与 CLI 展示用）。
+type RebalanceResult struct {
+	VHost string `json:"vhost"`
+	Name  string `json:"queue"`
+	// Moved 表示是否真的迁移了 leader。
+	Moved bool `json:"moved"`
+	// From / To 是迁移前后的 leader 节点。
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Reason 说明没迁移的原因（例如"已经均衡"）。
+	Reason string `json:"reason,omitempty"`
+}
+
+// RebalanceQuorumQueue 把一条仲裁队列的 leader 从"承担 leader 最多"的节点迁到同组中较空的节点。
+//
+// 边界（本期有意的最小实现）：
+//   - 只迁移 **leader**，不改变副本集、不搬迁数据（非副本节点本来就是 learner，一直在复制）；
+//   - 目标只在**该队列自己的投票成员**里选，safety 由 Raft 的选举规则保证；
+//   - 当 leader 的负载不比最空的投票成员多时不动（避免无谓换届）；
+//   - 不做全局最优调度、不做流量控制。
+func (b *Broker) RebalanceQuorumQueue(ctx context.Context, vhost, name string) (RebalanceResult, error) {
+	if !b.clusterOn || b.cluster == nil {
+		return RebalanceResult{}, plugin.Errorf(plugin.KindNotImplemented,
+			"NOT_IMPLEMENTED - 单机模式没有可再平衡的副本")
+	}
+	v, ok := b.vhostOf(vhost)
+	if !ok {
+		return RebalanceResult{}, plugin.Errorf(plugin.KindNotFound,
+			"NOT_FOUND - vhost '%s' not found", vhost)
+	}
+	q, ok := v.getQueue(name)
+	if !ok {
+		return RebalanceResult{}, plugin.Errorf(plugin.KindNotFound,
+			"NOT_FOUND - no queue '%s' in vhost '%s'", name, vhost)
+	}
+	if q.quorum == nil {
+		return RebalanceResult{}, plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - 队列 '%s' 不是仲裁队列，没有 leader 可再平衡", name)
+	}
+	res := RebalanceResult{VHost: vhost, Name: name}
+
+	m := q.quorum.membership()
+	leader := q.quorum.leaderNode()
+	if leader == "" {
+		return RebalanceResult{}, plugin.Errorf(plugin.KindInternal,
+			"INTERNAL_ERROR - 该仲裁队列当前没有 leader（可能正在选主），请稍后重试")
+	}
+	res.From = leader
+	if len(m.Voters) < 2 {
+		res.Reason = "副本集只有一个投票成员，无处可迁"
+		return res, nil
+	}
+
+	counts := b.quorumLeaderCounts()
+	target := ""
+	best := 0
+	for _, id := range m.Voters {
+		if id == leader {
+			continue
+		}
+		c := counts[id]
+		if target == "" || c < best {
+			target, best = id, c
+		}
+	}
+	if target == "" || counts[leader] <= best {
+		res.Reason = "各投票成员承担的 leader 数已经均衡"
+		return res, nil
+	}
+	if err := q.quorum.transferTo(ctx, target); err != nil {
+		return RebalanceResult{}, mapQuorumOpErr(err)
+	}
+	res.Moved = true
+	res.To = target
+	b.log.Info("仲裁队列 leader 已再平衡", "vhost", vhost, "queue", name,
+		"from", res.From, "to", target, "leader_counts", counts)
+	return res, nil
+}
+
+// quorumLeaderCounts 统计各节点当前承担多少条仲裁队列的 leader（本节点视角）。
+//
+// 同一份组 leader 信息在各节点之间最终一致（leader 由 Raft 选出），因此这个计数
+// 不依赖跨节点聚合，单节点即可算出。
+func (b *Broker) quorumLeaderCounts() map[string]int {
+	counts := map[string]int{}
+	for _, v := range b.vhostList() {
+		v.mu.RLock()
+		queues := make([]*queue, 0, len(v.queues))
+		for _, q := range v.queues {
+			if q.quorum != nil {
+				queues = append(queues, q)
+			}
+		}
+		v.mu.RUnlock()
+		for _, q := range queues {
+			if leader := q.quorum.leaderNode(); leader != "" {
+				counts[leader]++
+			}
+		}
+	}
+	return counts
 }

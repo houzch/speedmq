@@ -24,7 +24,7 @@ import (
 )
 
 // Version 是内核版本。
-const Version = "0.13.0"
+const Version = "0.14.0"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -39,10 +39,13 @@ const (
 
 // Broker 是内核单例。
 type Broker struct {
-	log    *slog.Logger
-	cfg    *config.Config
-	auth   *auth.Store
-	vhosts map[string]*vhost
+	log  *slog.Logger
+	cfg  *config.Config
+	auth *auth.Store
+	// vhosts 是 vhost 集合；vhostsMu 保护它 —— M8-7 起 vhost 可以在运行期增删，
+	// 而读侧遍布会话打开、管理面与跨节点转发。
+	vhostsMu sync.RWMutex
+	vhosts   map[string]*vhost
 	// sessions 用于生成会话标识（独占队列归属判定用）
 	sessions atomic.Uint64
 
@@ -82,6 +85,9 @@ type Broker struct {
 	meta *meta.Store
 	// clusterPaused 在 pause_minority 且与多数派失联时为 true：暂停服务。
 	clusterPaused atomic.Bool
+	// policies 是本节点已知的策略集合（由元数据层在打开/变更时重建，见 policy.go）。
+	// 读侧（声明队列/交换机、重算生效参数）直接取这份快照，避免每次都去筛元数据。
+	policies atomic.Pointer[policySet]
 
 	// ---- 跨节点消息转发（M6b，见 forward.go）----
 
@@ -148,7 +154,8 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 	}
 
 	// 元数据层必须在 vhost 建好之后打开：打开过程会把已有拓扑回调给内核，
-	// 回调需要落在已经存在的 vhost 上（vhost 集合由配置驱动，见 cluster.go）。
+	// 回调需要落在已经存在的 vhost 上。配置里的 vhost 只是**首次引导**的种子，
+	// 打开元数据时会按元数据把集合对齐（见 RestoreMeta / syncVHostsFromMeta）。
 	if err := b.openMeta(); err != nil {
 		b.stores.CloseAll()
 		return nil, fmt.Errorf("打开元数据层失败: %w", err)
@@ -159,10 +166,55 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 	b.bg.Add(1)
 	go func() {
 		defer b.bg.Done()
+		// vhost 先于账号播种：权限记录引用的 vhost 得先存在。
+		b.bootstrapVHosts(ctx)
 		b.bootstrapUsers(ctx)
 	}()
 	go b.background(ctx)
 	return b, nil
+}
+
+// vhostOf 按名字取 vhost（并发安全）。
+func (b *Broker) vhostOf(name string) (*vhost, bool) {
+	b.vhostsMu.RLock()
+	defer b.vhostsMu.RUnlock()
+	v, ok := b.vhosts[name]
+	return v, ok
+}
+
+// vhostList 返回全部 vhost 的快照切片（调用方不需要持锁）。
+func (b *Broker) vhostList() []*vhost {
+	b.vhostsMu.RLock()
+	defer b.vhostsMu.RUnlock()
+	out := make([]*vhost, 0, len(b.vhosts))
+	for _, v := range b.vhosts {
+		out = append(out, v)
+	}
+	return out
+}
+
+// addVHost 创建并登记一个 vhost；已存在时返回已有的那个（幂等）。
+func (b *Broker) addVHost(name string) (*vhost, bool) {
+	b.vhostsMu.Lock()
+	defer b.vhostsMu.Unlock()
+	if v, ok := b.vhosts[name]; ok {
+		return v, false
+	}
+	v := newVHost(b, name, b.log, b.stores, b.dlxCh)
+	b.vhosts[name] = v
+	return v, true
+}
+
+// dropVHost 从集合里摘掉一个 vhost（已关闭的对象由调用方负责回收）。
+func (b *Broker) dropVHost(name string) *vhost {
+	b.vhostsMu.Lock()
+	defer b.vhostsMu.Unlock()
+	v, ok := b.vhosts[name]
+	if !ok {
+		return nil
+	}
+	delete(b.vhosts, name)
+	return v
 }
 
 // storageOptions 把配置翻译成存储层选项。
@@ -232,7 +284,7 @@ func (b *Broker) background(ctx context.Context) {
 			b.checkQuorumLeadership()
 		case <-ticker.C:
 			now := time.Now()
-			for _, v := range b.vhosts {
+			for _, v := range b.vhostList() {
 				v.sweep(now)
 			}
 		}
@@ -345,11 +397,23 @@ func (b *Broker) watermarkState() (bool, string) {
 	return false, ""
 }
 
-// processMemory 返回本进程向操作系统申请的内存总量。
+// processMemory 返回本进程**正在使用**的内存字节数。
+//
+// 刻意用 HeapInuse + StackInuse，而**不是** MemStats.Sys：Sys 是"向操作系统申请过的
+// 地址空间"的高水位，Go 运行期几乎不会及时归还（现代 Linux 上归还用 MADV_FREE，
+// 页面在真正受压前仍然计入常驻内存）。于是它一旦越过水位阈值就再也降不回来 ——
+// 闸门再也解除不了，生产者被**永久**阻塞，broker 对新生产者不可用，只能重启。
+//
+// 这是 M8-10 的 Linux 压测实测到的"水位锁存"：进程占用 7.68 GB > 阈值 6.67 GB 之后，
+// 即使消费者把消息全部消费完（实测队列已空）、堆早已空下来，`connection.blocked` 也不会解除。
+//
+// 改用"在用"内存后语义不变（仍然是"本进程占用 vs 水位比例 × 物理内存"），
+// 但水位能随内存回收真正回落 —— 闸门因此是**可恢复**的。
+// 注意：若业务确实长期持有超过上限的数据（队列里真的有那么多消息），闸门保持阻塞是正确行为。
 func processMemory() uint64 {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
-	return ms.Sys
+	return ms.HeapInuse + ms.StackInuse
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +462,7 @@ func (b *Broker) broadcastFlow(blocked bool, reason string) {
 
 // dispatchDeadLetter 把一条死信交给所属 vhost 路由。
 func (b *Broker) dispatchDeadLetter(e deadLetterEntry) {
-	v, ok := b.vhosts[e.vhost]
+	v, ok := b.vhostOf(e.vhost)
 	if !ok {
 		return
 	}
@@ -496,9 +560,11 @@ func (s *session) ServerProperties() map[string]any {
 			// 内存/磁盘水位触发时向连接下发 Connection.Blocked / Unblocked，并阻塞生产者
 			"connection.blocked": true,
 
-			// ---- 尚未实现，一律不声明（客户端会自行降级）----
-			//   consumer_priorities     → 消费者优先级（x-priority）尚未实现
-			//   direct_reply_to         → amq.rabbitmq.reply-to 伪队列尚未实现
+			// ---- M8-14 已实现并声明 ----
+			// 消费者优先级：basic.consume 的 x-priority 决定"有额度时谁先拿消息"（同优先级仍轮询）
+			"consumer_priorities": true,
+			// direct reply-to：amq.rabbitmq.reply-to 伪队列（每 channel 一份，必须 no-ack 消费）
+			"direct_reply_to": true,
 		},
 	}
 }
@@ -519,7 +585,7 @@ func (s *session) Authenticate(_ context.Context, mechanism string, response []b
 
 // VHostExists 判断 vhost 是否存在。
 func (s *session) VHostExists(name string) bool {
-	_, ok := s.broker.vhosts[name]
+	_, ok := s.broker.vhostOf(name)
 	return ok
 }
 
@@ -528,7 +594,7 @@ func (s *session) DefaultVHost() string { return s.broker.cfg.DefaultVHost }
 
 // Session 返回绑定到指定 vhost 的操作面。
 func (s *session) Session(vhostName string) (plugin.Session, error) {
-	vh, ok := s.broker.vhosts[vhostName]
+	vh, ok := s.broker.vhostOf(vhostName)
 	if !ok {
 		return nil, plugin.Errorf(plugin.KindInvalidPath,
 			"NOT_ALLOWED - vhost %s not found", vhostName)
@@ -550,7 +616,18 @@ func (b *Broker) waitPublishGate() error { return b.flow.wait(b.done) }
 // compilePermission 取出用户在该 vhost 上的权限并预编译正则。
 //
 // 无权限记录即拒绝（与 RabbitMQ 一致）：vhost 的访问权与 vhost 内的操作权都由此表决定。
+//
+// 例外：administrator 标签的用户对所有 vhost 拥有完全权限，**不需要**权限记录 ——
+// RabbitMQ 的 rabbit_access_control 在标签为 administrator 时直接放行（实测：给一个新
+// vhost 走 management API 发布消息返回 200，且 /api/permissions/{vhost}/{user} 会报出
+// 一条隐式的 ".*" 记录）。M8-7 引入动态 vhost 后这一点变得可观察：新建的 vhost 上不会有
+// 任何权限记录，若这里不放行，管理员刚建好的 vhost 自己都连不上。
+// 管理面早已按同一口径把 administrator 视为"可见全部 vhost"（management.authenticate），
+// 数据面必须与它一致，否则两层会各说各话。
 func compilePermission(store *auth.Store, user, vhost string) (*permissionSet, error) {
+	if u, ok := store.User(user); ok && hasTag(u.Tags, adminTag) {
+		return newPermissionSet(config.Permission{Configure: ".*", Write: ".*", Read: ".*"})
+	}
 	p, ok := store.Permissions(user, vhost)
 	if !ok {
 		return nil, plugin.Errorf(plugin.KindAccessRefused,
