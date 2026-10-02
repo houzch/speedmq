@@ -633,6 +633,15 @@ func replyFor(err error) (uint16, string) {
 	return spec.InternalError, err.Error()
 }
 
+// kindIs 判断内核错误是否为指定语义分类。
+//
+// 用于"个别方法需要吞掉某一类软错误"的路径（例：queue.delete 的幂等语义，见 channel_methods.go）：
+// 只有确知 Kind 时才放行，其余错误照旧走 fail 的作用域判定，避免把真错误也当成成功。
+func kindIs(err error, kind plugin.ErrorKind) bool {
+	var ke *plugin.Error
+	return errors.As(err, &ke) && ke.Kind == kind
+}
+
 // fail 按错误作用域处理内核返回的错误：软错误关 Channel，硬错误关连接。
 func (ch *channel) fail(err error, classID, methodID uint16) error {
 	code, text := replyFor(err)

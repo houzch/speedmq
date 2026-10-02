@@ -339,7 +339,15 @@ func (ch *channel) handleQueue(m spec.Method) error {
 		}
 		info, err := sess.DeleteQueue(req.Queue, req.IfUnused, req.IfEmpty)
 		if err != nil {
-			return ch.fail(err, m.ClassID, m.MethodID)
+			// queue.delete 的语义是**幂等**的：删不存在的队列回 Delete-Ok(0)，而不是 404
+			// （RabbitMQ 4.3 实测）。404 会把客户端 Channel 关掉，破坏"清理残留队列"这种
+			// 常见写法。只吞"队列不存在"这一种：权限不足（403）、独占占用（405）等
+			// 仍照旧按作用域处理。管理面 DELETE /api/queues 对不存在对象回 404 是另一条契约，
+			// 由 management 层单独保持（见 api.go 的 deleteQueue）。
+			if !kindIs(err, plugin.KindNotFound) {
+				return ch.fail(err, m.ClassID, m.MethodID)
+			}
+			info = plugin.QueueInfo{}
 		}
 		if req.NoWait {
 			return nil
