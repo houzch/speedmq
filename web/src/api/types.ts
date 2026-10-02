@@ -302,6 +302,13 @@ export interface Binding {
   properties_key: string
 }
 
+/** POST /api/bindings/{vhost}/e/{source}/q|e/{destination} 请求体（建立绑定） */
+export interface BindingRequest {
+  routing_key: string
+  /** 绑定参数（headers 交换机等场景使用）；不传表示无参数 */
+  arguments?: Record<string, unknown>
+}
+
 /** 消息属性 */
 export interface MessageProperties {
   content_type: string

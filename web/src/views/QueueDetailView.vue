@@ -2,22 +2,29 @@
 // 队列详情：基本信息 + 绑定 + 消费者 + 发布测试消息 + 取消息（get）+ 清空/删除
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Delete, Promotion, Refresh, Search } from '@element-plus/icons-vue'
+import { ArrowLeft, Delete, Plus, Promotion, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
+import { ApiError } from '@/api/client'
 import type {
   AckMode,
   Binding,
   Consumer,
+  Exchange,
   GetMessage,
   GetMessagesRequest,
   MessageProperties,
   Queue,
 } from '@/api/types'
+import BindingArgsEditor, { buildArguments, type ArgRow } from '@/components/BindingArgsEditor.vue'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatBoolean, formatBytes, formatJson, formatNumber, formatRate, formatTimestamp } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+
+const refresh = useRefreshStore()
 
 const vhost = computed<string>(() => String(route.params.vhost ?? '/'))
 const queueName = computed<string>(() => String(route.params.name ?? ''))
@@ -25,7 +32,17 @@ const queueName = computed<string>(() => String(route.params.name ?? ''))
 const queue = ref<Queue | null>(null)
 const bindings = ref<Binding[]>([])
 const consumers = ref<Consumer[]>([])
+const exchanges = ref<Exchange[]>([])
 const loading = ref(false)
+
+/** 添加绑定的表单（来源交换机 + 路由键 + 可选参数） */
+const bindingVisible = ref(false)
+const bindingSubmitting = ref(false)
+const bindingForm = ref({
+  source: '',
+  routingKey: '',
+  args: [] as ArgRow[],
+})
 
 /** 常用的内置交换机，允许自行输入 */
 const builtinExchanges = ['amq.default', 'amq.direct', 'amq.fanout', 'amq.topic', 'amq.headers']
@@ -111,20 +128,92 @@ function resetForms(): void {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const [queueData, bindingList, consumerList] = await Promise.all([
+    const [queueData, bindingList, consumerList, exchangeList] = await Promise.all([
       api.queue(vhost.value, queueName.value),
       api.queueBindings(vhost.value, queueName.value),
       api.consumers(vhost.value),
+      api.exchanges({ vhost: vhost.value }),
     ])
     queue.value = queueData
     bindings.value = bindingList
     consumers.value = consumerList.filter(
       (item) => item.queue.name === queueName.value && item.queue.vhost === vhost.value,
     )
+    exchanges.value = exchangeList
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '加载队列详情失败')
   } finally {
     loading.value = false
+  }
+}
+
+/** 写操作错误提示：优先展示服务端中文 reason */
+function messageOf(error: unknown): string {
+  if (error instanceof ApiError) return error.reason || error.message
+  if (error instanceof Error) return error.message
+  return '操作失败'
+}
+
+/** 打开「添加绑定」对话框并重置表单 */
+function openBinding(): void {
+  bindingForm.value = { source: '', routingKey: '', args: [] }
+  bindingVisible.value = true
+}
+
+/** 建立「交换机 → 本队列」绑定：POST /api/bindings/{vhost}/e/{source}/q/{destination} */
+async function submitBinding(): Promise<void> {
+  const source = bindingForm.value.source.trim()
+  if (!source) {
+    ElMessage.warning('请选择来源交换机')
+    return
+  }
+  const built = buildArguments(bindingForm.value.args)
+  if (!built.ok) {
+    ElMessage.warning(built.error)
+    return
+  }
+  bindingSubmitting.value = true
+  try {
+    await api.bindQueue(vhost.value, source, queueName.value, {
+      routing_key: bindingForm.value.routingKey,
+      arguments: built.arguments,
+    })
+    ElMessage.success('绑定已建立')
+    bindingVisible.value = false
+    await load()
+  } catch (error) {
+    ElMessage.error(messageOf(error))
+  } finally {
+    bindingSubmitting.value = false
+  }
+}
+
+/**
+ * 解绑：DELETE /api/bindings/{vhost}/e/{source}/q/{destination}/{properties_key}
+ *
+ * properties_key 直接用列表返回值，避免自行拼接出错（空 routing key 时为 `~`）。
+ */
+async function unbindBinding(rawRow: Record<PropertyKey, unknown>): Promise<void> {
+  const source = String(rawRow.source ?? '')
+  const props = String(rawRow.properties_key ?? '')
+  const routingKey = String(rawRow.routing_key ?? '')
+  const sourceLabel = source || '(default)'
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除交换机「${sourceLabel}」到本队列的绑定（路由键「${routingKey || '~'}」）吗？`,
+      '解绑',
+      { type: 'warning', confirmButtonText: '解绑', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await api.unbindQueue(vhost.value, source, queueName.value, props)
+    ElMessage.success('绑定已删除')
+    await load()
+  } catch (error) {
+    ElMessage.error(messageOf(error))
   }
 }
 
@@ -232,8 +321,9 @@ function goBack(): void {
 
 onMounted(() => {
   resetForms()
-  void load()
 })
+
+useAutoRefresh(load)
 
 watch([vhost, queueName], () => {
   resetForms()
@@ -436,9 +526,16 @@ watch([vhost, queueName], () => {
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>绑定（Bindings）</template>
+      <template #header>
+        <div style="display: flex; align-items: center; justify-content: space-between">
+          <span>绑定（Bindings）</span>
+          <el-button type="primary" size="small" :icon="Plus" @click="openBinding">添加绑定</el-button>
+        </div>
+      </template>
       <el-table :data="bindings" stripe>
-        <el-table-column label="源（source）" prop="source" min-width="160" />
+        <el-table-column label="源（source）" min-width="160">
+          <template #default="{ row }">{{ row.source || 'amq.default' }}</template>
+        </el-table-column>
         <el-table-column label="目标类型" width="110">
           <template #default="{ row }">{{ row.destination_type === 'queue' ? '队列' : '交换机' }}</template>
         </el-table-column>
@@ -450,11 +547,47 @@ watch([vhost, queueName], () => {
             <span class="mono">{{ formatJson(row.arguments) }}</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button v-if="row.source !== ''" link type="danger" @click="unbindBinding(row)">解绑</el-button>
+            <span v-else class="page-subtitle" title="默认交换机的隐式绑定，随队列存在">—</span>
+          </template>
+        </el-table-column>
         <template #empty>
           <el-empty description="该队列没有任何绑定" :image-size="80" />
         </template>
       </el-table>
     </el-card>
+
+    <!-- 添加绑定：把某个交换机绑定到本队列 -->
+    <el-dialog v-model="bindingVisible" title="添加绑定" width="600px">
+      <el-form label-width="110px">
+        <el-form-item label="来源交换机">
+          <el-select v-model="bindingForm.source" filterable placeholder="请选择来源交换机" style="width: 100%">
+            <el-option
+              v-for="ex in exchanges"
+              :key="ex.name || 'amq.default'"
+              :label="ex.name || 'amq.default'"
+              :value="ex.name || 'amq.default'"
+              :disabled="ex.name === ''"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="路由键">
+          <el-input v-model="bindingForm.routingKey" placeholder="fanout 交换机可留空" />
+        </el-form-item>
+        <el-form-item label="可选参数">
+          <BindingArgsEditor v-model="bindingForm.args" />
+        </el-form-item>
+      </el-form>
+      <div class="page-subtitle">
+        默认交换机（amq.default）的绑定是隐式的，不能手工建立；其余交换机均可作为来源。
+      </div>
+      <template #footer>
+        <el-button @click="bindingVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bindingSubmitting" @click="submitBinding">绑定</el-button>
+      </template>
+    </el-dialog>
 
     <el-card shadow="never">
       <template #header>消费者（Consumers）</template>

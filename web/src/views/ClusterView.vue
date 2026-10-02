@@ -3,12 +3,16 @@
 //
 // 单机模式下"增删成员"由服务端返回 501 NOT_IMPLEMENTED，界面在这里**直接禁用并说明原因**，
 // 而不是让运维点了之后才看到报错。
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Cluster, ClusterMembers, NodeInfo } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatDuration, formatNumber } from '@/utils/format'
 import { showError } from '@/utils/message'
+
+const refresh = useRefreshStore()
 
 const cluster = ref<Cluster | null>(null)
 const members = ref<ClusterMembers>({ voters: [], learners: [] })
@@ -35,6 +39,7 @@ async function load(): Promise<void> {
     cluster.value = cl
     members.value = mem
     nodes.value = nds
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '获取集群信息失败')
   } finally {
@@ -87,9 +92,7 @@ async function removeMember(id: string): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-})
+useAutoRefresh(load)
 </script>
 
 <template>

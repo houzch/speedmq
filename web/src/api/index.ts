@@ -2,6 +2,7 @@
 import { request } from './client'
 import type {
   Binding,
+  BindingRequest,
   Cluster,
   ClusterMembers,
   Connection,
@@ -100,6 +101,32 @@ export const api = {
     vhost === undefined
       ? request<Binding[]>('GET', '/api/bindings')
       : request<Binding[]>('GET', `/api/bindings/${encodePath(vhost)}`),
+  /** 建立「交换机 → 队列」绑定（成功 201，重复绑定幂等亦 201） */
+  bindQueue: (vhost: string, source: string, destination: string, body: BindingRequest): Promise<void> =>
+    request<void>(
+      'POST',
+      `/api/bindings/${encodePath(vhost)}/e/${encodePath(source)}/q/${encodePath(destination)}`,
+      { body },
+    ),
+  /** 建立「交换机 → 交换机」绑定（成功 201，重复绑定幂等亦 201） */
+  bindExchange: (vhost: string, source: string, destination: string, body: BindingRequest): Promise<void> =>
+    request<void>(
+      'POST',
+      `/api/bindings/${encodePath(vhost)}/e/${encodePath(source)}/e/${encodePath(destination)}`,
+      { body },
+    ),
+  /** 删除「交换机 → 队列」绑定；props 为绑定对象的 properties_key（原样回传，不要自行拼接） */
+  unbindQueue: (vhost: string, source: string, destination: string, props: string): Promise<void> =>
+    request<void>(
+      'DELETE',
+      `/api/bindings/${encodePath(vhost)}/e/${encodePath(source)}/q/${encodePath(destination)}/${encodePath(props)}`,
+    ),
+  /** 删除「交换机 → 交换机」绑定；props 为绑定对象的 properties_key（原样回传，不要自行拼接） */
+  unbindExchange: (vhost: string, source: string, destination: string, props: string): Promise<void> =>
+    request<void>(
+      'DELETE',
+      `/api/bindings/${encodePath(vhost)}/e/${encodePath(source)}/e/${encodePath(destination)}/${encodePath(props)}`,
+    ),
 
   // ---- 连接 ----
   connections: (): Promise<Connection[]> => request<Connection[]>('GET', '/api/connections'),

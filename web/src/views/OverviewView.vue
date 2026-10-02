@@ -8,10 +8,16 @@ import { CanvasRenderer } from 'echarts/renderers'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { NodeInfo, Overview } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useAuthStore } from '@/stores/auth'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatBytes, formatDuration, formatNumber } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
+
+const refresh = useRefreshStore()
+const auth = useAuthStore()
 
 /** 轮询间隔（毫秒）：每 5 秒采样一次 /api/overview */
 const POLL_INTERVAL = 5_000
@@ -108,20 +114,26 @@ async function loadNodes(): Promise<void> {
   }
 }
 
+/** 组合入口：概览 + 节点；供顶栏刷新按钮与全局自动刷新共用 */
 async function refreshAll(): Promise<void> {
   await Promise.all([loadOverview(), loadNodes()])
+  refresh.markRefreshed()
 }
 
 onMounted(() => {
   if (chartRef.value) {
     chart = echarts.init(chartRef.value)
   }
-  void refreshAll()
   pollTimer = window.setInterval(() => {
+    // 未登录时不采样：这个定时器与自动刷新独立，登出/未登录期间会一直打 401
+    if (!auth.authenticated) return
     void loadOverview(true)
   }, POLL_INTERVAL)
   window.addEventListener('resize', resizeChart)
 })
+
+// 首次加载与自动刷新都走 refreshAll；图表已在上面的 onMounted 中初始化
+useAutoRefresh(refreshAll)
 
 onBeforeUnmount(() => {
   if (pollTimer !== null) window.clearInterval(pollTimer)

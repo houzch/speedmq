@@ -3,17 +3,27 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { Connection, Grid, Odometer, Postcard, Share, User } from '@element-plus/icons-vue'
+import { ArrowDown, Connection, Grid, Odometer, Postcard, Share, User } from '@element-plus/icons-vue'
 import LoginDialog from '@/components/LoginDialog.vue'
 import ForcePasswordDialog from '@/components/ForcePasswordDialog.vue'
+import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
 import { setUnauthorizedHandler } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useVhostStore } from '@/stores/vhost'
+import { REFRESH_OPTIONS, useRefreshStore } from '@/stores/refresh'
+import { formatTimestamp } from '@/utils/format'
 
 const auth = useAuthStore()
 const vhostStore = useVhostStore()
+const refresh = useRefreshStore()
 const route = useRoute()
 const router = useRouter()
+
+/** 自动刷新间隔选择器：读全局 store，写入时做合法性校验并持久化 */
+const refreshInterval = computed<number>({
+  get: () => refresh.intervalSeconds,
+  set: (value: number) => refresh.setIntervalSeconds(value),
+})
 
 /** 未认证（或凭据失效）时展示登录框 */
 const loginVisible = ref(false)
@@ -121,6 +131,18 @@ function handleLogout(): void {
   loginVisible.value = true
 }
 
+/** 「修改密码」对话框是否可见 */
+const changePasswordVisible = ref(false)
+
+/** 处理顶栏「当前用户」下拉的选择 */
+function handleUserCommand(command: string | number | object): void {
+  if (command === 'password') {
+    changePasswordVisible.value = true
+    return
+  }
+  handleLogout()
+}
+
 // 路由中的 vhost 反向同步到全局状态（支持直接粘贴 URL 访问）
 watch(
   () => route.params.vhost,
@@ -183,8 +205,27 @@ onMounted(async () => {
         >
           <el-option v-for="item in vhostStore.vhosts" :key="item.name" :label="item.name" :value="item.name" />
         </el-select>
-        <el-tag v-if="auth.user" type="info" effect="plain">当前用户：{{ auth.user }}</el-tag>
-        <el-button :disabled="!auth.authenticated" @click="handleLogout">退出登录</el-button>
+        <template v-if="auth.authenticated">
+          <span class="refresh-label">
+            已刷新 {{ refresh.lastRefreshed === null ? '—' : formatTimestamp(refresh.lastRefreshed) }}
+          </span>
+          <el-select v-model="refreshInterval" class="refresh-select">
+            <el-option v-for="item in REFRESH_OPTIONS" :key="item.seconds" :label="item.label" :value="item.seconds" />
+          </el-select>
+          <el-dropdown trigger="click" @command="handleUserCommand">
+            <span class="user-trigger">
+              <el-icon><User /></el-icon>
+              当前用户：{{ auth.user }}
+              <el-icon class="user-caret"><ArrowDown /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="password">修改密码</el-dropdown-item>
+                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </template>
       </div>
     </el-header>
 
@@ -210,5 +251,39 @@ onMounted(async () => {
   </el-container>
 
   <LoginDialog v-model="loginVisible" />
+  <ChangePasswordDialog v-model="changePasswordVisible" />
   <ForcePasswordDialog v-if="auth.mustChangePassword" />
 </template>
+
+<style scoped>
+/* 顶栏自动刷新控件：字号与颜色跟「虚拟主机」标签保持一致 */
+.refresh-label {
+  font-size: 13px;
+  color: #a3b1c2;
+  white-space: nowrap;
+}
+
+.refresh-select {
+  width: 140px;
+}
+
+/* 顶栏「当前用户」下拉：可点击 → 修改密码 / 退出登录 */
+.user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #fff;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+}
+
+.user-trigger:hover {
+  opacity: 0.85;
+}
+
+.user-caret {
+  font-size: 12px;
+}
+</style>

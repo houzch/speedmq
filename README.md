@@ -188,7 +188,7 @@ msg="管理面已启动" component=management addr=[::]:15672 api=/api/overview 
 
 | 入口 | 地址 | 说明 |
 | --- | --- | --- |
-| 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections / 集群 + **队列与交换机的新增（声明）/ 删除** + 队列详情（发布测试消息 / 取消息 / purge / delete）+ **账号与权限**（建号 / 改密 / 启停 / vhost 权限按预设选 / 管理接口功能组勾选） |
+| 管理 UI | <http://localhost:15672/> | Overview / Queues / Exchanges / Connections / 集群 + **队列与交换机的新增（声明）/ 删除** + 队列详情（发布测试消息 / 取消息 / purge / delete / 绑定增删）+ **账号与权限**（建号 / 改密 / 启停 / vhost 权限按预设选 / 管理接口功能组勾选）+ 右上角**自动刷新设置**（5 / 10 / 30 秒 / 不刷新，选择会记住） |
 | 管理 HTTP API | <http://localhost:15672/api/overview> | RabbitMQ Management API 兼容子集，Basic Auth（默认凭证 `guest` / `guest`，见上文「默认账号」） |
 | Prometheus 指标 | <http://localhost:15672/metrics> | 文本暴露格式，同样需要 Basic Auth |
 
@@ -218,11 +218,17 @@ curl -u guest:guest http://127.0.0.1:15672/api/overview
 >   http://127.0.0.1:15672/api/exchanges/%2F/my.exchange
 > # 删除交换机（?if-unused=true 时仍有绑定会被拒）
 > curl -u guest:guest -X DELETE http://127.0.0.1:15672/api/exchanges/%2F/my.exchange
+> # 绑定：把队列挂到交换机（POST 幂等，重复建也回 201）
+> curl -u guest:guest -X POST -H 'Content-Type: application/json' \
+>   -d '{"routing_key":"rk","arguments":{}}' \
+>   http://127.0.0.1:15672/api/bindings/%2F/e/my.exchange/q/my.queue
+> # 解绑：URL 末段是列表里的 properties_key（空 routing key 时为 ~）
+> curl -u guest:guest -X DELETE http://127.0.0.1:15672/api/bindings/%2F/e/my.exchange/q/my.queue/rk
 > ```
 >
-> 语义与 AMQP 的 `queue.declare` / `exchange.declare` **完全一致** —— 它复用的就是同一段内核逻辑：
-> 以调用方身份执行，受 `configure` 权限（403）与保留名（403）约束，参数不一致按等价性检查拒绝。
-> 状态码对齐 RabbitMQ 实测：**新建 201、已存在且参数等价 204、参数不等价或类型非法 400**。
+> 语义与 AMQP 的 `queue.declare` / `exchange.declare` / `queue.bind` **完全一致** —— 它们复用的就是同一段内核逻辑：
+> 以调用方身份执行，受权限（声明看 `configure`、绑定看 `write`）与保留名（403）约束，参数不一致按等价性检查拒绝。
+> 状态码对齐 RabbitMQ 实测：**新建 / 建立绑定 201、已存在且等价 204、参数不等价或类型非法 400、删除 204、找不到 404**。
 
 > 管理 UI 的前端源码在 `web/`，产物 `web/dist` **不入库**，由构建时生成并经 `go:embed` 打进二进制，
 > 因此**部署只需一个二进制**、不装 Node，也没有额外的 Nginx。

@@ -84,6 +84,16 @@ func (s *Server) registerRoutes() {
 	// ---- 绑定 ----
 	s.handle(http.MethodGet, "/api/bindings", apiGroupTopology, s.getBindings)
 	s.handle(http.MethodGet, "/api/bindings/{vhost}", apiGroupTopology, s.getBindings)
+	// 绑定的增删（RabbitMQ 管理 UI 在队列/交换机详情页用的就是这四个端点）。
+	// 目标类型写在路径里：/q/ 是队列、/e/ 是交换机；删除用 properties_key 定位那一条。
+	s.handle(http.MethodPost, "/api/bindings/{vhost}/e/{source}/q/{destination}",
+		apiGroupTopology, s.postQueueBinding)
+	s.handle(http.MethodPost, "/api/bindings/{vhost}/e/{source}/e/{destination}",
+		apiGroupTopology, s.postExchangeBinding)
+	s.handle(http.MethodDelete, "/api/bindings/{vhost}/e/{source}/q/{destination}/{props}",
+		apiGroupTopology, s.deleteQueueBinding)
+	s.handle(http.MethodDelete, "/api/bindings/{vhost}/e/{source}/e/{destination}/{props}",
+		apiGroupTopology, s.deleteExchangeBinding)
 
 	// ---- 连接与通道 ----
 	s.handle(http.MethodGet, "/api/connections", apiGroupConnections, s.getConnections)
@@ -1402,6 +1412,133 @@ func bindingObject(b broker.BindingSnapshot) map[string]any {
 		"arguments":        emptyMapIfNil(b.Arguments),
 		"properties_key":   b.PropertiesKey,
 	}
+}
+
+// bindingRequest 是建立绑定时的请求体（字段名对齐 RabbitMQ）。
+type bindingRequest struct {
+	RoutingKey string         `json:"routing_key"`
+	Arguments  map[string]any `json:"arguments"`
+}
+
+func (s *Server) postQueueBinding(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	s.createBinding(w, r, p, au, "queue")
+}
+
+func (s *Server) postExchangeBinding(w http.ResponseWriter, r *http.Request, p params, au authUser) {
+	s.createBinding(w, r, p, au, "exchange")
+}
+
+func (s *Server) deleteQueueBinding(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	s.removeBinding(w, p, au, "queue")
+}
+
+func (s *Server) deleteExchangeBinding(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
+	s.removeBinding(w, p, au, "exchange")
+}
+
+// createBinding 建立一条绑定（队列到交换机，或交换机到交换机）。
+//
+// 与声明端点同一套做法：经 SessionFor(调用方) 复用内核的绑定逻辑 —— `configure` 权限、
+// 源与目标必须存在、arguments 的语义全部照走，因此管理面建的绑定与客户端建的完全一致。
+//
+// 状态码对齐 RabbitMQ 实测：成功一律 201（重复绑定是幂等的，同样回 201）。
+func (s *Server) createBinding(w http.ResponseWriter, r *http.Request, p params, au authUser, destType string) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost, source, dest := p["vhost"], p["source"], p["destination"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	var req bindingRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "Bad Request", err.Error())
+		return
+	}
+	sess, err := s.deps.Broker.SessionFor(au.Name, vhost)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	defer sess.Close()
+
+	var bindErr error
+	if destType == "queue" {
+		bindErr = sess.BindQueue(dest, normalizeExchange(source), req.RoutingKey, req.Arguments)
+	} else {
+		bindErr = sess.BindExchange(normalizeExchange(dest), normalizeExchange(source), req.RoutingKey, req.Arguments)
+	}
+	if bindErr != nil {
+		writeKernelError(w, bindErr)
+		return
+	}
+	s.log.Info("管理面建立绑定", "actor", au.Name, "vhost", vhost,
+		"source", source, "destination", dest, "destination_type", destType, "routing_key", req.RoutingKey)
+	w.WriteHeader(http.StatusCreated)
+}
+
+// removeBinding 按 properties_key 删除一条绑定。
+//
+// 管理 API 的 URL 里带的是 properties_key，而内核的解绑接口按"路由键 + 参数"定位，
+// 因此先按 properties_key 找到那条绑定、取出它真正的 (routing_key, arguments) 再解绑。
+// 这样做的好处是：即使 properties_key 的**取值算法**与 RabbitMQ 不同（各家实现各自的哈希），
+// 只要列表里读出来的值原样回传就能删掉，rabbitmqadmin 这类工具因此照常可用。
+//
+// 找不到 → 404（对齐 RabbitMQ：重复删除回 404）。
+func (s *Server) removeBinding(w http.ResponseWriter, p params, au authUser, destType string) {
+	if err := au.requireWrite(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	vhost := p["vhost"]
+	if !s.canSeeVHost(au, vhost) {
+		vhostNotFound(w, vhost)
+		return
+	}
+	source := normalizeExchange(p["source"])
+	dest := p["destination"]
+	if destType == "exchange" {
+		dest = normalizeExchange(dest)
+	}
+	props := p["props"]
+
+	var target *broker.BindingSnapshot
+	for _, b := range s.deps.Broker.BindingSnapshots(vhost) {
+		if b.Source == source && b.Destination == dest &&
+			b.DestinationType == destType && b.PropertiesKey == props {
+			found := b
+			target = &found
+			break
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusNotFound, "Object Not Found",
+			fmt.Sprintf("未找到绑定 %s -> %s（%s, properties_key=%s）", source, dest, destType, props))
+		return
+	}
+
+	sess, err := s.deps.Broker.SessionFor(au.Name, vhost)
+	if err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	defer sess.Close()
+
+	var unbindErr error
+	if destType == "queue" {
+		unbindErr = sess.UnbindQueue(dest, source, target.RoutingKey, target.Arguments)
+	} else {
+		unbindErr = sess.UnbindExchange(dest, source, target.RoutingKey, target.Arguments)
+	}
+	if unbindErr != nil {
+		writeKernelError(w, unbindErr)
+		return
+	}
+	s.log.Info("管理面解除绑定", "actor", au.Name, "vhost", vhost,
+		"source", source, "destination", dest, "destination_type", destType)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------

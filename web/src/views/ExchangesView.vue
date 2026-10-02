@@ -1,16 +1,20 @@
 <script setup lang="ts">
 // 交换机列表：按名称过滤 + 绑定数（由 /api/bindings/{vhost} 聚合）
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
 import type { Exchange, ExchangeDeclareRequest } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatBoolean, formatNumber } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+
+const refresh = useRefreshStore()
 
 /** el-table 插槽行类型（Element Plus 声明为 Record<PropertyKey, any>），放宽以避免强制断言 */
 type TableRow = Record<PropertyKey, any>
@@ -57,6 +61,7 @@ async function load(): Promise<void> {
       counts[binding.source] = (counts[binding.source] ?? 0) + 1
     }
     bindingCounts.value = counts
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '获取交换机列表失败')
   } finally {
@@ -179,9 +184,7 @@ watch(vhost, () => {
   void load()
 })
 
-onMounted(() => {
-  void load()
-})
+useAutoRefresh(load)
 
 onBeforeUnmount(() => {
   if (debounceTimer !== null) window.clearTimeout(debounceTimer)

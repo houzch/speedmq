@@ -207,9 +207,21 @@ func (e *exchange) bindingSnapshots(vhostName string) []BindingSnapshot {
 }
 
 // propertiesKey 生成绑定的稳定标识（对齐 RabbitMQ 的 properties_key 语义）。
+//
+// 空 routing key 时基串用 `~`（RabbitMQ 实测如此），而不是空串 —— 这个值会被管理 UI
+// 拼进 DELETE /api/bindings/{vhost}/e/{source}/q/{destination}/{props} 的路径段，
+// 空串会让 URL 多出一个空段、路由匹配不上（RabbitMQ 那边同样的 URL 回 405）。
+// fanout 与 headers 绑定的 routing key 通常就是空的，所以这条不是边角情况。
+//
+// 带 arguments 时追加一个由参数算出的后缀，避免同名绑定互相覆盖；后缀取值只需稳定、
+// 能被原样回传即可（各家实现不必逐字节相同）。
 func propertiesKey(routingKey string, args map[string]any) string {
+	base := routingKey
+	if base == "" {
+		base = "~"
+	}
 	if len(args) == 0 {
-		return routingKey
+		return base
 	}
 	// 键排序后拼接，保证同一组参数总是得到同一个 key
 	keys := make([]string, 0, len(args))
@@ -218,7 +230,7 @@ func propertiesKey(routingKey string, args map[string]any) string {
 	}
 	sort.Strings(keys)
 	var b strings.Builder
-	b.WriteString(routingKey)
+	b.WriteString(base)
 	b.WriteByte('-')
 	for _, k := range keys {
 		fmt.Fprintf(&b, "%s:%v;", k, args[k])

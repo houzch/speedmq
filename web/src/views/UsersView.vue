@@ -3,16 +3,20 @@
 //
 // 总账号（is_root）由后端强制保护：不可删除、不可禁用、不可移除 administrator 标签，
 // 界面对应按钮直接置灰并给出说明，而不是等运维点了才看到 403。
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
 import type { Permission, User, UserUpsertRequest, Vhost } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { API_GROUPS, apiGroupLabel } from '@/utils/apiGroups'
 import { showError } from '@/utils/message'
 
 /** 内置标签候选（仍允许自定义，标签串以空格分隔） */
 const TAG_OPTIONS = ['administrator', 'management', 'monitoring']
+
+const refresh = useRefreshStore()
 
 const users = ref<User[]>([])
 const vhosts = ref<Vhost[]>([])
@@ -36,6 +40,7 @@ async function load(): Promise<void> {
     const [list, vhostList] = await Promise.all([api.users(), api.vhosts()])
     users.value = list
     vhosts.value = vhostList
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '获取账号列表失败')
   } finally {
@@ -340,9 +345,7 @@ async function removePermission(row: Permission): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-})
+useAutoRefresh(load)
 </script>
 
 <template>

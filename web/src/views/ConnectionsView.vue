@@ -1,14 +1,18 @@
 <script setup lang="ts">
 // 连接列表：展示连接信息并支持强制关闭
-import { onMounted, ref } from 'vue'
+import { ref } from 'vue'
 import { Delete, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Connection } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatElapsedFrom, formatNumber, formatTimestamp } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 /** el-table 插槽行类型（Element Plus 声明为 Record<PropertyKey, any>），放宽以避免强制断言 */
 type TableRow = Record<PropertyKey, any>
+
+const refresh = useRefreshStore()
 
 const connections = ref<Connection[]>([])
 const loading = ref(false)
@@ -17,6 +21,7 @@ async function load(): Promise<void> {
   loading.value = true
   try {
     connections.value = await api.connections()
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '获取连接列表失败')
   } finally {
@@ -44,9 +49,7 @@ async function closeConnection(row: TableRow): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void load()
-})
+useAutoRefresh(load)
 </script>
 
 <template>

@@ -1,16 +1,20 @@
 <script setup lang="ts">
 // 队列列表：按名称过滤 + 行内查看详情 / 清空 / 删除
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
 import type { Queue, QueueDeclareRequest } from '@/api/types'
+import { useAutoRefresh } from '@/composables/useAutoRefresh'
+import { useRefreshStore } from '@/stores/refresh'
 import { formatBoolean, formatBytes, formatNumber, formatRate } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+
+const refresh = useRefreshStore()
 
 /** el-table 插槽行类型（Element Plus 声明为 Record<PropertyKey, any>），放宽以避免强制断言 */
 type TableRow = Record<PropertyKey, any>
@@ -32,6 +36,7 @@ async function loadQueues(): Promise<void> {
       name: filterName.value.trim() || undefined,
       use_regex: false,
     })
+    refresh.markRefreshed()
   } catch (error) {
     showError(error, '获取队列列表失败')
   } finally {
@@ -191,9 +196,7 @@ watch(vhost, () => {
   void loadQueues()
 })
 
-onMounted(() => {
-  void loadQueues()
-})
+useAutoRefresh(loadQueues)
 
 onBeforeUnmount(() => {
   if (debounceTimer !== null) window.clearTimeout(debounceTimer)
