@@ -2,8 +2,11 @@ package management_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
+
+	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
 
 // 本文件覆盖 M8-6 的策略（policy）管理 API：CRUD 的对外契约，
@@ -186,5 +189,90 @@ func TestPolicyResponseIsValidJSON(t *testing.T) {
 	var arr []any
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		t.Fatalf("响应不是 JSON 数组: %v（原始 %s）", err, raw)
+	}
+}
+
+// TestPolicyAlternateExchangeOverHTTP 覆盖**交换机侧**策略的完整链路：
+// 经管理 API 建策略（`apply-to=exchanges`）→ 数据面观察到"未路由消息改投备用交换机"
+// → 交换机对象显示命中的策略 → 删策略后兜底解除。
+//
+// 为什么 broker 层已有 TestPolicyAlternateExchange 还要在管理面再测一遍：
+// 这里的契约是"**经 HTTP** 建的策略在数据面生效"，中间隔着 JSON 字段名（`apply-to` / `definition`）
+// 与名称正则匹配，任一环节写错都会表现为"API 回 201、数据面却没生效"——只在管理面才测得出。
+func TestPolicyAlternateExchangeOverHTTP(t *testing.T) {
+	env := newTestEnv(t)
+	const main, alt, queue = "api.ae.main", "api.ae.alt", "api.ae.q"
+
+	// 数据面：主交换机（direct，故意不建绑定）与备用交换机（fanout）+ 队列
+	declareExchange(t, env, main, sdk.ExchangeDirect)
+	declareExchange(t, env, alt, sdk.ExchangeFanout)
+	env.declareQueue(t, queue, nil)
+
+	sess, err := env.broker.SessionFor("guest", "/")
+	if err != nil {
+		t.Fatalf("打开会话失败: %v", err)
+	}
+	defer sess.Close()
+	if err := sess.BindQueue(queue, alt, "", nil); err != nil {
+		t.Fatalf("绑定备用交换机失败: %v", err)
+	}
+
+	publish := func() {
+		t.Helper()
+		if _, err := sess.Publish(&sdk.Message{RoutingKey: "k", Body: []byte("via-alt")}, main, "k", false); err != nil {
+			t.Fatalf("发布失败: %v", err)
+		}
+	}
+	ready := func() int {
+		t.Helper()
+		var q struct {
+			MessagesReady int `json:"messages_ready"`
+		}
+		if resp := env.getJSON(t, "/api/queues/%2F/"+queue, &q); resp.StatusCode != http.StatusOK {
+			t.Fatalf("读队列对象失败: %d", resp.StatusCode)
+		}
+		return q.MessagesReady
+	}
+
+	// 上策略之前：主交换机没有绑定，消息未路由，不会进备用队列
+	publish()
+	if got := ready(); got != 0 {
+		t.Fatalf("未设策略时主交换机的消息不应进备用队列，实际 %d 条", got)
+	}
+
+	// 管理 API：给主交换机挂 alternate-exchange
+	resp, raw := env.request(t, http.MethodPut, "/api/policies/%2F/ae",
+		policyBody(`^api\.ae\.main$`, "exchanges", map[string]any{"alternate-exchange": alt}, 0), "", "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("新建交换机策略应 201，实际 %d %s", resp.StatusCode, raw)
+	}
+
+	// 数据面：策略生效后未路由的消息改投备用交换机 → 落到队列
+	publish()
+	if got := ready(); got != 1 {
+		t.Fatalf("alternate-exchange 生效后消息应改投备用队列，实际 %d 条", got)
+	}
+
+	// 交换机对象要能说清是哪条策略给的
+	var ex struct {
+		Policy                    string         `json:"policy"`
+		EffectivePolicyDefinition map[string]any `json:"effective_policy_definition"`
+	}
+	if resp := env.getJSON(t, "/api/exchanges/%2F/"+main, &ex); resp.StatusCode != http.StatusOK {
+		t.Fatalf("读交换机对象失败: %d", resp.StatusCode)
+	}
+	if ex.Policy != "ae" || fmt.Sprint(ex.EffectivePolicyDefinition["alternate-exchange"]) != alt {
+		t.Fatalf("交换机应显示策略 ae 与 alternate-exchange=%s，实际 %q %v", alt, ex.Policy, ex.EffectivePolicyDefinition)
+	}
+
+	// 删策略 → 兜底解除：再发布不再进备用队列
+	resp, raw = env.request(t, http.MethodDelete, "/api/policies/%2F/ae", nil, "", "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("删除策略应 204，实际 %d %s", resp.StatusCode, raw)
+	}
+	before := ready()
+	publish()
+	if got := ready(); got != before {
+		t.Fatalf("删除策略后消息不应再进备用队列（%d → %d）", before, got)
 	}
 }
