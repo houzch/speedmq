@@ -39,11 +39,24 @@ body {
 
 .app-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 
+/* 品牌图标：源图无透明通道且是浅色底，因此统一放进白色圆角底框，
+   避免在深色顶栏上出现一块突兀的浅色方块。 */
 .app-logo {
+  display: block;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #ffffff;
+  object-fit: contain;
+}
+
+.app-name {
   font-size: 20px;
   font-weight: 600;
   letter-spacing: 0.5px;
