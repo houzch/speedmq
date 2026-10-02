@@ -1,6 +1,8 @@
 # SwiftMQ 升级与迁移方案
 
-> 适用版本：`0.13.0`（`broker.Version`，见 `/metrics` 的 `swiftmq_build_info`）。
+> 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
+
+> 适用版本：`1.0.0`（`broker.Version`，见 `/metrics` 的 `swiftmq_build_info`）。
 > 本文所有"实测"结论均来自本机真实运行；凡未实测的，均显式标注 **【未验证】**。
 > 本机环境：Windows + PowerShell 5.1，Go 1.27.1 windows/386，临时 `data_dir` + 非默认端口。
 
@@ -97,7 +99,7 @@ data/
 
 ## 5. 二进制升级（裸机）
 
-> 本机**未跨版本真机演练**（仓库当前只有一个版本 `0.13.0`，无可升级的旧二进制）。以下步骤为本仓库已具备能力的**同版本重放验证 + 通用流程**，跨版本部分标注 **【未验证】**。
+> 本机**未跨版本真机演练**（仓库当前只有一个版本 `1.0.0`，无可升级的旧二进制）。以下步骤为本仓库已具备能力的**同版本重放验证 + 通用流程**，跨版本部分标注 **【未验证】**。
 
 ### 5.1 步骤
 
@@ -140,7 +142,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ```powershell
 # 1) 拉/构建新镜像（tag 用新版本号，避免 old/new 混淆）
-docker build -t swiftmq:0.13.1 .
+docker build -t swiftmq:1.0.0 .
 
 # 2) 停旧容器（compose 会保留命名卷 swiftmq-data）
 docker compose down

@@ -1,5 +1,7 @@
 # SwiftMQ 监控与告警
 
+> 🌐 本文档提供多语言版本：[文档多语言索引](../../i18n/README.md)
+
 本目录提供可直接使用的监控模板：
 
 | 文件 | 作用 |
@@ -60,7 +62,7 @@ rule_files:
 
 ## 2. `/metrics` 真实片段（证据）
 
-以下为本机 `0.13.0` 实例 `/metrics` 的**真实输出**（已建一条 durable 队列 `persist.q`，
+以下为本机 `1.0.0` 实例 `/metrics` 的**真实输出**（已建一条 durable 队列 `persist.q`，
 故带 `vhost`/`queue` 标签的 per-queue 指标出现了）：
 
 ```
@@ -69,7 +71,7 @@ rule_files:
 swiftmq_up 1
 # HELP swiftmq_build_info 构建信息
 # TYPE swiftmq_build_info gauge
-swiftmq_build_info 1{version="0.13.0",node="swiftmq@DESKTOP-HBDCVPA"}
+swiftmq_build_info 1{version="1.0.0",node="swiftmq@DESKTOP-HBDCVPA"}
 # HELP swiftmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE swiftmq_resource_blocked gauge
 swiftmq_resource_blocked 0

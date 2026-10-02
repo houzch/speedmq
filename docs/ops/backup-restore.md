@@ -1,5 +1,7 @@
 # SwiftMQ 备份与恢复
 
+> 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
+
 > 本文中的"实测"结论全部来自 **Windows + PowerShell 5.1** 上的一次真实演练（临时 `data_dir` 与临时端口）。
 > 演练命令与关键输出原样贴在 §6。**【未验证】** 的部分会显式标注（集群备份/恢复、Docker 卷备份等）。
 
@@ -152,7 +154,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > 环境：`data_dir` 在临时目录，AMQP `127.0.0.1:5676`、管理面 `127.0.0.1:15677`、MQTT `127.0.0.1:1884`，
 > 默认账号 `guest/guest`。启动日志：
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=0.13.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

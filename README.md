@@ -1,3 +1,6 @@
+<!-- i18n-switcher -->
+**简体中文** | [繁體中文](docs/i18n/zh-TW/README.md) | [English](docs/i18n/en/README.md) | [日本語](docs/i18n/ja/README.md) | [한국어](docs/i18n/ko/README.md) | [Español](docs/i18n/es/README.md) | [Deutsch](docs/i18n/de/README.md) | [Français](docs/i18n/fr/README.md) | [العربية](docs/i18n/ar/README.md) | [Русский](docs/i18n/ru/README.md) | [Italiano](docs/i18n/it/README.md) | [Nederlands](docs/i18n/nl/README.md) | [Português](docs/i18n/pt/README.md) | [Bahasa Indonesia](docs/i18n/id/README.md) | [ไทย](docs/i18n/th/README.md) | [Tiếng Việt](docs/i18n/vi/README.md) | [Bahasa Melayu](docs/i18n/ms/README.md) | [Filipino](docs/i18n/fil/README.md)
+
 # SwiftMQ
 
 用 Go 编写的 **RabbitMQ 兼容**消息中间件。现有 RabbitMQ 客户端**不改代码、不换 SDK**，只改连接地址即可接入。
