@@ -4,6 +4,7 @@
 // 删除是**级联**的：队列、交换机、绑定、权限、策略、限制都会一并清除（服务端逐条提交），
 // 因此确认框里必须把这一点说清楚，而不是只写"确定删除吗"。
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Vhost } from '@/api/types'
@@ -15,6 +16,7 @@ import { showError } from '@/utils/message'
 
 const vhostStore = useVhostStore()
 const refresh = useRefreshStore()
+const { t } = useI18n()
 const loading = ref(false)
 
 async function load(): Promise<void> {
@@ -23,17 +25,23 @@ async function load(): Promise<void> {
     await vhostStore.loadVhosts()
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取虚拟主机列表失败')
+    showError(error, t('vhosts.loadFailed'))
   } finally {
     loading.value = false
   }
 }
 
-/** 该 vhost 在本节点是否处于运行状态 */
-function clusterStateOf(row: Pick<Vhost, 'cluster_state'>): string {
+/** 该 vhost 在本节点是否处于运行状态（用于标签颜色，不参与文案拼接） */
+function isRunning(row: Pick<Vhost, 'cluster_state'>): boolean {
+  const states = Object.values(row.cluster_state)
+  return states.length > 0 && states.every((state) => state === 'running')
+}
+
+/** 运行状态文案：全部 running 显示"运行中"，否则原样罗列各节点状态 */
+function clusterStateLabel(row: Pick<Vhost, 'cluster_state'>): string {
   const states = Object.values(row.cluster_state)
   if (states.length === 0) return '—'
-  return states.every((state) => state === 'running') ? '运行中' : states.join(' / ')
+  return isRunning(row) ? t('vhosts.running') : states.join(' / ')
 }
 
 // ---- 新建 ----
@@ -49,17 +57,17 @@ function openCreate(): void {
 async function submitCreate(): Promise<void> {
   const name = createName.value.trim()
   if (!name) {
-    ElMessage.warning('请输入虚拟主机名')
+    ElMessage.warning(t('vhosts.nameRequired'))
     return
   }
   creating.value = true
   try {
     await api.createVHost(name)
-    ElMessage.success(`虚拟主机 ${name} 已创建`)
+    ElMessage.success(t('vhosts.created', { name }))
     createVisible.value = false
     await load()
   } catch (error) {
-    showError(error, '新建虚拟主机失败')
+    showError(error, t('vhosts.createFailed'))
   } finally {
     creating.value = false
   }
@@ -68,20 +76,20 @@ async function submitCreate(): Promise<void> {
 // ---- 删除 ----
 async function removeVHost(name: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      `确定要删除虚拟主机「${name}」吗？它的队列、交换机、绑定、权限、策略与限制都会一并移除，且不可恢复。`,
-      '删除虚拟主机',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('vhosts.deleteConfirm', { name }), t('vhosts.deleteTitle'), {
+      type: 'warning',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     await api.deleteVHost(name)
-    ElMessage.success(`虚拟主机 ${name} 已删除`)
+    ElMessage.success(t('vhosts.deleted', { name }))
     await load()
   } catch (error) {
-    showError(error, '删除虚拟主机失败')
+    showError(error, t('vhosts.deleteFailed'))
   }
 }
 
@@ -92,60 +100,58 @@ useAutoRefresh(load)
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <h2 class="page-title">虚拟主机</h2>
-        <div class="page-subtitle">共 {{ vhostStore.vhosts.length }} 个虚拟主机</div>
+        <h2 class="page-title">{{ t('vhosts.title') }}</h2>
+        <div class="page-subtitle">{{ t('vhosts.total', { count: vhostStore.vhosts.length }) }}</div>
       </div>
       <div>
-        <el-button type="primary" :icon="Plus" @click="openCreate">新建虚拟主机</el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('vhosts.create') }}</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
 
     <el-table :data="vhostStore.vhosts" stripe>
-      <el-table-column label="名称" min-width="200">
+      <el-table-column :label="t('vhosts.colName')" min-width="200">
         <template #default="{ row }">
           <span class="mono">{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="消息总数" width="140">
+      <el-table-column :label="t('vhosts.colMessages')" width="140">
         <template #default="{ row }">{{ formatNumber(row.messages, 0) }}</template>
       </el-table-column>
-      <el-table-column label="就绪消息" width="140">
+      <el-table-column :label="t('vhosts.colMessagesReady')" width="140">
         <template #default="{ row }">{{ formatNumber(row.messages_ready, 0) }}</template>
       </el-table-column>
-      <el-table-column label="未确认消息" width="140">
+      <el-table-column :label="t('vhosts.colMessagesUnacked')" width="140">
         <template #default="{ row }">{{ formatNumber(row.messages_unacknowledged, 0) }}</template>
       </el-table-column>
-      <el-table-column label="运行状态" width="120">
+      <el-table-column :label="t('vhosts.colState')" width="120">
         <template #default="{ row }">
-          <el-tag :type="clusterStateOf(row as Vhost) === '运行中' ? 'success' : 'warning'" size="small">
-            {{ clusterStateOf(row as Vhost) }}
+          <el-tag :type="isRunning(row as Vhost) ? 'success' : 'warning'" size="small">
+            {{ clusterStateLabel(row as Vhost) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="160" fixed="right">
+      <el-table-column :label="t('common.actions')" width="160" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="vhostStore.setCurrent(row.name)">设为当前</el-button>
-          <el-button link type="danger" @click="removeVHost(row.name)">删除</el-button>
+          <el-button link type="primary" @click="vhostStore.setCurrent(row.name)">{{ t('vhosts.setCurrent') }}</el-button>
+          <el-button link type="danger" @click="removeVHost(row.name)">{{ t('common.delete') }}</el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="没有虚拟主机" :image-size="80" />
+        <el-empty :description="t('vhosts.empty')" :image-size="80" />
       </template>
     </el-table>
 
-    <el-dialog v-model="createVisible" title="新建虚拟主机" width="460px">
+    <el-dialog v-model="createVisible" :title="t('vhosts.create')" width="460px">
       <el-form label-width="90px">
-        <el-form-item label="名称">
-          <el-input v-model="createName" placeholder="例如 /staging" autocomplete="off" />
+        <el-form-item :label="t('vhosts.colName')">
+          <el-input v-model="createName" :placeholder="t('vhosts.namePlaceholder')" autocomplete="off" />
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        名称可以是任意路径风格字符串（如 /production）；同名重复提交是幂等的。
-      </div>
+      <div class="page-subtitle">{{ t('vhosts.createNote') }}</div>
       <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="submitCreate">创建</el-button>
+        <el-button @click="createVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="creating" @click="submitCreate">{{ t('common.create') }}</el-button>
       </template>
     </el-dialog>
   </div>

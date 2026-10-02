@@ -5,6 +5,7 @@
 // 因此这里与账号权限页同一套做法：先给档位（全部 / 名称前缀 / 自定义正则），
 // 正则只作为只读预览展示 —— 不把"写正则"当成必答题。
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
@@ -17,6 +18,7 @@ import { showError } from '@/utils/message'
 
 const vhostStore = useVhostStore()
 const refresh = useRefreshStore()
+const { t } = useI18n()
 
 const policies = ref<Policy[]>([])
 const loading = ref(false)
@@ -28,30 +30,30 @@ async function load(): Promise<void> {
     policies.value = list
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取策略列表失败')
+    showError(error, t('policies.loadFailed'))
   } finally {
     loading.value = false
   }
 }
 
-/** 写操作错误提示：优先展示服务端中文 reason */
+/** 写操作错误提示：优先展示服务端原因 */
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) return error.reason || error.message
   if (error instanceof Error) return error.message
-  return '操作失败'
+  return t('common.operationFailed')
 }
 
 // ---- 作用对象 ----
-const APPLY_TO_OPTIONS = [
-  { value: 'queues', label: '全部队列' },
-  { value: 'classic_queues', label: '经典队列' },
-  { value: 'quorum_queues', label: '仲裁队列' },
-  { value: 'exchanges', label: '交换机' },
-  { value: 'all', label: '全部对象' },
-]
+const APPLY_TO_OPTIONS = computed(() => [
+  { value: 'queues', label: t('policies.applyAll') },
+  { value: 'classic_queues', label: t('policies.applyClassic') },
+  { value: 'quorum_queues', label: t('policies.applyQuorum') },
+  { value: 'exchanges', label: t('policies.applyExchanges') },
+  { value: 'all', label: t('policies.applyAllObjects') },
+])
 
 function applyToLabel(value: string): string {
-  return APPLY_TO_OPTIONS.find((item) => item.value === value)?.label ?? value
+  return APPLY_TO_OPTIONS.value.find((item) => item.value === value)?.label ?? value
 }
 
 // ---- 定义编辑器：可选项按作用对象收敛，避免写出后端必然拒绝的键 ----
@@ -70,16 +72,28 @@ const EXCHANGE_KEYS = ['alternate-exchange']
 const NUMERIC_KEYS = ['max-length', 'max-length-bytes', 'message-ttl', 'expires']
 const OVERFLOW_OPTIONS = ['drop-head', 'reject-publish', 'reject-publish-dlx']
 
-/** 键的中文说明 */
-const KEY_LABELS: Record<string, string> = {
-  'max-length': '最大消息条数',
-  'max-length-bytes': '最大消息字节数',
-  'message-ttl': '消息 TTL（毫秒）',
-  expires: '队列空闲过期（毫秒）',
-  'dead-letter-exchange': '死信交换机',
-  'dead-letter-routing-key': '死信路由键',
-  overflow: '长度超限策略',
-  'alternate-exchange': '备用交换机（未路由兜底）',
+/** 策略键的本地化名称；未知键原样返回 */
+function keyLabel(key: string): string {
+  switch (key) {
+    case 'max-length':
+      return t('policies.keyMaxLength')
+    case 'max-length-bytes':
+      return t('policies.keyMaxLengthBytes')
+    case 'message-ttl':
+      return t('policies.keyMessageTtl')
+    case 'expires':
+      return t('policies.keyExpires')
+    case 'dead-letter-exchange':
+      return t('policies.keyDlx')
+    case 'dead-letter-routing-key':
+      return t('policies.keyDlrk')
+    case 'overflow':
+      return t('policies.keyOverflow')
+    case 'alternate-exchange':
+      return t('policies.keyAlternateExchange')
+    default:
+      return key
+  }
 }
 
 interface DefinitionRow {
@@ -191,7 +205,7 @@ function buildDefinition(): Record<string, unknown> | null {
     if (NUMERIC_KEYS.includes(row.key)) {
       const parsed = Number(row.value.trim())
       if (!Number.isInteger(parsed)) {
-        ElMessage.warning(`「${KEY_LABELS[row.key] ?? row.key}」需要填写整数`)
+        ElMessage.warning(t('policies.integerRequired', { field: keyLabel(row.key) }))
         return null
       }
       out[row.key] = parsed
@@ -200,7 +214,7 @@ function buildDefinition(): Record<string, unknown> | null {
     out[row.key] = row.value.trim()
   }
   if (Object.keys(out).length === 0) {
-    ElMessage.warning('请至少填写一项策略内容')
+    ElMessage.warning(t('policies.definitionRequired'))
     return null
   }
   return out
@@ -209,19 +223,19 @@ function buildDefinition(): Record<string, unknown> | null {
 async function submit(): Promise<void> {
   const name = form.value.name.trim()
   if (!name) {
-    ElMessage.warning('请输入策略名')
+    ElMessage.warning(t('policies.nameRequired'))
     return
   }
   if (!form.value.vhost) {
-    ElMessage.warning('请选择虚拟主机')
+    ElMessage.warning(t('users.vhostRequired'))
     return
   }
   if (form.value.matchMode === 'prefix' && !form.value.prefix.trim()) {
-    ElMessage.warning('请输入名称前缀')
+    ElMessage.warning(t('policies.prefixRequired'))
     return
   }
   if (form.value.matchMode === 'custom' && !form.value.customPattern.trim()) {
-    ElMessage.warning('请输入匹配正则')
+    ElMessage.warning(t('policies.patternRequired'))
     return
   }
   const definition = buildDefinition()
@@ -236,7 +250,7 @@ async function submit(): Promise<void> {
   submitting.value = true
   try {
     await api.savePolicy(form.value.vhost, name, body)
-    ElMessage.success(editing.value ? `策略 ${name} 已更新` : `策略 ${name} 已创建`)
+    ElMessage.success(editing.value ? t('policies.updated', { name }) : t('policies.created', { name }))
     dialogVisible.value = false
     await load()
   } catch (error) {
@@ -248,17 +262,17 @@ async function submit(): Promise<void> {
 
 async function removePolicy(row: Policy): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      `确定要删除 vhost「${row.vhost}」上的策略「${row.name}」吗？被它管理的对象会立刻回到无策略状态。`,
-      '删除策略',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('policies.deleteConfirm', { name: row.name, vhost: row.vhost }), t('policies.deleteTitle'), {
+      type: 'warning',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     await api.deletePolicy(row.vhost, row.name)
-    ElMessage.success(`策略 ${row.name} 已删除`)
+    ElMessage.success(t('policies.deleted', { name: row.name }))
     await load()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -272,100 +286,98 @@ useAutoRefresh(load)
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <h2 class="page-title">策略</h2>
-        <div class="page-subtitle">
-          共 {{ policies.length }} 条策略；命中后对已存在的队列与交换机立即生效
-        </div>
+        <h2 class="page-title">{{ t('policies.title') }}</h2>
+        <div class="page-subtitle">{{ t('policies.total', { count: policies.length }) }}</div>
       </div>
       <div>
-        <el-button type="primary" :icon="Plus" @click="openCreate">新建策略</el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('policies.create') }}</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
 
     <el-table :data="policies" stripe>
-      <el-table-column label="名称" min-width="150">
+      <el-table-column :label="t('policies.colName')" min-width="150">
         <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
       </el-table-column>
-      <el-table-column label="虚拟主机" min-width="110">
+      <el-table-column :label="t('policies.colVhost')" min-width="110">
         <template #default="{ row }"><span class="mono">{{ row.vhost }}</span></template>
       </el-table-column>
-      <el-table-column label="匹配" min-width="160" show-overflow-tooltip>
+      <el-table-column :label="t('policies.colPattern')" min-width="160" show-overflow-tooltip>
         <template #default="{ row }"><span class="mono">{{ row.pattern }}</span></template>
       </el-table-column>
-      <el-table-column label="作用对象" width="110">
+      <el-table-column :label="t('policies.colApplyTo')" width="110">
         <template #default="{ row }">{{ applyToLabel(row['apply-to']) }}</template>
       </el-table-column>
-      <el-table-column label="优先级" width="90">
+      <el-table-column :label="t('policies.colPriority')" width="90">
         <template #default="{ row }">{{ row.priority }}</template>
       </el-table-column>
-      <el-table-column label="策略内容" min-width="260">
+      <el-table-column :label="t('policies.colDefinition')" min-width="260">
         <template #default="{ row }">
           <span class="mono policy-definition">{{ formatJson(row.definition) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column :label="t('common.actions')" width="130" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row as Policy)">编辑</el-button>
-          <el-button link type="danger" @click="removePolicy(row as Policy)">删除</el-button>
+          <el-button link type="primary" @click="openEdit(row as Policy)">{{ t('common.edit') }}</el-button>
+          <el-button link type="danger" @click="removePolicy(row as Policy)">{{ t('common.delete') }}</el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="还没有任何策略" :image-size="80" />
+        <el-empty :description="t('policies.empty')" :image-size="80" />
       </template>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑策略' : '新建策略'" width="640px">
+    <el-dialog v-model="dialogVisible" :title="editing ? t('policies.editTitle') : t('policies.createTitle')" width="640px">
       <el-form label-width="96px">
-        <el-form-item label="虚拟主机">
-          <el-select v-model="form.vhost" :disabled="editing" placeholder="选择 vhost" style="width: 100%">
+        <el-form-item :label="t('policies.colVhost')">
+          <el-select v-model="form.vhost" :disabled="editing" :placeholder="t('app.vhostPlaceholder')" style="width: 100%">
             <el-option v-for="item in vhostStore.vhosts" :key="item.name" :label="item.name" :value="item.name" />
           </el-select>
         </el-form-item>
-        <el-form-item label="策略名">
-          <el-input v-model="form.name" :disabled="editing" placeholder="例如 limit-orders" autocomplete="off" />
+        <el-form-item :label="t('policies.colName')">
+          <el-input v-model="form.name" :disabled="editing" :placeholder="t('policies.namePlaceholder')" autocomplete="off" />
         </el-form-item>
-        <el-form-item label="匹配范围">
+        <el-form-item :label="t('policies.matchScope')">
           <div style="width: 100%">
             <el-radio-group v-model="form.matchMode">
-              <el-radio value="all">全部对象</el-radio>
-              <el-radio value="prefix">名称前缀</el-radio>
-              <el-radio value="custom">自定义正则</el-radio>
+              <el-radio value="all">{{ t('policies.matchAll') }}</el-radio>
+              <el-radio value="prefix">{{ t('policies.matchPrefix') }}</el-radio>
+              <el-radio value="custom">{{ t('policies.matchCustom') }}</el-radio>
             </el-radio-group>
             <el-input
               v-if="form.matchMode === 'prefix'"
               v-model="form.prefix"
-              placeholder="例如 app.（按字面量匹配，自动转义）"
+              :placeholder="t('policies.prefixPlaceholder')"
               style="margin-top: 8px"
             />
             <el-input
               v-else-if="form.matchMode === 'custom'"
               v-model="form.customPattern"
-              placeholder="例如 ^app\.(order|pay)\."
+              :placeholder="t('policies.patternPlaceholder')"
               style="margin-top: 8px"
             />
             <div class="page-subtitle" style="margin-top: 6px">
-              实际保存的正则：<span class="mono">{{ finalPattern || '（空）' }}</span>
+              {{ t('policies.finalPattern', { pattern: finalPattern || t('policies.emptyPattern') }) }}
             </div>
           </div>
         </el-form-item>
-        <el-form-item label="作用对象">
+        <el-form-item :label="t('policies.colApplyTo')">
           <el-select v-model="form.applyTo" style="width: 100%">
             <el-option v-for="item in APPLY_TO_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="优先级">
+        <el-form-item :label="t('policies.colPriority')">
           <el-input-number v-model="form.priority" :min="0" :max="100" />
-          <span class="page-subtitle" style="margin-left: 8px">数字大的优先，同优先级时名字大的胜</span>
+          <span class="page-subtitle" style="margin-left: 8px">{{ t('policies.priorityHint') }}</span>
         </el-form-item>
-        <el-form-item label="策略内容">
+        <el-form-item :label="t('policies.colDefinition')">
           <div style="width: 100%">
             <div v-for="(row, index) in form.rows" :key="index" class="definition-row">
               <el-select v-model="row.key" class="definition-key">
                 <el-option
                   v-for="key in allowedKeys"
                   :key="key"
-                  :label="KEY_LABELS[key] ?? key"
+                  :label="keyLabel(key)"
                   :value="key"
                 />
               </el-select>
@@ -376,21 +388,19 @@ useAutoRefresh(load)
                 v-else
                 v-model="row.value"
                 class="definition-value"
-                :placeholder="NUMERIC_KEYS.includes(row.key) ? '整数' : '值'"
+                :placeholder="NUMERIC_KEYS.includes(row.key) ? t('policies.integerPlaceholder') : t('policies.valuePlaceholder')"
               />
-              <el-button link type="danger" @click="removeRow(index)">移除</el-button>
+              <el-button link type="danger" @click="removeRow(index)">{{ t('common.remove') }}</el-button>
             </div>
-            <el-button link type="primary" :icon="Plus" @click="addRow">添加一项</el-button>
+            <el-button link type="primary" :icon="Plus" @click="addRow">{{ t('policies.addRow') }}</el-button>
           </div>
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        队列自身显式声明的同名参数优先于策略；留空的项目不会被提交。
-      </div>
+      <div class="page-subtitle">{{ t('policies.definitionNote') }}</div>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="submitting" @click="submit">
-          {{ editing ? '保存' : '创建' }}
+          {{ editing ? t('common.save') : t('common.create') }}
         </el-button>
       </template>
     </el-dialog>

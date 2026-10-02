@@ -5,6 +5,7 @@
 // 会同步收敛），所以列表里每个条目都带一句"关掉会发生什么"。注册表在后端，
 // 前台只负责展示与切换。
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { FeatureFlag } from '@/api/types'
@@ -13,6 +14,7 @@ import { useRefreshStore } from '@/stores/refresh'
 import { showError } from '@/utils/message'
 
 const refresh = useRefreshStore()
+const { t } = useI18n()
 const flags = ref<FeatureFlag[]>([])
 const loading = ref(false)
 /** 正在切换的开关名（用于禁用按钮，避免连点） */
@@ -24,7 +26,7 @@ async function load(): Promise<void> {
     flags.value = await api.featureFlags()
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取特性开关失败')
+    showError(error, t('featureFlags.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -32,13 +34,14 @@ async function load(): Promise<void> {
 
 async function toggle(row: FeatureFlag): Promise<void> {
   const next = row.state !== 'enabled'
-  const verb = next ? '开启' : '关闭'
+  const verb = next ? t('featureFlags.enable') : t('featureFlags.disable')
+  const verbPast = next ? t('featureFlags.on') : t('featureFlags.off')
   try {
     // row.desc 里已经写清了"关掉会发生什么"，这里不再重复一句，否则提示会自相重复。
     await ElMessageBox.confirm(
-      `确定要${verb}特性「${row.name}」吗？${row.desc}`,
-      `${verb}特性`,
-      { type: 'warning', confirmButtonText: verb, cancelButtonText: '取消' },
+      t('featureFlags.toggleConfirm', { verb, name: row.name, desc: row.desc }),
+      t('featureFlags.toggleTitle', { verb }),
+      { type: 'warning', confirmButtonText: verb, cancelButtonText: t('common.cancel') },
     )
   } catch {
     return
@@ -46,10 +49,10 @@ async function toggle(row: FeatureFlag): Promise<void> {
   pending.value = row.name
   try {
     await api.setFeatureFlag(row.name, next)
-    ElMessage.success(`特性 ${row.name} 已${verb}`)
+    ElMessage.success(t('featureFlags.toggled', { name: row.name, verbPast }))
     await load()
   } catch (error) {
-    showError(error, `${verb}特性失败`)
+    showError(error, t('featureFlags.toggleFailed'))
   } finally {
     pending.value = null
   }
@@ -62,31 +65,29 @@ useAutoRefresh(load)
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <h2 class="page-title">特性开关</h2>
-        <div class="page-subtitle">
-          共 {{ flags.length }} 个开关；只有内核里确有判定点的能力才会出现在这里
-        </div>
+        <h2 class="page-title">{{ t('featureFlags.title') }}</h2>
+        <div class="page-subtitle">{{ t('featureFlags.total', { count: flags.length }) }}</div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
 
     <el-table :data="flags" stripe>
-      <el-table-column label="名称" min-width="220">
+      <el-table-column :label="t('featureFlags.colName')" min-width="220">
         <template #default="{ row }"><span class="mono">{{ row.name }}</span></template>
       </el-table-column>
-      <el-table-column label="状态" width="110">
+      <el-table-column :label="t('featureFlags.colState')" width="110">
         <template #default="{ row }">
           <el-tag :type="row.state === 'enabled' ? 'success' : 'info'" size="small">
-            {{ row.state === 'enabled' ? '已开启' : '已关闭' }}
+            {{ row.state === 'enabled' ? t('featureFlags.on') : t('featureFlags.off') }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="稳定性" width="110">
+      <el-table-column :label="t('featureFlags.colStability')" width="110">
         <template #default="{ row }">
           <el-tag type="info" effect="plain" size="small">{{ row.stability }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="说明" min-width="340">
+      <el-table-column :label="t('featureFlags.colDesc')" min-width="340">
         <template #default="{ row }">
           <div>{{ row.desc }}</div>
           <a v-if="row.doc_url" :href="row.doc_url" target="_blank" rel="noopener" class="mono doc-link">
@@ -94,10 +95,10 @@ useAutoRefresh(load)
           </a>
         </template>
       </el-table-column>
-      <el-table-column label="提供方" width="110">
+      <el-table-column :label="t('featureFlags.colProvidedBy')" width="110">
         <template #default="{ row }"><span class="mono">{{ row.provided_by }}</span></template>
       </el-table-column>
-      <el-table-column label="操作" width="110" fixed="right">
+      <el-table-column :label="t('common.actions')" width="110" fixed="right">
         <template #default="{ row }">
           <el-button
             link
@@ -105,12 +106,12 @@ useAutoRefresh(load)
             :loading="pending === row.name"
             @click="toggle(row as FeatureFlag)"
           >
-            {{ row.state === 'enabled' ? '关闭' : '开启' }}
+            {{ row.state === 'enabled' ? t('featureFlags.disable') : t('featureFlags.enable') }}
           </el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="没有可用的特性开关" :image-size="80" />
+        <el-empty :description="t('featureFlags.empty')" :image-size="80" />
       </template>
     </el-table>
   </div>

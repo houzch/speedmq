@@ -32,6 +32,10 @@ func (s *Server) registerRoutes() {
 	// 登录后管理 UI 必须先拿到它才能知道当前账号被允许访问哪些功能组。
 	s.handle(http.MethodGet, "/api/whoami", "", s.getWhoami)
 
+	// 默认语言探测：管理 UI 在弹出登录框**之前**就要知道用哪种语言渲染，
+	// 因此注册为免认证接口（见 handlePublic）。返回值与调用方无关、不含敏感信息。
+	s.handlePublic(http.MethodGet, "/api/default-language", s.getDefaultLanguage)
+
 	// ---- 集群（M6）----
 	// /api/cluster 是 SwiftMQ 的扩展端点（RabbitMQ 没有对应接口），
 	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
@@ -457,6 +461,18 @@ func (s *Server) enabledPlugins() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// getDefaultLanguage 返回管理 UI 的默认语言（安装时按部署地系统时区推断）。
+//
+// 免认证：管理 UI 在登录前就需要它决定初始语言；用户在界面里选择的语言存于浏览器本地，
+// 优先于此默认值。默认值缺失时回退 en，保证前端总能拿到一个可用 code。
+func (s *Server) getDefaultLanguage(w http.ResponseWriter, _ *http.Request, _ params, _ authUser) {
+	lang := s.deps.DefaultLanguage
+	if lang == "" {
+		lang = "en"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"default_language": lang})
 }
 
 func (s *Server) getWhoami(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {

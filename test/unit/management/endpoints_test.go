@@ -2,6 +2,7 @@ package management_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,34 @@ import (
 
 	sdk "github.com/houzch/swiftmq/pkg/plugin"
 )
+
+// TestDefaultLanguageEndpoint 覆盖免认证的默认语言接口。
+//
+// 管理 UI 在**弹出登录框之前**就要用它决定初始语言，因此必须在不带有效凭证时可用；
+// 同时确认引入了公开接口后，"未认证访问未知路径仍 401"的既有语义没有被放松。
+func TestDefaultLanguageEndpoint(t *testing.T) {
+	env := newTestEnv(t)
+
+	// 刻意带上**无效**凭证：能拿到 200 即证明该路由确实绕开了鉴权。
+	resp, raw := env.request(t, http.MethodGet, "/api/default-language", nil, "-", "-")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("免认证访问默认语言接口应 200，实际 %d（响应 %s）", resp.StatusCode, raw)
+	}
+	var body struct {
+		DefaultLanguage string `json:"default_language"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if body.DefaultLanguage != "zh-CN" {
+		t.Fatalf("应返回配置的默认语言 zh-CN，实际 %q", body.DefaultLanguage)
+	}
+
+	unknown, _ := env.request(t, http.MethodGet, "/api/not-exist", nil, "-", "-")
+	if unknown.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无有效凭证访问未知路径仍应 401，实际 %d", unknown.StatusCode)
+	}
+}
 
 // 本文件补齐 api_test.go 尚未覆盖的管理接口：
 //   - 路径形式的列表（/api/queues/{vhost}、/api/exchanges/{vhost}）—— 与查询参数形式是两条独立注册路由；

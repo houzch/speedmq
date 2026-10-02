@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 连接列表：展示连接信息并支持强制关闭
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Delete, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Connection } from '@/api/types'
@@ -13,6 +14,7 @@ import { showError } from '@/utils/message'
 type TableRow = Record<PropertyKey, any>
 
 const refresh = useRefreshStore()
+const { t } = useI18n()
 
 const connections = ref<Connection[]>([])
 const loading = ref(false)
@@ -23,7 +25,7 @@ async function load(): Promise<void> {
     connections.value = await api.connections()
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取连接列表失败')
+    showError(error, t('connections.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -32,20 +34,20 @@ async function load(): Promise<void> {
 async function closeConnection(row: TableRow): Promise<void> {
   const name = String(row.name)
   try {
-    await ElMessageBox.confirm(
-      `确定要强制关闭连接「${name}」吗？该连接上的所有通道都会被终止。`,
-      '关闭连接',
-      { type: 'warning', confirmButtonText: '关闭连接', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('connections.closeConfirm', { name }), t('connections.closeTitle'), {
+      type: 'warning',
+      confirmButtonText: t('connections.closeButton'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     await api.closeConnection(name)
-    ElMessage.success('连接已关闭')
+    ElMessage.success(t('connections.close'))
     await load()
   } catch (error) {
-    showError(error, '关闭连接失败')
+    showError(error, t('connections.closeFailed'))
   }
 }
 
@@ -56,46 +58,46 @@ useAutoRefresh(load)
   <div>
     <div class="page-header">
       <div>
-        <h2 class="page-title">连接</h2>
-        <div class="page-subtitle">当前共 {{ connections.length }} 个客户端连接</div>
+        <h2 class="page-title">{{ t('connections.title') }}</h2>
+        <div class="page-subtitle">{{ t('connections.total', { count: connections.length }) }}</div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
 
     <el-table v-loading="loading" :data="connections" stripe>
-      <el-table-column label="连接名称" prop="name" min-width="260">
+      <el-table-column :label="t('connections.colName')" prop="name" min-width="260">
         <template #default="{ row }">
           <span class="mono">{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="用户" prop="user" width="110" />
-      <el-table-column label="虚拟主机" prop="vhost" width="110" />
-      <el-table-column label="协议" prop="protocol" width="130" />
-      <el-table-column label="通道数" width="90" align="right">
+      <el-table-column :label="t('connections.colUser')" prop="user" width="110" />
+      <el-table-column :label="t('connections.colVhost')" prop="vhost" width="110" />
+      <el-table-column :label="t('connections.colProtocol')" prop="protocol" width="130" />
+      <el-table-column :label="t('connections.colChannels')" width="90" align="right">
         <template #default="{ row }">{{ formatNumber(row.channels, 0) }}</template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column :label="t('connections.colState')" width="100">
         <template #default="{ row }">
           <el-tag :type="row.state === 'running' ? 'success' : 'info'" size="small">{{ row.state }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="连接时长" width="150">
+      <el-table-column :label="t('connections.colDuration')" width="150">
         <template #default="{ row }">{{ formatElapsedFrom(row.connected_at) }}</template>
       </el-table-column>
-      <el-table-column label="建立时间" width="180">
+      <el-table-column :label="t('connections.colConnectedAt')" width="180">
         <template #default="{ row }">{{ formatTimestamp(row.connected_at) }}</template>
       </el-table-column>
-      <el-table-column label="对端地址" width="180">
+      <el-table-column :label="t('connections.colPeer')" width="180">
         <template #default="{ row }">{{ row.peer_host }}:{{ row.peer_port }}</template>
       </el-table-column>
-      <el-table-column label="节点" prop="node" min-width="180" />
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column :label="t('connections.colNode')" prop="node" min-width="180" />
+      <el-table-column :label="t('common.actions')" width="120" fixed="right">
         <template #default="{ row }">
-          <el-button link type="danger" :icon="Delete" @click="closeConnection(row)">关闭</el-button>
+          <el-button link type="danger" :icon="Delete" @click="closeConnection(row)">{{ t('connections.close') }}</el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="当前没有客户端连接" :image-size="80" />
+        <el-empty :description="t('connections.empty')" :image-size="80" />
       </template>
     </el-table>
   </div>

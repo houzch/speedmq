@@ -4,19 +4,21 @@
 // 总账号（is_root）由后端强制保护：不可删除、不可禁用、不可移除 administrator 标签，
 // 界面对应按钮直接置灰并给出说明，而不是等运维点了才看到 403。
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
 import type { Permission, User, UserUpsertRequest, Vhost } from '@/api/types'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
 import { useRefreshStore } from '@/stores/refresh'
-import { API_GROUPS, apiGroupLabel } from '@/utils/apiGroups'
+import { API_GROUPS, apiGroupDesc, apiGroupLabel } from '@/utils/apiGroups'
 import { showError } from '@/utils/message'
 
 /** 内置标签候选（仍允许自定义，标签串以空格分隔） */
 const TAG_OPTIONS = ['administrator', 'management', 'monitoring']
 
 const refresh = useRefreshStore()
+const { t } = useI18n()
 
 const users = ref<User[]>([])
 const vhosts = ref<Vhost[]>([])
@@ -27,11 +29,11 @@ function splitTags(tags: string): string[] {
   return tags.split(/\s+/).filter(Boolean)
 }
 
-/** 写操作错误提示：优先展示服务端中文 reason */
+/** 写操作错误提示：优先展示服务端原因 */
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) return error.reason || error.message
   if (error instanceof Error) return error.message
-  return '操作失败'
+  return t('common.operationFailed')
 }
 
 async function load(): Promise<void> {
@@ -42,7 +44,7 @@ async function load(): Promise<void> {
     vhosts.value = vhostList
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取账号列表失败')
+    showError(error, t('users.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -83,15 +85,15 @@ function openEdit(row: User): void {
 async function submitUser(): Promise<void> {
   const name = form.value.name.trim()
   if (!name) {
-    ElMessage.warning('请输入账号名')
+    ElMessage.warning(t('users.nameRequired'))
     return
   }
   if (creating.value && !form.value.password) {
-    ElMessage.warning('新建账号必须设置口令')
+    ElMessage.warning(t('users.passwordRequired'))
     return
   }
   if (!form.value.unrestricted && form.value.apiGroups.length === 0) {
-    ElMessage.warning('请至少勾选一个管理接口功能组，或改为「不受限」')
+    ElMessage.warning(t('users.groupRequired'))
     return
   }
   const body: UserUpsertRequest = { tags: form.value.tags }
@@ -101,7 +103,7 @@ async function submitUser(): Promise<void> {
   submitting.value = true
   try {
     await api.saveUser(name, body)
-    ElMessage.success(creating.value ? `账号 ${name} 已创建` : `账号 ${name} 已更新`)
+    ElMessage.success(creating.value ? t('users.created', { name }) : t('users.updated', { name }))
     dialogVisible.value = false
     await load()
   } catch (error) {
@@ -115,7 +117,7 @@ async function submitUser(): Promise<void> {
 async function toggleDisabled(row: User): Promise<void> {
   try {
     await api.saveUser(row.name, { disabled: !row.disabled })
-    ElMessage.success(row.disabled ? `账号 ${row.name} 已启用` : `账号 ${row.name} 已禁用`)
+    ElMessage.success(row.disabled ? t('users.enabled', { name: row.name }) : t('users.disabled', { name: row.name }))
     await load()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -124,17 +126,17 @@ async function toggleDisabled(row: User): Promise<void> {
 
 async function removeUser(row: User): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      `确定要删除账号「${row.name}」吗？其所有 vhost 权限也会一并移除，且不可恢复。`,
-      '删除账号',
-      { type: 'warning', confirmButtonText: '删除账号', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('users.deleteConfirm', { name: row.name }), t('users.deleteTitle'), {
+      type: 'warning',
+      confirmButtonText: t('users.deleteButton'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     await api.deleteUser(row.name)
-    ElMessage.success(`账号 ${row.name} 已删除`)
+    ElMessage.success(t('users.deleted', { name: row.name }))
     await load()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -159,7 +161,7 @@ async function loadPermissions(): Promise<void> {
     const all = await api.permissions()
     perms.value = all.filter((item) => item.user === permUser.value)
   } catch (error) {
-    showError(error, '获取权限列表失败')
+    showError(error, t('users.loadPermissionFailed'))
   } finally {
     permLoading.value = false
   }
@@ -302,11 +304,11 @@ function openPermEdit(row: Permission): void {
 
 async function submitPermission(): Promise<void> {
   if (!permForm.value.vhost) {
-    ElMessage.warning('请选择虚拟主机')
+    ElMessage.warning(t('users.vhostRequired'))
     return
   }
   if (permPreset.value !== 'custom' && permScope.value === 'prefix' && !permPrefix.value.trim()) {
-    ElMessage.warning('请输入资源前缀')
+    ElMessage.warning(t('users.prefixRequired'))
     return
   }
   permSubmitting.value = true
@@ -316,7 +318,7 @@ async function submitPermission(): Promise<void> {
       write: permFinalPatterns.value.write,
       read: permFinalPatterns.value.read,
     })
-    ElMessage.success(`已更新 vhost「${permForm.value.vhost}」的权限`)
+    ElMessage.success(t('users.permissionUpdated', { vhost: permForm.value.vhost }))
     permDialogVisible.value = false
     await loadPermissions()
   } catch (error) {
@@ -328,17 +330,17 @@ async function submitPermission(): Promise<void> {
 
 async function removePermission(row: Permission): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      `确定要删除账号「${permUser.value}」在 vhost「${row.vhost}」上的权限吗？`,
-      '删除权限',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('users.deletePermissionConfirm', { user: permUser.value, vhost: row.vhost }), t('users.deletePermissionTitle'), {
+      type: 'warning',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     await api.deletePermission(row.vhost, permUser.value)
-    ElMessage.success('权限已删除')
+    ElMessage.success(t('users.permissionDeleted'))
     await loadPermissions()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -352,22 +354,22 @@ useAutoRefresh(load)
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <h2 class="page-title">账号</h2>
-        <div class="page-subtitle">共 {{ users.length }} 个账号</div>
+        <h2 class="page-title">{{ t('users.title') }}</h2>
+        <div class="page-subtitle">{{ t('users.total', { count: users.length }) }}</div>
       </div>
       <div>
-        <el-button type="primary" :icon="Plus" @click="openCreate">新建账号</el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openCreate">{{ t('users.create') }}</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
 
     <el-table :data="users" stripe>
-      <el-table-column label="账号名" min-width="180">
+      <el-table-column :label="t('users.colName')" min-width="180">
         <template #default="{ row }">
           <span class="mono">{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="标签" min-width="220">
+      <el-table-column :label="t('users.colTags')" min-width="220">
         <template #default="{ row }">
           <template v-if="splitTags(row.tags).length > 0">
             <el-tag
@@ -384,9 +386,9 @@ useAutoRefresh(load)
           <span v-else class="page-subtitle">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="管理接口权限" min-width="240">
+      <el-table-column :label="t('users.colApiGroups')" min-width="240">
         <template #default="{ row }">
-          <el-tag v-if="row.api_groups.length === 0" type="success" size="small" effect="plain">不受限</el-tag>
+          <el-tag v-if="row.api_groups.length === 0" type="success" size="small" effect="plain">{{ t('common.unlimited') }}</el-tag>
           <template v-else>
             <el-tag
               v-for="id in row.api_groups"
@@ -401,74 +403,74 @@ useAutoRefresh(load)
           </template>
         </template>
       </el-table-column>
-      <el-table-column label="状态" min-width="200">
+      <el-table-column :label="t('users.colState')" min-width="200">
         <template #default="{ row }">
-          <el-tag v-if="row.is_root" class="tag-item" type="danger" size="small">总账号</el-tag>
-          <el-tag v-if="row.disabled" class="tag-item" type="info" size="small">已禁用</el-tag>
-          <el-tag v-if="row.must_change_password" class="tag-item" type="warning" size="small">待改密</el-tag>
+          <el-tag v-if="row.is_root" class="tag-item" type="danger" size="small">{{ t('users.rootTag') }}</el-tag>
+          <el-tag v-if="row.disabled" class="tag-item" type="info" size="small">{{ t('users.disabledTag') }}</el-tag>
+          <el-tag v-if="row.must_change_password" class="tag-item" type="warning" size="small">{{ t('users.mustChangeTag') }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column :label="t('common.actions')" width="260" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openEdit(row as User)">编辑</el-button>
-          <el-button link type="primary" @click="openPermissions(row as User)">权限</el-button>
-          <el-tooltip content="总账号不可删除/禁用/降级" placement="top" :disabled="!row.is_root">
+          <el-button link type="primary" @click="openEdit(row as User)">{{ t('common.edit') }}</el-button>
+          <el-button link type="primary" @click="openPermissions(row as User)">{{ t('users.permissions') }}</el-button>
+          <el-tooltip :content="t('users.rootProtected')" placement="top" :disabled="!row.is_root">
             <span>
               <el-button link type="warning" :disabled="row.is_root" @click="toggleDisabled(row as User)">
-                {{ row.disabled ? '启用' : '禁用' }}
+                {{ row.disabled ? t('common.enable') : t('common.disable') }}
               </el-button>
             </span>
           </el-tooltip>
-          <el-tooltip content="总账号不可删除/禁用/降级" placement="top" :disabled="!row.is_root">
+          <el-tooltip :content="t('users.rootProtected')" placement="top" :disabled="!row.is_root">
             <span>
-              <el-button link type="danger" :disabled="row.is_root" @click="removeUser(row as User)">删除</el-button>
+              <el-button link type="danger" :disabled="row.is_root" @click="removeUser(row as User)">{{ t('common.delete') }}</el-button>
             </span>
           </el-tooltip>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="没有账号" :image-size="80" />
+        <el-empty :description="t('users.empty')" :image-size="80" />
       </template>
     </el-table>
 
     <!-- 新建 / 编辑账号 -->
-    <el-dialog v-model="dialogVisible" :title="creating ? '新建账号' : '编辑账号'" width="480px">
+    <el-dialog v-model="dialogVisible" :title="creating ? t('users.createTitle') : t('users.editTitle')" width="480px">
       <el-form label-width="90px">
-        <el-form-item label="账号名">
+        <el-form-item :label="t('users.colName')">
           <el-input
             v-model="form.name"
             :disabled="!creating"
-            placeholder="请输入账号名"
+            :placeholder="t('users.namePlaceholder')"
             autocomplete="off"
           />
         </el-form-item>
-        <el-form-item label="标签">
+        <el-form-item :label="t('users.colTags')">
           <el-select
             v-model="form.tags"
             multiple
             filterable
             allow-create
             default-first-option
-            placeholder="选择或输入标签"
+            :placeholder="t('users.tagsPlaceholder')"
             style="width: 100%"
           >
             <el-option v-for="tag in TAG_OPTIONS" :key="tag" :label="tag" :value="tag" />
           </el-select>
         </el-form-item>
-        <el-form-item label="口令">
+        <el-form-item :label="t('password.new')">
           <el-input
             v-model="form.password"
             type="password"
             show-password
-            :placeholder="creating ? '新建账号必须设置口令' : '留空表示不修改口令'"
+            :placeholder="creating ? t('users.passwordPlaceholderCreate') : t('users.passwordPlaceholderEdit')"
             autocomplete="new-password"
           />
         </el-form-item>
-        <el-form-item label="管理接口权限">
+        <el-form-item :label="t('users.colApiGroups')">
           <div style="width: 100%">
             <el-switch
               v-model="form.unrestricted"
-              active-text="不受限（使用标签允许的全部管理接口）"
+              :active-text="t('users.unrestrictedSwitch')"
             />
             <div v-if="!form.unrestricted" class="api-group-list">
               <el-checkbox-group v-model="form.apiGroups">
@@ -478,29 +480,27 @@ useAutoRefresh(load)
                   :value="group.id"
                   class="api-group-item"
                 >
-                  {{ group.label }}
-                  <span class="api-group-desc">{{ group.desc }}</span>
+                  {{ apiGroupLabel(group.id) }}
+                  <span class="api-group-desc">{{ apiGroupDesc(group.id) }}</span>
                 </el-checkbox>
               </el-checkbox-group>
             </div>
           </div>
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        标签决定授权：administrator/management 可写，monitoring 只读。涉及管理账号的接口需要 administrator 或 management。
-      </div>
+      <div class="page-subtitle">{{ t('users.tagsNote') }}</div>
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button @click="dialogVisible = false">{{ t('common.cancel') }}</el-button>
         <el-button type="primary" :loading="submitting" @click="submitUser">
-          {{ creating ? '创建' : '保存' }}
+          {{ creating ? t('common.create') : t('common.save') }}
         </el-button>
       </template>
     </el-dialog>
 
     <!-- 权限管理 -->
-    <el-drawer v-model="permDrawerVisible" :title="`账号「${permUser}」的权限`" size="640px">
+    <el-drawer v-model="permDrawerVisible" :title="t('users.permissionsOf', { name: permUser })" size="640px">
       <div class="page-header" style="margin-bottom: 12px">
-        <div class="page-subtitle">按 vhost 选择权限档位与资源范围；底层仍保存为 configure / write / read 三个正则。</div>
+        <div class="page-subtitle">{{ t('users.permNote') }}</div>
         <el-button
           type="primary"
           size="small"
@@ -508,11 +508,11 @@ useAutoRefresh(load)
           :disabled="availableVhosts.length === 0"
           @click="openPermCreate"
         >
-          新增权限
+          {{ t('users.addPermission') }}
         </el-button>
       </div>
       <el-table v-loading="permLoading" :data="perms" stripe>
-        <el-table-column label="虚拟主机" min-width="120">
+        <el-table-column :label="t('users.permissionVhost')" min-width="120">
           <template #default="{ row }">
             <span class="mono">{{ row.vhost }}</span>
           </template>
@@ -526,29 +526,29 @@ useAutoRefresh(load)
         <el-table-column label="read" min-width="120" show-overflow-tooltip>
           <template #default="{ row }"><span class="mono">{{ row.read || '—' }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="130" fixed="right">
+        <el-table-column :label="t('common.actions')" width="130" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openPermEdit(row as Permission)">编辑</el-button>
-            <el-button link type="danger" @click="removePermission(row as Permission)">删除</el-button>
+            <el-button link type="primary" @click="openPermEdit(row as Permission)">{{ t('common.edit') }}</el-button>
+            <el-button link type="danger" @click="removePermission(row as Permission)">{{ t('common.delete') }}</el-button>
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="该账号还没有任何 vhost 权限" :image-size="80" />
+          <el-empty :description="t('users.noPermission')" :image-size="80" />
         </template>
       </el-table>
 
       <el-dialog
         v-model="permDialogVisible"
-        :title="permEditing ? '编辑权限' : '新增权限'"
+        :title="permEditing ? t('users.editPermission') : t('users.addPermission')"
         width="520px"
         append-to-body
       >
         <el-form label-width="90px">
-          <el-form-item label="虚拟主机">
+          <el-form-item :label="t('users.permissionVhost')">
             <el-select
               v-model="permForm.vhost"
               :disabled="permEditing"
-              placeholder="选择 vhost"
+              :placeholder="t('app.vhostPlaceholder')"
               style="width: 100%"
             >
               <el-option
@@ -559,48 +559,53 @@ useAutoRefresh(load)
               />
             </el-select>
           </el-form-item>
-          <el-form-item label="权限档位">
+          <el-form-item :label="t('users.permissionPreset')">
             <el-radio-group v-model="permPreset">
-              <el-radio value="full">完全管理</el-radio>
-              <el-radio value="consume">只读（消费）</el-radio>
-              <el-radio value="publish">只发布</el-radio>
-              <el-radio value="declare">只声明拓扑</el-radio>
-              <el-radio value="custom">自定义</el-radio>
+              <el-radio value="full">{{ t('users.presetFull') }}</el-radio>
+              <el-radio value="consume">{{ t('users.presetConsume') }}</el-radio>
+              <el-radio value="publish">{{ t('users.presetPublish') }}</el-radio>
+              <el-radio value="declare">{{ t('users.presetDeclare') }}</el-radio>
+              <el-radio value="custom">{{ t('users.presetCustom') }}</el-radio>
             </el-radio-group>
           </el-form-item>
-          <el-form-item v-if="permPreset !== 'custom'" label="资源范围">
+          <el-form-item v-if="permPreset !== 'custom'" :label="t('users.resourceScope')">
             <div style="width: 100%">
               <el-radio-group v-model="permScope">
-                <el-radio value="all">全部资源</el-radio>
-                <el-radio value="prefix">指定前缀</el-radio>
+                <el-radio value="all">{{ t('users.scopeAll') }}</el-radio>
+                <el-radio value="prefix">{{ t('users.scopePrefix') }}</el-radio>
               </el-radio-group>
               <el-input
                 v-if="permScope === 'prefix'"
                 v-model="permPrefix"
-                placeholder="例如 app.（按字面量匹配，自动转义）"
+                :placeholder="t('users.prefixPlaceholder')"
                 style="margin-top: 8px"
               />
             </div>
           </el-form-item>
           <template v-else>
             <el-form-item label="configure">
-              <el-input v-model="permForm.configure" placeholder="配置正则，如 ^swiftmq\." />
+              <el-input v-model="permForm.configure" :placeholder="t('users.configurePlaceholder')" />
             </el-form-item>
             <el-form-item label="write">
-              <el-input v-model="permForm.write" placeholder="写入正则，如 ^swiftmq\." />
+              <el-input v-model="permForm.write" :placeholder="t('users.writePlaceholder')" />
             </el-form-item>
             <el-form-item label="read">
-              <el-input v-model="permForm.read" placeholder="读取正则，如 .*" />
+              <el-input v-model="permForm.read" :placeholder="t('users.readPlaceholder')" />
             </el-form-item>
           </template>
         </el-form>
         <div class="page-subtitle">
-          将保存为：configure={{ permFinalPatterns.configure || '（空）' }} /
-          write={{ permFinalPatterns.write || '（空）' }} / read={{ permFinalPatterns.read || '（空）' }}
+          {{
+            t('users.savePreview', {
+              configure: permFinalPatterns.configure || t('users.emptyPattern'),
+              write: permFinalPatterns.write || t('users.emptyPattern'),
+              read: permFinalPatterns.read || t('users.emptyPattern'),
+            })
+          }}
         </div>
         <template #footer>
-          <el-button @click="permDialogVisible = false">取消</el-button>
-          <el-button type="primary" :loading="permSubmitting" @click="submitPermission">保存</el-button>
+          <el-button @click="permDialogVisible = false">{{ t('common.cancel') }}</el-button>
+          <el-button type="primary" :loading="permSubmitting" @click="submitPermission">{{ t('common.save') }}</el-button>
         </template>
       </el-dialog>
     </el-drawer>

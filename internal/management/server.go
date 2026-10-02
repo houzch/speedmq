@@ -54,6 +54,9 @@ type Deps struct {
 	Listeners func() []transport.ListenerSnapshot
 	// Version 是本节点版本。
 	Version string
+	// DefaultLanguage 是管理 UI 的默认语言（安装时按系统时区推断，见 config.Management.Language）。
+	// 前端在用户尚未手动选择语言时用它作为初始语言。
+	DefaultLanguage string
 	// NodeName 是节点名，如 "swiftmq@host"。
 	NodeName string
 	// StartedAt 是进程启动时刻（uptime 计算用）。
@@ -144,7 +147,9 @@ type route struct {
 	method   string
 	segments []string
 	// group 是该接口所属的**功能组**（见 apiGroup* 常量）。账号上勾选的功能组就是按它收窄的。
-	group   string
+	group string
+	// public 为 true 的接口不参与认证（登录前也要能访问），因此**绝不能**暴露任何敏感数据。
+	public  bool
 	handler handlerFunc
 }
 
@@ -153,6 +158,19 @@ func (s *Server) handle(method, pattern, group string, h handlerFunc) {
 		method:   method,
 		segments: splitPath(pattern),
 		group:    group,
+		handler:  h,
+	})
+}
+
+// handlePublic 注册一个**免认证**接口（登录前可访问）。
+//
+// 目前只有默认语言探测用它：管理 UI 在弹出登录框之前就要知道用哪种语言渲染。
+// 免认证接口的返回值必须与调用方无关、且不含任何敏感信息；新增此类接口前先确认这一点。
+func (s *Server) handlePublic(method, pattern string, h handlerFunc) {
+	s.routes = append(s.routes, route{
+		method:   method,
+		segments: splitPath(pattern),
+		public:   true,
 		handler:  h,
 	})
 }
@@ -189,8 +207,8 @@ func splitRequestPath(r *http.Request) ([]string, error) {
 	return out, nil
 }
 
-// match 返回匹配的处理器、路径参数与所属功能组。
-func (s *Server) match(method string, segments []string) (handlerFunc, params, string, bool, bool) {
+// match 返回匹配的路由、路径参数，以及"路径匹配但方法不符"的标记。
+func (s *Server) match(method string, segments []string) (route, params, bool, bool) {
 	pathMatched := false
 	for _, rt := range s.routes {
 		p, ok := matchSegments(rt.segments, segments)
@@ -199,10 +217,10 @@ func (s *Server) match(method string, segments []string) (handlerFunc, params, s
 		}
 		pathMatched = true
 		if rt.method == method {
-			return rt.handler, p, rt.group, true, true
+			return rt, p, true, true
 		}
 	}
-	return nil, nil, "", false, pathMatched
+	return route{}, nil, false, pathMatched
 }
 
 func matchSegments(pattern, actual []string) (params, bool) {
@@ -241,6 +259,15 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rt, p, ok, pathMatched := s.match(r.Method, segments)
+
+	// 免认证接口：只有"命中公开路由"时才绕开鉴权；其余请求（含未知路径）仍先鉴权，
+	// 以保持"未认证一律 401"的既有行为不变。
+	if ok && rt.public {
+		rt.handler(w, r, p, authUser{})
+		return
+	}
+
 	user, err := s.authenticate(r)
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", `Basic realm="SwiftMQ Management"`)
@@ -248,7 +275,6 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	handler, p, group, ok, pathMatched := s.match(r.Method, segments)
 	if !ok {
 		if pathMatched {
 			w.Header().Set("Allow", s.allowedMethods(segments))
@@ -263,12 +289,12 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// 接口级权限：账号勾选了功能组时，只允许访问这些组。
 	// 未勾选（列表为空）= 不限制，用标签允许的全部接口 —— 这样既有账号与
 	// rabbitmqadmin / 脚本的行为完全不变，新账号可以在此基础上收窄。
-	if !user.allowsGroup(group) {
+	if !user.allowsGroup(rt.group) {
 		writeError(w, http.StatusForbidden, "Access refused",
-			fmt.Sprintf("ACCESS_REFUSED - 账号 %s 未被授予「%s」管理接口权限", user.Name, groupLabel(group)))
+			fmt.Sprintf("ACCESS_REFUSED - 账号 %s 未被授予「%s」管理接口权限", user.Name, groupLabel(rt.group)))
 		return
 	}
-	handler(w, r, p, user)
+	rt.handler(w, r, p, user)
 }
 
 func (s *Server) allowedMethods(segments []string) string {

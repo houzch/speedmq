@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 概览页：对象/消息统计 + 节点信息 + 前端轮询采样的趋势图
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, LegendComponent, TooltipComponent } from 'echarts/components'
@@ -18,6 +19,7 @@ echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, Canvas
 
 const refresh = useRefreshStore()
 const auth = useAuthStore()
+const { t, locale } = useI18n()
 
 /** 轮询间隔（毫秒）：每 5 秒采样一次 /api/overview */
 const POLL_INTERVAL = 5_000
@@ -36,6 +38,15 @@ const nodes = ref<NodeInfo[]>([])
 const nodesLoading = ref(false)
 const samples = ref<TrendSample[]>([])
 
+/** 顶部统计卡片：标签随语言切换 */
+const statCards = computed(() => [
+  { label: t('overview.connections'), value: overview.value?.object_totals.connections },
+  { label: t('overview.channels'), value: overview.value?.object_totals.channels },
+  { label: t('overview.queues'), value: overview.value?.object_totals.queues },
+  { label: t('overview.consumers'), value: overview.value?.object_totals.consumers },
+  { label: t('overview.exchanges'), value: overview.value?.object_totals.exchanges },
+])
+
 const chartRef = ref<HTMLDivElement | null>(null)
 let chart: ReturnType<typeof echarts.init> | null = null
 let pollTimer: number | null = null
@@ -43,9 +54,10 @@ let pollTimer: number | null = null
 /** 渲染趋势图（图表数据全部来自前端累积的采样点） */
 function renderChart(): void {
   if (!chart) return
+  const seriesNames = [t('overview.chartMessages'), t('overview.chartPublish'), t('overview.chartDeliver')]
   chart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['队列消息总数', '累计发布', '累计投递'] },
+    legend: { data: seriesNames },
     grid: { left: 56, right: 24, top: 40, bottom: 32 },
     xAxis: {
       type: 'category',
@@ -55,21 +67,21 @@ function renderChart(): void {
     yAxis: { type: 'value' },
     series: [
       {
-        name: '队列消息总数',
+        name: seriesNames[0],
         type: 'line',
         smooth: true,
         showSymbol: false,
         data: samples.value.map((item) => item.messages),
       },
       {
-        name: '累计发布',
+        name: seriesNames[1],
         type: 'line',
         smooth: true,
         showSymbol: false,
         data: samples.value.map((item) => item.publish),
       },
       {
-        name: '累计投递',
+        name: seriesNames[2],
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -89,7 +101,7 @@ async function loadOverview(silent = false): Promise<void> {
     const data = await api.overview()
     overview.value = data
     samples.value.push({
-      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      time: new Date().toLocaleTimeString(String(locale.value), { hour12: false }),
       messages: data.queue_totals.messages,
       publish: data.message_stats.publish ?? 0,
       deliver: data.message_stats.deliver ?? 0,
@@ -99,7 +111,7 @@ async function loadOverview(silent = false): Promise<void> {
     }
     renderChart()
   } catch (error) {
-    if (!silent) showError(error, '获取概览信息失败')
+    if (!silent) showError(error, t('overview.loadFailed'))
   }
 }
 
@@ -108,7 +120,7 @@ async function loadNodes(): Promise<void> {
   try {
     nodes.value = await api.nodes()
   } catch (error) {
-    showError(error, '获取节点信息失败')
+    showError(error, t('overview.loadNodesFailed'))
   } finally {
     nodesLoading.value = false
   }
@@ -119,6 +131,9 @@ async function refreshAll(): Promise<void> {
   await Promise.all([loadOverview(), loadNodes()])
   refresh.markRefreshed()
 }
+
+// 切换语言后重绘图例/系列名（图表不参与 Vue 的响应式渲染）
+watch(locale, renderChart)
 
 onMounted(() => {
   if (chartRef.value) {
@@ -146,18 +161,12 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <div class="page-header">
-      <h2 class="page-title">概览</h2>
-      <el-button :icon="Refresh" @click="refreshAll">刷新</el-button>
+      <h2 class="page-title">{{ t('overview.title') }}</h2>
+      <el-button :icon="Refresh" @click="refreshAll">{{ t('common.refresh') }}</el-button>
     </div>
 
     <el-row :gutter="16">
-      <el-col v-for="item in [
-        { label: '连接数', value: overview?.object_totals.connections },
-        { label: '通道数', value: overview?.object_totals.channels },
-        { label: '队列数', value: overview?.object_totals.queues },
-        { label: '消费者数', value: overview?.object_totals.consumers },
-        { label: '交换机数', value: overview?.object_totals.exchanges },
-      ]" :key="item.label" :xs="12" :sm="8" :md="4">
+      <el-col v-for="item in statCards" :key="item.label" :xs="12" :sm="8" :md="4">
         <el-card class="section-card" shadow="never">
           <div class="stat-label">{{ item.label }}</div>
           <div class="stat-value">{{ formatNumber(item.value, 0) }}</div>
@@ -168,21 +177,21 @@ onBeforeUnmount(() => {
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card class="section-card" shadow="never">
-          <template #header>队列消息</template>
+          <template #header>{{ t('overview.queueMessages') }}</template>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="消息总数">
+            <el-descriptions-item :label="t('overview.messagesTotal')">
               {{ formatNumber(overview?.queue_totals.messages, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="就绪消息">
+            <el-descriptions-item :label="t('overview.messagesReady')">
               {{ formatNumber(overview?.queue_totals.messages_ready, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="未确认消息">
+            <el-descriptions-item :label="t('overview.messagesUnacked')">
               {{ formatNumber(overview?.queue_totals.messages_unacknowledged, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="累计发布">
+            <el-descriptions-item :label="t('overview.publishTotal')">
               {{ formatNumber(overview?.message_stats.publish, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="累计投递">
+            <el-descriptions-item :label="t('overview.deliverTotal')">
               {{ formatNumber(overview?.message_stats.deliver, 0) }}
             </el-descriptions-item>
           </el-descriptions>
@@ -190,15 +199,15 @@ onBeforeUnmount(() => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card class="section-card" shadow="never">
-          <template #header>服务信息</template>
+          <template #header>{{ t('overview.serviceInfo') }}</template>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="产品">
+            <el-descriptions-item :label="t('overview.product')">
               {{ overview?.product_name ?? '—' }} {{ overview?.product_version ?? '' }}
             </el-descriptions-item>
-            <el-descriptions-item label="管理版本">{{ overview?.management_version ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="AMQP 版本">{{ overview?.rabbitmq_version ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="集群名称">{{ overview?.cluster_name ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="当前节点">{{ overview?.node ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('overview.managementVersion')">{{ overview?.management_version ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('overview.amqpVersion')">{{ overview?.rabbitmq_version ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('overview.clusterName')">{{ overview?.cluster_name ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('overview.currentNode')">{{ overview?.node ?? '—' }}</el-descriptions-item>
           </el-descriptions>
         </el-card>
       </el-col>
@@ -207,54 +216,54 @@ onBeforeUnmount(() => {
     <el-card class="section-card" shadow="never">
       <template #header>
         <div class="page-header" style="margin-bottom: 0">
-          <span>趋势（前端每 5 秒采样一次，仅保留最近 60 个点）</span>
-          <span class="page-subtitle">共 {{ samples.length }} 个采样点</span>
+          <span>{{ t('overview.trend') }}</span>
+          <span class="page-subtitle">{{ t('overview.samples', { count: samples.length }) }}</span>
         </div>
       </template>
       <div ref="chartRef" class="chart" />
-      <el-empty v-if="samples.length === 0" description="暂无采样数据" :image-size="80" />
+      <el-empty v-if="samples.length === 0" :description="t('overview.noSamples')" :image-size="80" />
     </el-card>
 
     <el-card class="section-card" shadow="never">
       <template #header>
         <div class="page-header" style="margin-bottom: 0">
-          <span>节点</span>
-          <el-button :icon="Refresh" size="small" :loading="nodesLoading" @click="loadNodes">刷新</el-button>
+          <span>{{ t('overview.nodes') }}</span>
+          <el-button :icon="Refresh" size="small" :loading="nodesLoading" @click="loadNodes">{{ t('common.refresh') }}</el-button>
         </div>
       </template>
       <el-table v-loading="nodesLoading" :data="nodes" stripe>
-        <el-table-column label="节点名称" prop="name" min-width="200" />
-        <el-table-column label="类型" prop="type" width="90" />
-        <el-table-column label="运行状态" width="100">
+        <el-table-column :label="t('overview.nodeName')" prop="name" min-width="200" />
+        <el-table-column :label="t('overview.nodeType')" prop="type" width="90" />
+        <el-table-column :label="t('overview.runningState')" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.running ? 'success' : 'danger'">{{ row.running ? '运行中' : '已停止' }}</el-tag>
+            <el-tag :type="row.running ? 'success' : 'danger'">{{ row.running ? t('overview.runningOn') : t('overview.stopped') }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="运行时长" width="180">
+        <el-table-column :label="t('overview.uptime')" width="180">
           <template #default="{ row }">{{ formatDuration(row.uptime) }}</template>
         </el-table-column>
-        <el-table-column label="内存占用" width="140">
+        <el-table-column :label="t('overview.memUsed')" width="140">
           <template #default="{ row }">{{ formatBytes(row.mem_used) }}</template>
         </el-table-column>
-        <el-table-column label="内存上限" width="140">
+        <el-table-column :label="t('overview.memLimit')" width="140">
           <template #default="{ row }">{{ formatBytes(row.mem_limit) }}</template>
         </el-table-column>
-        <el-table-column label="磁盘剩余" width="140">
+        <el-table-column :label="t('overview.diskFree')" width="140">
           <template #default="{ row }">{{ formatBytes(row.disk_free) }}</template>
         </el-table-column>
-        <el-table-column label="进程数" width="90">
+        <el-table-column :label="t('overview.procUsed')" width="90">
           <template #default="{ row }">{{ formatNumber(row.proc_used, 0) }}</template>
         </el-table-column>
-        <el-table-column label="文件描述符" width="110">
+        <el-table-column :label="t('overview.fdUsed')" width="110">
           <template #default="{ row }">{{ formatNumber(row.fd_used, 0) }}</template>
         </el-table-column>
-        <el-table-column label="套接字" width="90">
+        <el-table-column :label="t('overview.sockets')" width="90">
           <template #default="{ row }">{{ formatNumber(row.sockets_used, 0) }}</template>
         </el-table-column>
-        <el-table-column label="系统进程号" width="110">
+        <el-table-column :label="t('overview.osPid')" width="110">
           <template #default="{ row }">{{ formatNumber(row.os_pid, 0) }}</template>
         </el-table-column>
-        <el-table-column label="启用插件">
+        <el-table-column :label="t('overview.enabledPlugins')">
           <template #default="{ row }">
             <el-tag v-for="plugin in row.enabled_plugins" :key="plugin" size="small" effect="plain" class="mono">
               {{ plugin }}
@@ -265,12 +274,12 @@ onBeforeUnmount(() => {
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>监听器</template>
+      <template #header>{{ t('overview.listeners') }}</template>
       <el-table :data="overview?.listeners ?? []" stripe>
-        <el-table-column label="节点" prop="node" min-width="200" />
-        <el-table-column label="协议" prop="protocol" width="120" />
-        <el-table-column label="监听地址" prop="ip_address" width="160" />
-        <el-table-column label="端口" prop="port" width="100" />
+        <el-table-column :label="t('overview.listenerNode')" prop="node" min-width="200" />
+        <el-table-column :label="t('overview.protocol')" prop="protocol" width="120" />
+        <el-table-column :label="t('overview.listenAddr')" prop="ip_address" width="160" />
+        <el-table-column :label="t('overview.port')" prop="port" width="100" />
       </el-table>
     </el-card>
 

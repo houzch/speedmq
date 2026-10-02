@@ -86,6 +86,13 @@ type Management struct {
 	Enabled bool `json:"enabled"`
 	// Addr 是管理面的监听地址，默认 ":15672"（对齐 RabbitMQ 管理插件端口）。
 	Addr string `json:"addr"`
+	// Language 是管理 UI 的**默认界面语言**（如 zh-CN / en）。
+	//
+	// 留空时在启动阶段按本机系统时区自动推断（见 LanguageFromTimezone）——
+	// 这就是"安装时按部署地时区决定默认语言"的落点。取值非法直接启动失败，
+	// 避免拼错的配置静默退回默认语言。用户在管理 UI 里选择的语言存在浏览器本地，
+	// 优先于这个默认值。
+	Language string `json:"language"`
 	// TLS 提供证书时管理面走 HTTPS（字段与协议监听完全一致）。
 	TLS *TLS `json:"tls,omitempty"`
 }
@@ -269,6 +276,7 @@ func (c *Config) ApplyEnv() error {
 	str("SWIFTMQ_DEFAULT_VHOST", &c.DefaultVHost)
 	str("SWIFTMQ_FSYNC", &c.Storage.Fsync)
 	str("SWIFTMQ_MANAGEMENT_ADDR", &c.Management.Addr)
+	str("SWIFTMQ_MANAGEMENT_LANGUAGE", &c.Management.Language)
 	str("SWIFTMQ_CLUSTER_NODE_ID", &c.Cluster.NodeID)
 	str("SWIFTMQ_CLUSTER_LISTEN", &c.Cluster.Listen)
 	str("SWIFTMQ_CLUSTER_PARTITION_POLICY", &c.Cluster.PartitionPolicy)
@@ -360,6 +368,14 @@ func (c *Config) PluginFlags(name string) (enabled, required, builtin bool) {
 func normalizeManagement(m *Management) error {
 	if m.Addr == "" {
 		m.Addr = ":15672"
+	}
+	// 默认语言与"是否启用管理面"无关：即便本次停用，配置里也应留下一个确定的值，
+	// 便于日志与测试对照。留空 = 按系统时区推断（安装时的默认语言）。
+	if m.Language == "" {
+		m.Language = LanguageFromTimezone(SystemTimezone())
+	}
+	if !IsSupportedLanguage(m.Language) {
+		return fmt.Errorf("management.language 取值非法: %q（可选 %s）", m.Language, languageHint())
 	}
 	if !m.Enabled {
 		return nil

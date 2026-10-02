@@ -2,6 +2,7 @@
 // 交换机详情：基本信息 + source 绑定 + 发布测试消息
 import { computed, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Delete, Plus, Promotion, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
@@ -14,6 +15,7 @@ import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 const refresh = useRefreshStore()
 
@@ -61,17 +63,17 @@ async function load(): Promise<void> {
     exchanges.value = exchangeList
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '加载交换机详情失败')
+    showError(error, t('exchangeDetail.loadFailed'))
   } finally {
     loading.value = false
   }
 }
 
-/** 写操作错误提示：优先展示服务端中文 reason */
+/** 写操作错误提示：优先展示服务端原因 */
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) return error.reason || error.message
   if (error instanceof Error) return error.message
-  return '操作失败'
+  return t('common.operationFailed')
 }
 
 /** 打开「添加绑定」对话框并重置表单 */
@@ -88,7 +90,7 @@ function openBinding(): void {
 async function submitBinding(): Promise<void> {
   const destination = bindingForm.value.destination.trim()
   if (!destination) {
-    ElMessage.warning('请选择目标')
+    ElMessage.warning(t('exchangeDetail.targetRequired'))
     return
   }
   const built = buildArguments(bindingForm.value.args)
@@ -104,7 +106,7 @@ async function submitBinding(): Promise<void> {
     } else {
       await api.bindExchange(vhost.value, exchangeName.value, destination, body)
     }
-    ElMessage.success('绑定已建立')
+    ElMessage.success(t('exchangeDetail.bound'))
     bindingVisible.value = false
     await load()
   } catch (error) {
@@ -124,12 +126,12 @@ async function unbindBinding(rawRow: Record<PropertyKey, unknown>): Promise<void
   const destinationType = String(rawRow.destination_type ?? '')
   const props = String(rawRow.properties_key ?? '')
   const routingKey = String(rawRow.routing_key ?? '')
-  const typeLabel = destinationType === 'queue' ? '队列' : '交换机'
+  const typeLabel = destinationType === 'queue' ? t('common.queue') : t('common.exchange')
   try {
     await ElMessageBox.confirm(
-      `确定要删除从本交换机到${typeLabel}「${destination}」的绑定（路由键「${routingKey || '~'}」）吗？`,
-      '解绑',
-      { type: 'warning', confirmButtonText: '解绑', cancelButtonText: '取消' },
+      t('exchangeDetail.unbindConfirm', { type: typeLabel, destination, routingKey: routingKey || '~' }),
+      t('exchangeDetail.unbindTitle'),
+      { type: 'warning', confirmButtonText: t('exchangeDetail.unbindButton'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return
@@ -140,7 +142,7 @@ async function unbindBinding(rawRow: Record<PropertyKey, unknown>): Promise<void
     } else {
       await api.unbindExchange(vhost.value, exchangeName.value, destination, props)
     }
-    ElMessage.success('绑定已删除')
+    ElMessage.success(t('exchangeDetail.unbound'))
     await load()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -162,7 +164,7 @@ async function publishMessage(): Promise<void> {
     try {
       headers = JSON.parse(publishForm.headersText) as Record<string, unknown>
     } catch {
-      ElMessage.error('Headers 必须是合法的 JSON 对象')
+      ElMessage.error(t('exchangeDetail.headersInvalid'))
       return
     }
   }
@@ -181,12 +183,12 @@ async function publishMessage(): Promise<void> {
       mandatory: publishForm.mandatory,
     })
     if (result.routed) {
-      ElMessage.success('消息已成功路由')
+      ElMessage.success(t('exchangeDetail.publishRouted'))
     } else {
-      ElMessage.warning('消息已发布，但未路由到任何队列')
+      ElMessage.warning(t('exchangeDetail.publishUnrouted'))
     }
   } catch (error) {
-    showError(error, '发布消息失败')
+    showError(error, t('exchangeDetail.publishFailed'))
   } finally {
     publishing.value = false
   }
@@ -199,20 +201,20 @@ function goBack(): void {
 /** 删除交换机：二次确认后删除，成功返回交换机列表 */
 async function deleteExchange(): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确定要删除交换机「${exchangeName.value}」吗？该操作不可撤销。`, '删除交换机', {
+    await ElMessageBox.confirm(t('exchangeDetail.deleteConfirm', { name: exchangeName.value }), t('exchangeDetail.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
   }
   try {
     await api.deleteExchange(vhost.value, exchangeName.value)
-    ElMessage.success('交换机已删除')
+    ElMessage.success(t('exchangeDetail.deleted'))
     await router.push({ name: 'exchanges', params: { vhost: vhost.value } })
   } catch (error) {
-    showError(error, '删除交换机失败')
+    showError(error, t('exchangeDetail.deleteFailed'))
   }
 }
 
@@ -228,54 +230,54 @@ watch([vhost, exchangeName], () => {
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <el-button link :icon="ArrowLeft" @click="goBack">返回交换机列表</el-button>
-        <h2 class="page-title">交换机详情：{{ exchangeName }}</h2>
-        <div class="page-subtitle">虚拟主机：{{ vhost }}</div>
+        <el-button link :icon="ArrowLeft" @click="goBack">{{ t('exchangeDetail.back') }}</el-button>
+        <h2 class="page-title">{{ t('exchangeDetail.title', { name: exchangeName }) }}</h2>
+        <div class="page-subtitle">{{ t('common.vhostSubtitle', { vhost }) }}</div>
       </div>
       <div class="toolbar" style="margin-bottom: 0">
-        <el-button :icon="Refresh" @click="load">刷新</el-button>
-        <el-button type="danger" :icon="Delete" @click="deleteExchange">删除交换机</el-button>
+        <el-button :icon="Refresh" @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button type="danger" :icon="Delete" @click="deleteExchange">{{ t('exchangeDetail.deleteButton') }}</el-button>
       </div>
     </div>
 
     <el-card class="section-card" shadow="never">
-      <template #header>基本信息</template>
+      <template #header>{{ t('exchangeDetail.basicInfo') }}</template>
       <el-descriptions :column="3" border>
-        <el-descriptions-item label="名称">{{ exchange?.name ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="虚拟主机">{{ exchange?.vhost ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="类型">{{ exchange?.type ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="持久化">{{ formatBoolean(exchange?.durable) }}</el-descriptions-item>
-        <el-descriptions-item label="自动删除">{{ formatBoolean(exchange?.auto_delete) }}</el-descriptions-item>
-        <el-descriptions-item label="内部使用">{{ formatBoolean(exchange?.internal) }}</el-descriptions-item>
-        <el-descriptions-item label="累计发布">
+        <el-descriptions-item :label="t('common.name')">{{ exchange?.name ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.vhost')">{{ exchange?.vhost ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.type')">{{ exchange?.type ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.durable')">{{ formatBoolean(exchange?.durable) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.autoDelete')">{{ formatBoolean(exchange?.auto_delete) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.internalUse')">{{ formatBoolean(exchange?.internal) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('overview.publishTotal')">
           {{ formatNumber(exchange?.message_stats?.publish, 0) }}
         </el-descriptions-item>
-        <el-descriptions-item label="策略">{{ exchange?.policy ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="参数（arguments）">
+        <el-descriptions-item :label="t('common.policy')">{{ exchange?.policy ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.arguments')">
           <span class="mono">{{ formatJson(exchange?.arguments ?? {}) }}</span>
         </el-descriptions-item>
       </el-descriptions>
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>发布测试消息</template>
+      <template #header>{{ t('exchangeDetail.publishTitle') }}</template>
       <el-form label-width="110px">
         <el-row :gutter="16">
           <el-col :xs="24" :md="8">
-            <el-form-item label="路由键">
-              <el-input v-model="publishForm.routing_key" placeholder="routing key" />
+            <el-form-item :label="t('common.routingKey')">
+              <el-input v-model="publishForm.routing_key" :placeholder="t('exchangeDetail.routingKeyPlaceholder')" />
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="8">
-            <el-form-item label="内容类型">
+            <el-form-item :label="t('queueDetail.contentType')">
               <el-input v-model="publishForm.content_type" placeholder="text/plain" />
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="8">
-            <el-form-item label="投递模式">
+            <el-form-item :label="t('queueDetail.deliveryMode')">
               <el-select v-model="publishForm.delivery_mode" style="width: 100%">
-                <el-option :value="1" label="1 - 非持久化" />
-                <el-option :value="2" label="2 - 持久化" />
+                <el-option :value="1" :label="t('queueDetail.deliveryMode1')" />
+                <el-option :value="2" :label="t('queueDetail.deliveryMode2')" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -283,15 +285,15 @@ watch([vhost, exchangeName], () => {
         <el-form-item label="Headers（JSON）">
           <el-input v-model="publishForm.headersText" placeholder="{}" />
         </el-form-item>
-        <el-form-item label="消息内容">
-          <el-input v-model="publishForm.payload" type="textarea" :rows="4" placeholder="消息 payload" />
+        <el-form-item :label="t('queueDetail.payload')">
+          <el-input v-model="publishForm.payload" type="textarea" :rows="4" :placeholder="t('queueDetail.payloadPlaceholder')" />
         </el-form-item>
         <el-form-item label="mandatory">
-          <el-checkbox v-model="publishForm.mandatory">无可路由队列时返回未路由提示</el-checkbox>
+          <el-checkbox v-model="publishForm.mandatory">{{ t('queueDetail.mandatoryLabel') }}</el-checkbox>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :icon="Promotion" :loading="publishing" @click="publishMessage">
-            发布消息
+            {{ t('queueDetail.publishButton') }}
           </el-button>
         </el-form-item>
       </el-form>
@@ -300,53 +302,53 @@ watch([vhost, exchangeName], () => {
     <el-card shadow="never">
       <template #header>
         <div style="display: flex; align-items: center; justify-content: space-between">
-          <span>源绑定（bindings/source）</span>
-          <el-button type="primary" size="small" :icon="Plus" @click="openBinding">添加绑定</el-button>
+          <span>{{ t('exchangeDetail.sourceBindingsTitle') }}</span>
+          <el-button type="primary" size="small" :icon="Plus" @click="openBinding">{{ t('common.addBinding') }}</el-button>
         </div>
       </template>
       <el-table :data="bindings" stripe>
-        <el-table-column label="目标类型" width="110">
-          <template #default="{ row }">{{ row.destination_type === 'queue' ? '队列' : '交换机' }}</template>
+        <el-table-column :label="t('queueDetail.colDestinationType')" width="110">
+          <template #default="{ row }">{{ row.destination_type === 'queue' ? t('common.queue') : t('common.exchange') }}</template>
         </el-table-column>
-        <el-table-column label="目标" prop="destination" min-width="180" />
-        <el-table-column label="路由键" prop="routing_key" min-width="140" />
-        <el-table-column label="properties_key" prop="properties_key" min-width="140" />
-        <el-table-column label="参数" min-width="160">
+        <el-table-column :label="t('queueDetail.colDestination')" prop="destination" min-width="180" />
+        <el-table-column :label="t('common.routingKey')" prop="routing_key" min-width="140" />
+        <el-table-column :label="t('queueDetail.colPropertiesKey')" prop="properties_key" min-width="140" />
+        <el-table-column :label="t('common.parameters')" min-width="160">
           <template #default="{ row }">
             <span class="mono">{{ formatJson(row.arguments) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button link type="danger" @click="unbindBinding(row)">解绑</el-button>
+            <el-button link type="danger" @click="unbindBinding(row)">{{ t('common.unbind') }}</el-button>
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="该交换机没有源绑定" :image-size="80" />
+          <el-empty :description="t('exchangeDetail.noBindings')" :image-size="80" />
         </template>
       </el-table>
     </el-card>
 
     <!-- 添加绑定：把本交换机绑定到某个队列 / 交换机 -->
-    <el-dialog v-model="bindingVisible" title="添加绑定" width="600px">
+    <el-dialog v-model="bindingVisible" :title="t('exchangeDetail.addBindingTitle')" width="600px">
       <el-form label-width="110px">
-        <el-form-item label="目标类型">
+        <el-form-item :label="t('common.targetType')">
           <el-radio-group v-model="bindingForm.destinationType">
-            <el-radio value="queue">队列</el-radio>
-            <el-radio value="exchange">交换机</el-radio>
+            <el-radio value="queue">{{ t('common.queue') }}</el-radio>
+            <el-radio value="exchange">{{ t('common.exchange') }}</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="目标名称">
+        <el-form-item :label="t('common.target')">
           <el-select
             v-if="bindingForm.destinationType === 'queue'"
             v-model="bindingForm.destination"
             filterable
-            placeholder="请选择目标队列"
+            :placeholder="t('exchangeDetail.destinationPlaceholderQueue')"
             style="width: 100%"
           >
             <el-option v-for="queue in queues" :key="queue.name" :label="queue.name" :value="queue.name" />
           </el-select>
-          <el-select v-else v-model="bindingForm.destination" filterable placeholder="请选择目标交换机" style="width: 100%">
+          <el-select v-else v-model="bindingForm.destination" filterable :placeholder="t('exchangeDetail.destinationPlaceholderExchange')" style="width: 100%">
             <el-option
               v-for="ex in exchanges"
               :key="ex.name || 'amq.default'"
@@ -356,17 +358,17 @@ watch([vhost, exchangeName], () => {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="路由键">
-          <el-input v-model="bindingForm.routingKey" placeholder="fanout 交换机可留空" />
+        <el-form-item :label="t('common.routingKey')">
+          <el-input v-model="bindingForm.routingKey" :placeholder="t('queueDetail.bindingRoutingKeyPlaceholder')" />
         </el-form-item>
-        <el-form-item label="可选参数">
+        <el-form-item :label="t('common.optionalArgs')">
           <BindingArgsEditor v-model="bindingForm.args" />
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">默认交换机（amq.default）不能作为目标；其余交换机与队列均可被绑定。</div>
+      <div class="page-subtitle">{{ t('exchangeDetail.bindingNote') }}</div>
       <template #footer>
-        <el-button @click="bindingVisible = false">取消</el-button>
-        <el-button type="primary" :loading="bindingSubmitting" @click="submitBinding">绑定</el-button>
+        <el-button @click="bindingVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="bindingSubmitting" @click="submitBinding">{{ t('common.bind') }}</el-button>
       </template>
     </el-dialog>
   </div>

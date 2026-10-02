@@ -80,6 +80,12 @@ export interface NodeInfo {
 }
 
 /** GET /api/whoami */
+/** GET /api/default-language（免认证接口，登录前用它决定管理 UI 初始语言） */
+export interface DefaultLanguage {
+  /** 服务端安装时按系统时区推断的默认语言 code，如 "zh-CN" */
+  default_language: string
+}
+
 export interface Whoami {
   name: string
   tags: string

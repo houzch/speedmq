@@ -13,6 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// 内嵌标准库自带的 IANA 时区库。运行镜像（alpine 精简阶段）不含 tzdata，
+	// 若不内嵌，time.LoadLocation(TZ) 必然失败，管理 UI 的"安装时按部署地时区推断默认语言"
+	// 就会永远回退到 en。time/tzdata 属标准库（不引入任何 go.mod 依赖，约 +450KB），
+	// 与运行阶段"不执行 apk、不访问外部软件源"的镜像约束一致。
+	_ "time/tzdata"
 
 	"github.com/houzch/swiftmq/internal/broker"
 	"github.com/houzch/swiftmq/internal/config"
@@ -108,15 +113,16 @@ func run() error {
 			return fmt.Errorf("管理面 TLS 配置无效: %w", tlsErr)
 		}
 		mgmt, err = management.New(log, management.Deps{
-			Addr:      cfg.Management.Addr,
-			TLS:       mgmtTLS,
-			Broker:    kernel,
-			Plugins:   manager,
-			Listeners: server.Listeners,
-			Version:   broker.Version,
-			NodeName:  nodeName,
-			StartedAt: startedAt,
-			UI:        web.Dist,
+			Addr:            cfg.Management.Addr,
+			TLS:             mgmtTLS,
+			Broker:          kernel,
+			Plugins:         manager,
+			Listeners:       server.Listeners,
+			Version:         broker.Version,
+			DefaultLanguage: cfg.Management.Language,
+			NodeName:        nodeName,
+			StartedAt:       startedAt,
+			UI:              web.Dist,
 		})
 		if err != nil {
 			return err

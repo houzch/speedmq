@@ -3,11 +3,13 @@
 //
 // 与登录框一样不可通过遮罩/Esc/关闭按钮关闭 —— 在改密成功之前不放行任何业务页面。
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ApiError } from '@/api/client'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
+const { t } = useI18n()
 
 // 本组件由父级 v-if 控制挂载，弹窗自身始终保持打开
 const visible = ref(true)
@@ -27,20 +29,20 @@ watch(
 async function submit(): Promise<void> {
   const name = form.value.name.trim()
   if (!name) {
-    errorText.value = '请输入新的账号名'
+    errorText.value = t('forcePassword.nameRequired')
     return
   }
   if (!form.value.password) {
-    errorText.value = '请输入新口令'
+    errorText.value = t('password.required')
     return
   }
   if (form.value.password !== form.value.confirm) {
-    errorText.value = '两次输入的口令不一致'
+    errorText.value = t('password.mismatch')
     return
   }
   const currentName = auth.user
   if (currentName === null) {
-    errorText.value = '当前登录状态异常，请重新登录'
+    errorText.value = t('common.sessionInvalid')
     return
   }
   errorText.value = ''
@@ -49,9 +51,9 @@ async function submit(): Promise<void> {
     await api.changeCredentials(currentName, { name, password: form.value.password })
     // 旧凭据已失效，用新账号名/口令刷新本地凭据与认证状态
     await auth.applyCredentials(name, form.value.password)
-    ElMessage.success('账号名与口令已更新')
+    ElMessage.success(t('forcePassword.success'))
   } catch (error) {
-    errorText.value = error instanceof ApiError ? error.reason || error.message : '修改失败，请稍后重试'
+    errorText.value = error instanceof ApiError ? error.reason || error.message : t('common.updateFailed')
   } finally {
     submitting.value = false
   }
@@ -61,7 +63,7 @@ async function submit(): Promise<void> {
 <template>
   <el-dialog
     v-model="visible"
-    title="首次登录：请修改账号名与口令"
+    :title="t('forcePassword.title')"
     width="460px"
     align-center
     :close-on-click-modal="false"
@@ -73,8 +75,8 @@ async function submit(): Promise<void> {
       type="warning"
       :closable="false"
       show-icon
-      title="总管理员首次登录必须修改账号名与口令"
-      description="为安全起见，默认的 guest/guest 必须替换为你自己的账号名与口令后才能使用管理后台。"
+      :title="t('forcePassword.alertTitle')"
+      :description="t('forcePassword.alertDesc')"
     />
     <el-alert
       v-if="errorText"
@@ -85,31 +87,31 @@ async function submit(): Promise<void> {
       show-icon
     />
     <el-form label-width="88px" @submit.prevent>
-      <el-form-item label="新账号名">
-        <el-input v-model="form.name" placeholder="请输入新的账号名" autocomplete="username" />
+      <el-form-item :label="t('forcePassword.newName')">
+        <el-input v-model="form.name" :placeholder="t('forcePassword.newNamePlaceholder')" autocomplete="username" />
       </el-form-item>
-      <el-form-item label="新口令">
+      <el-form-item :label="t('password.new')">
         <el-input
           v-model="form.password"
           type="password"
           show-password
-          placeholder="请输入新口令"
+          :placeholder="t('password.newPlaceholder')"
           autocomplete="new-password"
         />
       </el-form-item>
-      <el-form-item label="确认口令">
+      <el-form-item :label="t('password.confirm')">
         <el-input
           v-model="form.confirm"
           type="password"
           show-password
-          placeholder="请再次输入新口令"
+          :placeholder="t('password.confirmPlaceholder')"
           autocomplete="new-password"
           @keyup.enter="submit"
         />
       </el-form-item>
     </el-form>
     <template #footer>
-      <el-button type="primary" :loading="submitting" @click="submit">提交修改</el-button>
+      <el-button type="primary" :loading="submitting" @click="submit">{{ t('forcePassword.submit') }}</el-button>
     </template>
   </el-dialog>
 </template>

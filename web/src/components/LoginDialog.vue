@@ -1,11 +1,13 @@
 <script setup lang="ts">
 // 登录框：默认 guest/guest，密码框回车提交；不可通过遮罩/Esc 关闭
 import { ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ApiError } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 
 const visible = defineModel<boolean>({ required: true })
 const auth = useAuthStore()
+const { t } = useI18n()
 
 const form = ref({ user: 'guest', password: 'guest' })
 const submitting = ref(false)
@@ -17,7 +19,7 @@ watch(visible, (open) => {
 
 async function submit(): Promise<void> {
   if (!form.value.user.trim()) {
-    errorText.value = '请输入用户名'
+    errorText.value = t('login.usernameRequired')
     return
   }
   errorText.value = ''
@@ -26,7 +28,7 @@ async function submit(): Promise<void> {
     await auth.login(form.value.user, form.value.password)
     visible.value = false
   } catch (error) {
-    errorText.value = error instanceof ApiError ? error.reason || error.message : '登录失败，请稍后重试'
+    errorText.value = error instanceof ApiError ? error.reason || error.message : t('login.failed')
   } finally {
     submitting.value = false
   }
@@ -36,7 +38,7 @@ async function submit(): Promise<void> {
 <template>
   <el-dialog
     v-model="visible"
-    title="登录 SwiftMQ 管理后台"
+    :title="t('login.title')"
     width="420px"
     align-center
     :close-on-click-modal="false"
@@ -45,10 +47,10 @@ async function submit(): Promise<void> {
   >
     <el-alert v-if="errorText" class="login-error" :title="errorText" type="error" :closable="false" show-icon />
     <el-form label-width="72px" @submit.prevent>
-      <el-form-item label="用户名">
+      <el-form-item :label="t('login.username')">
         <el-input v-model="form.user" placeholder="guest" autocomplete="username" />
       </el-form-item>
-      <el-form-item label="密码">
+      <el-form-item :label="t('login.password')">
         <el-input
           v-model="form.password"
           type="password"
@@ -60,7 +62,7 @@ async function submit(): Promise<void> {
       </el-form-item>
     </el-form>
     <template #footer>
-      <el-button type="primary" :loading="submitting" @click="submit">登录</el-button>
+      <el-button type="primary" :loading="submitting" @click="submit">{{ t('login.submit') }}</el-button>
     </template>
   </el-dialog>
 </template>

@@ -1,5 +1,7 @@
 <script lang="ts">
 // 绑定「可选参数（arguments）」的键值对编辑器与转换逻辑，供队列 / 交换机详情复用。
+import { i18n } from '@/locales'
+
 export type ArgValueType = 'string' | 'number' | 'boolean'
 
 /** 一行参数：键 + 值类型 + 值的文本形式 */
@@ -23,7 +25,7 @@ export function buildArguments(rows: ArgRow[]): BuildArgumentsResult {
     if (row.valueType === 'number') {
       const num = Number(row.value)
       if (row.value.trim() === '' || Number.isNaN(num)) {
-        return { ok: false, error: `参数「${key}」的值必须是数字` }
+        return { ok: false, error: i18n.global.t('common.numberInvalid', { key }) }
       }
       result[key] = num
     } else if (row.valueType === 'boolean') {
@@ -37,7 +39,10 @@ export function buildArguments(rows: ArgRow[]): BuildArgumentsResult {
 </script>
 
 <script setup lang="ts">
+import { useI18n } from 'vue-i18n'
 import { Delete, Plus } from '@element-plus/icons-vue'
+
+const { t } = useI18n()
 
 /** 参数行数组由父组件持有（v-model） */
 const rows = defineModel<ArgRow[]>({ required: true })
@@ -54,20 +59,20 @@ function removeRow(index: number): void {
 <template>
   <div style="width: 100%">
     <div v-for="(row, index) in rows" :key="index" class="arg-row">
-      <el-input v-model="row.key" placeholder="键" style="flex: 1" />
+      <el-input v-model="row.key" :placeholder="t('common.argKey')" style="flex: 1" />
       <el-select v-model="row.valueType" style="width: 96px">
-        <el-option value="string" label="字符串" />
-        <el-option value="number" label="数字" />
-        <el-option value="boolean" label="布尔" />
+        <el-option value="string" :label="t('common.typeString')" />
+        <el-option value="number" :label="t('common.typeNumber')" />
+        <el-option value="boolean" :label="t('common.typeBoolean')" />
       </el-select>
       <el-select v-if="row.valueType === 'boolean'" v-model="row.value" style="width: 110px">
         <el-option value="true" label="true" />
         <el-option value="false" label="false" />
       </el-select>
-      <el-input v-else v-model="row.value" placeholder="值" style="flex: 1" />
+      <el-input v-else v-model="row.value" :placeholder="t('common.argValue')" style="flex: 1" />
       <el-button link type="danger" :icon="Delete" @click="removeRow(index)" />
     </div>
-    <el-button link type="primary" :icon="Plus" @click="addRow">添加参数</el-button>
+    <el-button link type="primary" :icon="Plus" @click="addRow">{{ t('common.addArg') }}</el-button>
   </div>
 </template>
 

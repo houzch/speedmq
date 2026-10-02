@@ -2,6 +2,7 @@
 // 队列详情：基本信息 + 绑定 + 消费者 + 发布测试消息 + 取消息（get）+ 清空/删除
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Delete, Plus, Promotion, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
@@ -23,6 +24,7 @@ import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 const refresh = useRefreshStore()
 
@@ -47,16 +49,21 @@ const bindingForm = ref({
 /** 常用的内置交换机，允许自行输入 */
 const builtinExchanges = ['amq.default', 'amq.direct', 'amq.fanout', 'amq.topic', 'amq.headers']
 
-const ackModeOptions: { value: AckMode; label: string; hint: string }[] = [
+/** ackmode 选项：值与说明随语言切换 */
+const ackModeOptions = computed<{ value: AckMode; label: string; hint: string }[]>(() => [
   {
     value: 'ack_requeue_true',
-    label: 'ack + 重新入队',
-    hint: '取出后立即确认并重新入队，队列内容不变（只读查看，推荐）',
+    label: t('queueDetail.ackAckRequeueTrue'),
+    hint: t('queueDetail.ackAckRequeueTrueHint'),
   },
-  { value: 'ack_requeue_false', label: 'ack + 移出队列', hint: '取出后确认并从队列删除该消息' },
-  { value: 'reject_requeue_true', label: 'reject + 重新入队', hint: '拒绝消息并重新入队，队列内容不变' },
-  { value: 'reject_requeue_false', label: 'reject + 丢弃', hint: '拒绝消息并丢弃，不会进入死信队列' },
-]
+  { value: 'ack_requeue_false', label: t('queueDetail.ackAckRequeueFalse'), hint: t('queueDetail.ackAckRequeueFalseHint') },
+  {
+    value: 'reject_requeue_true',
+    label: t('queueDetail.ackRejectRequeueTrue'),
+    hint: t('queueDetail.ackRejectRequeueTrueHint'),
+  },
+  { value: 'reject_requeue_false', label: t('queueDetail.ackRejectRequeueFalse'), hint: t('queueDetail.ackRejectRequeueFalseHint') },
+])
 
 const publishForm = reactive({
   exchange: 'amq.default',
@@ -79,21 +86,38 @@ const messages = ref<GetMessage[]>([])
 const getting = ref(false)
 const fetched = ref(false)
 
-const currentAckHint = computed(() => ackModeOptions.find((item) => item.value === getForm.ackmode)?.hint ?? '')
+const currentAckHint = computed(() => ackModeOptions.value.find((item) => item.value === getForm.ackmode)?.hint ?? '')
 
-const PROPERTY_LABELS: Record<string, string> = {
-  content_type: '内容类型',
-  delivery_mode: '投递模式',
-  headers: 'Headers',
-  priority: '优先级',
-  correlation_id: '关联 ID',
-  reply_to: '回复地址',
-  expiration: '过期时间',
-  message_id: '消息 ID',
-  timestamp: '时间戳',
-  type: '类型',
-  user_id: '用户 ID',
-  app_id: '应用 ID',
+/** 消息属性键 → 本地化名称 */
+function propertyLabel(key: string): string {
+  switch (key) {
+    case 'content_type':
+      return t('queueDetail.propertyContentType')
+    case 'delivery_mode':
+      return t('queueDetail.propertyDeliveryMode')
+    case 'headers':
+      return t('queueDetail.propertyHeaders')
+    case 'priority':
+      return t('queueDetail.propertyPriority')
+    case 'correlation_id':
+      return t('queueDetail.propertyCorrelationId')
+    case 'reply_to':
+      return t('queueDetail.propertyReplyTo')
+    case 'expiration':
+      return t('queueDetail.propertyExpiration')
+    case 'message_id':
+      return t('queueDetail.propertyMessageId')
+    case 'timestamp':
+      return t('queueDetail.propertyTimestamp')
+    case 'type':
+      return t('queueDetail.propertyType')
+    case 'user_id':
+      return t('queueDetail.propertyUserId')
+    case 'app_id':
+      return t('queueDetail.propertyAppId')
+    default:
+      return key
+  }
 }
 
 interface PropertyEntry {
@@ -107,7 +131,7 @@ function propertyEntries(properties: MessageProperties | undefined): PropertyEnt
   if (!properties) return []
   return Object.entries(properties).map(([key, raw]) => ({
     key,
-    label: PROPERTY_LABELS[key] ?? key,
+    label: propertyLabel(key),
     value:
       typeof raw === 'object' && raw !== null
         ? formatJson(raw)
@@ -142,17 +166,17 @@ async function load(): Promise<void> {
     exchanges.value = exchangeList
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '加载队列详情失败')
+    showError(error, t('queueDetail.loadFailed'))
   } finally {
     loading.value = false
   }
 }
 
-/** 写操作错误提示：优先展示服务端中文 reason */
+/** 写操作错误提示：优先展示服务端原因 */
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) return error.reason || error.message
   if (error instanceof Error) return error.message
-  return '操作失败'
+  return t('common.operationFailed')
 }
 
 /** 打开「添加绑定」对话框并重置表单 */
@@ -165,7 +189,7 @@ function openBinding(): void {
 async function submitBinding(): Promise<void> {
   const source = bindingForm.value.source.trim()
   if (!source) {
-    ElMessage.warning('请选择来源交换机')
+    ElMessage.warning(t('queueDetail.sourceRequired'))
     return
   }
   const built = buildArguments(bindingForm.value.args)
@@ -179,7 +203,7 @@ async function submitBinding(): Promise<void> {
       routing_key: bindingForm.value.routingKey,
       arguments: built.arguments,
     })
-    ElMessage.success('绑定已建立')
+    ElMessage.success(t('queueDetail.bound'))
     bindingVisible.value = false
     await load()
   } catch (error) {
@@ -198,19 +222,19 @@ async function unbindBinding(rawRow: Record<PropertyKey, unknown>): Promise<void
   const source = String(rawRow.source ?? '')
   const props = String(rawRow.properties_key ?? '')
   const routingKey = String(rawRow.routing_key ?? '')
-  const sourceLabel = source || '(default)'
+  const sourceLabel = source || 'amq.default'
   try {
     await ElMessageBox.confirm(
-      `确定要删除交换机「${sourceLabel}」到本队列的绑定（路由键「${routingKey || '~'}」）吗？`,
-      '解绑',
-      { type: 'warning', confirmButtonText: '解绑', cancelButtonText: '取消' },
+      t('queueDetail.unbindConfirm', { source: sourceLabel, routingKey: routingKey || '~' }),
+      t('queueDetail.unbindTitle'),
+      { type: 'warning', confirmButtonText: t('queueDetail.unbindButton'), cancelButtonText: t('common.cancel') },
     )
   } catch {
     return
   }
   try {
     await api.unbindQueue(vhost.value, source, queueName.value, props)
-    ElMessage.success('绑定已删除')
+    ElMessage.success(t('queueDetail.unbound'))
     await load()
   } catch (error) {
     ElMessage.error(messageOf(error))
@@ -224,12 +248,12 @@ async function publishMessage(): Promise<void> {
     try {
       headers = JSON.parse(publishForm.headersText) as Record<string, unknown>
     } catch {
-      ElMessage.error('Headers 必须是合法的 JSON 对象')
+      ElMessage.error(t('queueDetail.headersInvalid'))
       return
     }
   }
   if (!publishForm.exchange.trim()) {
-    ElMessage.error('请填写目标交换机')
+    ElMessage.error(t('queueDetail.exchangeRequired'))
     return
   }
 
@@ -247,13 +271,13 @@ async function publishMessage(): Promise<void> {
       mandatory: publishForm.mandatory,
     })
     if (result.routed) {
-      ElMessage.success('消息已成功路由到队列')
+      ElMessage.success(t('queueDetail.publishRouted'))
     } else {
-      ElMessage.warning('消息已发布，但未路由到任何队列')
+      ElMessage.warning(t('queueDetail.publishUnrouted'))
     }
     await load()
   } catch (error) {
-    showError(error, '发布消息失败')
+    showError(error, t('queueDetail.publishFailed'))
   } finally {
     publishing.value = false
   }
@@ -266,12 +290,12 @@ async function loadMessages(): Promise<void> {
     messages.value = await api.getMessages(vhost.value, queueName.value, { ...getForm })
     fetched.value = true
     if (messages.value.length === 0) {
-      ElMessage.info('队列中没有可取出的消息')
+      ElMessage.info(t('queueDetail.noMessagesInQueue'))
     } else {
       await load()
     }
   } catch (error) {
-    showError(error, '获取消息失败')
+    showError(error, t('queueDetail.getFailed'))
   } finally {
     getting.value = false
   }
@@ -279,39 +303,39 @@ async function loadMessages(): Promise<void> {
 
 async function purgeQueue(): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确定要清空队列「${queueName.value}」中的全部消息吗？该操作不可撤销。`, '清空队列', {
+    await ElMessageBox.confirm(t('queues.purgeConfirm', { name: queueName.value }), t('queues.purgeTitle'), {
       type: 'warning',
-      confirmButtonText: '清空',
-      cancelButtonText: '取消',
+      confirmButtonText: t('queues.purgeButton'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
   }
   try {
     await api.purgeQueue(vhost.value, queueName.value)
-    ElMessage.success('队列已清空')
+    ElMessage.success(t('queues.purged'))
     await load()
   } catch (error) {
-    showError(error, '清空队列失败')
+    showError(error, t('queues.purgeFailed'))
   }
 }
 
 async function deleteQueue(): Promise<void> {
   try {
-    await ElMessageBox.confirm(`确定要删除队列「${queueName.value}」吗？该操作不可撤销。`, '删除队列', {
+    await ElMessageBox.confirm(t('queues.deleteConfirm', { name: queueName.value }), t('queues.deleteTitle'), {
       type: 'warning',
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
+      confirmButtonText: t('common.delete'),
+      cancelButtonText: t('common.cancel'),
     })
   } catch {
     return
   }
   try {
     await api.deleteQueue(vhost.value, queueName.value)
-    ElMessage.success('队列已删除')
+    ElMessage.success(t('queues.deleted'))
     await router.push({ name: 'queues', params: { vhost: vhost.value } })
   } catch (error) {
-    showError(error, '删除队列失败')
+    showError(error, t('queues.deleteFailed'))
   }
 }
 
@@ -335,66 +359,66 @@ watch([vhost, queueName], () => {
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <el-button link :icon="ArrowLeft" @click="goBack">返回队列列表</el-button>
-        <h2 class="page-title">队列详情：{{ queueName }}</h2>
-        <div class="page-subtitle">虚拟主机：{{ vhost }}</div>
+        <el-button link :icon="ArrowLeft" @click="goBack">{{ t('queueDetail.back') }}</el-button>
+        <h2 class="page-title">{{ t('queueDetail.title', { name: queueName }) }}</h2>
+        <div class="page-subtitle">{{ t('common.vhostSubtitle', { vhost }) }}</div>
       </div>
       <div class="toolbar" style="margin-bottom: 0">
-        <el-button :icon="Refresh" @click="load">刷新</el-button>
-        <el-button type="warning" :icon="Delete" @click="purgeQueue">清空消息</el-button>
-        <el-button type="danger" :icon="Delete" @click="deleteQueue">删除队列</el-button>
+        <el-button :icon="Refresh" @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button type="warning" :icon="Delete" @click="purgeQueue">{{ t('queueDetail.purgeButton') }}</el-button>
+        <el-button type="danger" :icon="Delete" @click="deleteQueue">{{ t('queueDetail.deleteButton') }}</el-button>
       </div>
     </div>
 
     <el-card class="section-card" shadow="never">
-      <template #header>基本信息</template>
+      <template #header>{{ t('queueDetail.basicInfo') }}</template>
       <el-descriptions :column="3" border>
-        <el-descriptions-item label="名称">{{ queue?.name ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="虚拟主机">{{ queue?.vhost ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="类型">{{ queue?.type ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="状态">
+        <el-descriptions-item :label="t('common.name')">{{ queue?.name ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.vhost')">{{ queue?.vhost ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.type')">{{ queue?.type ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.status')">
           <el-tag :type="queue?.state === 'running' ? 'success' : 'danger'" size="small">
             {{ queue?.state ?? '—' }}
           </el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="所在节点">{{ queue?.node ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="持久化">{{ formatBoolean(queue?.durable) }}</el-descriptions-item>
-        <el-descriptions-item label="自动删除">{{ formatBoolean(queue?.auto_delete) }}</el-descriptions-item>
-        <el-descriptions-item label="排他">{{ formatBoolean(queue?.exclusive) }}</el-descriptions-item>
-        <el-descriptions-item label="消费者数">{{ formatNumber(queue?.consumers, 0) }}</el-descriptions-item>
-        <el-descriptions-item label="消息总数">{{ formatNumber(queue?.messages, 0) }}</el-descriptions-item>
-        <el-descriptions-item label="就绪消息">{{ formatNumber(queue?.messages_ready, 0) }}</el-descriptions-item>
-        <el-descriptions-item label="未确认消息">
+        <el-descriptions-item :label="t('queueDetail.node')">{{ queue?.node ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.durable')">{{ formatBoolean(queue?.durable) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.autoDelete')">{{ formatBoolean(queue?.auto_delete) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.exclusive')">{{ formatBoolean(queue?.exclusive) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.consumers')">{{ formatNumber(queue?.consumers, 0) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.messages')">{{ formatNumber(queue?.messages, 0) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.messagesReady')">{{ formatNumber(queue?.messages_ready, 0) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.messagesUnacked')">
           {{ formatNumber(queue?.messages_unacknowledged, 0) }}
         </el-descriptions-item>
-        <el-descriptions-item label="入队速率">{{ formatRate(queue?.messages_details) }}</el-descriptions-item>
-        <el-descriptions-item label="就绪速率">{{ formatRate(queue?.messages_ready_details) }}</el-descriptions-item>
-        <el-descriptions-item label="未确认速率">
+        <el-descriptions-item :label="t('queueDetail.consumeRate')">{{ formatRate(queue?.messages_details) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.readyRate')">{{ formatRate(queue?.messages_ready_details) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.unackedRate')">
           {{ formatRate(queue?.messages_unacknowledged_details) }}
         </el-descriptions-item>
-        <el-descriptions-item label="占用内存">{{ formatBytes(queue?.memory) }}</el-descriptions-item>
-        <el-descriptions-item label="空闲起始">{{ queue?.idle_since ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="策略">{{ queue?.policy ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="排他消费者">{{ queue?.exclusive_consumer_tag ?? '—' }}</el-descriptions-item>
-        <el-descriptions-item label="reductions">{{ formatNumber(queue?.reductions, 0) }}</el-descriptions-item>
-        <el-descriptions-item label="参数（arguments）">
+        <el-descriptions-item :label="t('queueDetail.memUsed')">{{ formatBytes(queue?.memory) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.idleSince')">{{ queue?.idle_since ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.policy')">{{ queue?.policy ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.exclusiveConsumer')">{{ queue?.exclusive_consumer_tag ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('queueDetail.reductions')">{{ formatNumber(queue?.reductions, 0) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('common.arguments')">
           <span class="mono">{{ formatJson(queue?.arguments ?? {}) }}</span>
         </el-descriptions-item>
       </el-descriptions>
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>发布测试消息</template>
+      <template #header>{{ t('queueDetail.publishTitle') }}</template>
       <el-form label-width="110px">
         <el-row :gutter="16">
           <el-col :xs="24" :md="8">
-            <el-form-item label="目标交换机">
+            <el-form-item :label="t('queueDetail.targetExchange')">
               <el-select
                 v-model="publishForm.exchange"
                 filterable
                 allow-create
                 default-first-option
-                placeholder="amq.default"
+                :placeholder="t('queueDetail.defaultExchange')"
                 style="width: 100%"
               >
                 <el-option v-for="name in builtinExchanges" :key="name" :label="name" :value="name" />
@@ -402,22 +426,22 @@ watch([vhost, queueName], () => {
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="8">
-            <el-form-item label="路由键">
-              <el-input v-model="publishForm.routing_key" placeholder="默认使用队列名" />
+            <el-form-item :label="t('common.routingKey')">
+              <el-input v-model="publishForm.routing_key" :placeholder="t('queueDetail.routingKeyPlaceholder')" />
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="8">
-            <el-form-item label="内容类型">
+            <el-form-item :label="t('queueDetail.contentType')">
               <el-input v-model="publishForm.content_type" placeholder="text/plain" />
             </el-form-item>
           </el-col>
         </el-row>
         <el-row :gutter="16">
           <el-col :xs="24" :md="8">
-            <el-form-item label="投递模式">
+            <el-form-item :label="t('queueDetail.deliveryMode')">
               <el-select v-model="publishForm.delivery_mode" style="width: 100%">
-                <el-option :value="1" label="1 - 非持久化" />
-                <el-option :value="2" label="2 - 持久化" />
+                <el-option :value="1" :label="t('queueDetail.deliveryMode1')" />
+                <el-option :value="2" :label="t('queueDetail.deliveryMode2')" />
               </el-select>
             </el-form-item>
           </el-col>
@@ -427,36 +451,36 @@ watch([vhost, queueName], () => {
             </el-form-item>
           </el-col>
         </el-row>
-        <el-form-item label="消息内容">
-          <el-input v-model="publishForm.payload" type="textarea" :rows="4" placeholder="消息 payload" />
+        <el-form-item :label="t('queueDetail.payload')">
+          <el-input v-model="publishForm.payload" type="textarea" :rows="4" :placeholder="t('queueDetail.payloadPlaceholder')" />
         </el-form-item>
         <el-form-item label="mandatory">
-          <el-checkbox v-model="publishForm.mandatory">无可路由队列时返回未路由提示</el-checkbox>
+          <el-checkbox v-model="publishForm.mandatory">{{ t('queueDetail.mandatoryLabel') }}</el-checkbox>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :icon="Promotion" :loading="publishing" @click="publishMessage">
-            发布消息
+            {{ t('queueDetail.publishButton') }}
           </el-button>
         </el-form-item>
       </el-form>
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>取消息（Get messages）</template>
+      <template #header>{{ t('queueDetail.getTitle') }}</template>
       <el-form label-width="110px">
         <el-row :gutter="16">
           <el-col :xs="24" :md="6">
-            <el-form-item label="数量">
+            <el-form-item :label="t('queueDetail.count')">
               <el-input-number v-model="getForm.count" :min="1" :max="500" style="width: 100%" />
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="6">
-            <el-form-item label="截断长度">
+            <el-form-item :label="t('queueDetail.truncate')">
               <el-input-number v-model="getForm.truncate" :min="1" :max="1000000" style="width: 100%" />
             </el-form-item>
           </el-col>
           <el-col :xs="24" :md="12">
-            <el-form-item label="编码">
+            <el-form-item :label="t('queueDetail.encoding')">
               <el-select v-model="getForm.encoding" style="width: 100%">
                 <el-option value="auto" label="auto" />
                 <el-option value="base64" label="base64" />
@@ -473,7 +497,7 @@ watch([vhost, queueName], () => {
         </el-form-item>
         <el-form-item>
           <div>
-            <el-button type="primary" :icon="Search" :loading="getting" @click="loadMessages">取消息</el-button>
+            <el-button type="primary" :icon="Search" :loading="getting" @click="loadMessages">{{ t('queueDetail.getButton') }}</el-button>
             <div class="page-subtitle" style="margin-top: 6px">{{ currentAckHint }}</div>
           </div>
         </el-form-item>
@@ -484,26 +508,26 @@ watch([vhost, queueName], () => {
         type="info"
         :closable="false"
         show-icon
-        :title="`本次取出 ${messages.length} 条消息（服务端剩余 message_count 见下表首列）`"
+        :title="t('queueDetail.gotCount', { count: messages.length })"
         style="margin-bottom: 12px"
       />
 
       <el-table v-if="messages.length > 0" :data="messages" border>
-        <el-table-column label="序号" type="index" width="70" />
-        <el-table-column label="路由键" prop="routing_key" min-width="120" />
-        <el-table-column label="交换机" width="130">
-          <template #default="{ row }">{{ row.exchange || '(default)' }}</template>
+        <el-table-column :label="t('queueDetail.colIndex')" type="index" width="70" />
+        <el-table-column :label="t('queueDetail.colRoutingKey')" prop="routing_key" min-width="120" />
+        <el-table-column :label="t('queueDetail.colExchange')" width="130">
+          <template #default="{ row }">{{ row.exchange || 'amq.default' }}</template>
         </el-table-column>
-        <el-table-column label="大小" width="90" align="right">
+        <el-table-column :label="t('queueDetail.colSize')" width="90" align="right">
           <template #default="{ row }">{{ formatNumber(row.payload_bytes, 0) }} B</template>
         </el-table-column>
-        <el-table-column label="重投递" width="90">
+        <el-table-column :label="t('queueDetail.colRedelivered')" width="90">
           <template #default="{ row }">{{ formatBoolean(row.redelivered) }}</template>
         </el-table-column>
-        <el-table-column label="剩余消息" width="100" align="right">
+        <el-table-column :label="t('queueDetail.colRemaining')" width="100" align="right">
           <template #default="{ row }">{{ formatNumber(row.message_count, 0) }}</template>
         </el-table-column>
-        <el-table-column label="内容预览" min-width="240">
+        <el-table-column :label="t('queueDetail.colPreview')" min-width="240">
           <template #default="{ row }">
             <span class="mono">{{ row.payload }}</span>
           </template>
@@ -517,53 +541,53 @@ watch([vhost, queueName], () => {
               </el-descriptions-item>
             </el-descriptions>
             <div class="page-subtitle" style="margin-top: 8px">
-              时间戳：{{ formatTimestamp(row.properties?.timestamp) }} ｜ payload_encoding：{{ row.payload_encoding }}
+              {{ t('queueDetail.timestampLine', { time: formatTimestamp(row.properties?.timestamp), encoding: row.payload_encoding }) }}
             </div>
           </template>
         </el-table-column>
       </el-table>
-      <el-empty v-else-if="fetched" description="没有取到消息" :image-size="80" />
+      <el-empty v-else-if="fetched" :description="t('queueDetail.noMessages')" :image-size="80" />
     </el-card>
 
     <el-card class="section-card" shadow="never">
       <template #header>
         <div style="display: flex; align-items: center; justify-content: space-between">
-          <span>绑定（Bindings）</span>
-          <el-button type="primary" size="small" :icon="Plus" @click="openBinding">添加绑定</el-button>
+          <span>{{ t('queueDetail.bindingsTitle') }}</span>
+          <el-button type="primary" size="small" :icon="Plus" @click="openBinding">{{ t('common.addBinding') }}</el-button>
         </div>
       </template>
       <el-table :data="bindings" stripe>
-        <el-table-column label="源（source）" min-width="160">
+        <el-table-column :label="t('queueDetail.colSource')" min-width="160">
           <template #default="{ row }">{{ row.source || 'amq.default' }}</template>
         </el-table-column>
-        <el-table-column label="目标类型" width="110">
-          <template #default="{ row }">{{ row.destination_type === 'queue' ? '队列' : '交换机' }}</template>
+        <el-table-column :label="t('queueDetail.colDestinationType')" width="110">
+          <template #default="{ row }">{{ row.destination_type === 'queue' ? t('common.queue') : t('common.exchange') }}</template>
         </el-table-column>
-        <el-table-column label="目标" prop="destination" min-width="160" />
-        <el-table-column label="路由键" prop="routing_key" min-width="140" />
-        <el-table-column label="properties_key" prop="properties_key" min-width="140" />
-        <el-table-column label="参数" min-width="160">
+        <el-table-column :label="t('queueDetail.colDestination')" prop="destination" min-width="160" />
+        <el-table-column :label="t('common.routingKey')" prop="routing_key" min-width="140" />
+        <el-table-column :label="t('queueDetail.colPropertiesKey')" prop="properties_key" min-width="140" />
+        <el-table-column :label="t('common.parameters')" min-width="160">
           <template #default="{ row }">
             <span class="mono">{{ formatJson(row.arguments) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button v-if="row.source !== ''" link type="danger" @click="unbindBinding(row)">解绑</el-button>
-            <span v-else class="page-subtitle" title="默认交换机的隐式绑定，随队列存在">—</span>
+            <el-button v-if="row.source !== ''" link type="danger" @click="unbindBinding(row)">{{ t('common.unbind') }}</el-button>
+            <span v-else class="page-subtitle" :title="t('queueDetail.defaultBindingHint')">—</span>
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="该队列没有任何绑定" :image-size="80" />
+          <el-empty :description="t('queueDetail.noBindings')" :image-size="80" />
         </template>
       </el-table>
     </el-card>
 
     <!-- 添加绑定：把某个交换机绑定到本队列 -->
-    <el-dialog v-model="bindingVisible" title="添加绑定" width="600px">
+    <el-dialog v-model="bindingVisible" :title="t('queueDetail.addBindingTitle')" width="600px">
       <el-form label-width="110px">
-        <el-form-item label="来源交换机">
-          <el-select v-model="bindingForm.source" filterable placeholder="请选择来源交换机" style="width: 100%">
+        <el-form-item :label="t('common.sourceExchange')">
+          <el-select v-model="bindingForm.source" filterable :placeholder="t('queueDetail.sourcePlaceholder')" style="width: 100%">
             <el-option
               v-for="ex in exchanges"
               :key="ex.name || 'amq.default'"
@@ -573,45 +597,43 @@ watch([vhost, queueName], () => {
             />
           </el-select>
         </el-form-item>
-        <el-form-item label="路由键">
-          <el-input v-model="bindingForm.routingKey" placeholder="fanout 交换机可留空" />
+        <el-form-item :label="t('common.routingKey')">
+          <el-input v-model="bindingForm.routingKey" :placeholder="t('queueDetail.bindingRoutingKeyPlaceholder')" />
         </el-form-item>
-        <el-form-item label="可选参数">
+        <el-form-item :label="t('common.optionalArgs')">
           <BindingArgsEditor v-model="bindingForm.args" />
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        默认交换机（amq.default）的绑定是隐式的，不能手工建立；其余交换机均可作为来源。
-      </div>
+      <div class="page-subtitle">{{ t('queueDetail.bindingNote') }}</div>
       <template #footer>
-        <el-button @click="bindingVisible = false">取消</el-button>
-        <el-button type="primary" :loading="bindingSubmitting" @click="submitBinding">绑定</el-button>
+        <el-button @click="bindingVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="bindingSubmitting" @click="submitBinding">{{ t('common.bind') }}</el-button>
       </template>
     </el-dialog>
 
     <el-card shadow="never">
-      <template #header>消费者（Consumers）</template>
+      <template #header>{{ t('queueDetail.consumersTitle') }}</template>
       <el-table :data="consumers" stripe>
-        <el-table-column label="消费者标签" prop="consumer_tag" min-width="200" />
-        <el-table-column label="队列" min-width="140">
+        <el-table-column :label="t('queueDetail.consumerTag')" prop="consumer_tag" min-width="200" />
+        <el-table-column :label="t('common.queue')" min-width="140">
           <template #default="{ row }">{{ row.queue.name }}</template>
         </el-table-column>
-        <el-table-column label="需要确认" width="110">
+        <el-table-column :label="t('queueDetail.ackRequired')" width="110">
           <template #default="{ row }">{{ formatBoolean(row.ack_required) }}</template>
         </el-table-column>
         <el-table-column label="prefetch" width="100" align="right">
           <template #default="{ row }">{{ formatNumber(row.prefetch_count, 0) }}</template>
         </el-table-column>
-        <el-table-column label="排他" width="90">
+        <el-table-column :label="t('queueDetail.exclusiveShort')" width="90">
           <template #default="{ row }">{{ formatBoolean(row.exclusive) }}</template>
         </el-table-column>
-        <el-table-column label="参数" min-width="160">
+        <el-table-column :label="t('common.parameters')" min-width="160">
           <template #default="{ row }">
             <span class="mono">{{ formatJson(row.arguments) }}</span>
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="该队列当前没有消费者" :image-size="80" />
+          <el-empty :description="t('queueDetail.noConsumers')" :image-size="80" />
         </template>
       </el-table>
     </el-card>

@@ -1,6 +1,17 @@
-// 展示层格式化工具
+// 展示层格式化工具：数字/时间格式跟随当前界面语言，文案经 i18n。
 
+import { i18n } from '@/locales'
 import type { RateDetails } from '@/api/types'
+
+/** 当前界面语言 code（用于 toLocaleString 与日期本地化） */
+function currentLocale(): string {
+  return String(i18n.global.locale.value)
+}
+
+/** 取翻译文案（i18n.global.t 在渲染上下文中会跟随语言变化重新求值） */
+function t(key: string, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key)
+}
 
 /** 字节数格式化：1024 → "1.0 KB" */
 export function formatBytes(value: number | null | undefined): string {
@@ -12,7 +23,7 @@ export function formatBytes(value: number | null | undefined): string {
   return `${scaled.toFixed(index === 0 ? 0 : 1)} ${units[index]}`
 }
 
-/** 秒数格式化为「x 天 x 小时 x 分 x 秒」 */
+/** 秒数格式化为「x 天 x 小时 x 分 x 秒」（单位随语言切换） */
 export function formatDuration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || Number.isNaN(seconds) || seconds < 0) return '—'
   const total = Math.floor(seconds)
@@ -21,10 +32,10 @@ export function formatDuration(seconds: number | null | undefined): string {
   const minutes = Math.floor((total % 3600) / 60)
   const secs = total % 60
   const parts: string[] = []
-  if (days > 0) parts.push(`${days} 天`)
-  if (hours > 0 || days > 0) parts.push(`${hours} 小时`)
-  if (minutes > 0 || hours > 0 || days > 0) parts.push(`${minutes} 分`)
-  parts.push(`${secs} 秒`)
+  if (days > 0) parts.push(t('format.days', { n: days }))
+  if (hours > 0 || days > 0) parts.push(t('format.hours', { n: hours }))
+  if (minutes > 0 || hours > 0 || days > 0) parts.push(t('format.minutes', { n: minutes }))
+  parts.push(t('format.seconds', { n: secs }))
   return parts.join(' ')
 }
 
@@ -37,7 +48,7 @@ export function formatElapsedFrom(epochMillis: number | null | undefined): strin
 /** 数字千分位显示，默认最多 2 位小数 */
 export function formatNumber(value: number | null | undefined, fractionDigits = 2): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—'
-  return value.toLocaleString('zh-CN', { maximumFractionDigits: fractionDigits })
+  return value.toLocaleString(currentLocale(), { maximumFractionDigits: fractionDigits })
 }
 
 /** 速率显示："0.00/s" */
@@ -50,7 +61,7 @@ export function formatRate(details: RateDetails | null | undefined, fractionDigi
 /** 时间戳（epoch 毫秒）格式化为本地时间 */
 export function formatTimestamp(epochMillis: number | null | undefined): string {
   if (!epochMillis) return '—'
-  return new Date(epochMillis).toLocaleString('zh-CN', { hour12: false })
+  return new Date(epochMillis).toLocaleString(currentLocale(), { hour12: false })
 }
 
 /** 任意值格式化为 JSON 文本 */
@@ -62,8 +73,8 @@ export function formatJson(value: unknown): string {
   }
 }
 
-/** 布尔值显示为中文 */
+/** 布尔值按当前语言显示为是/否 */
 export function formatBoolean(value: boolean | null | undefined): string {
   if (value === null || value === undefined) return '—'
-  return value ? '是' : '否'
+  return value ? t('format.yes') : t('format.no')
 }

@@ -111,9 +111,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		Listeners: func() []transport.ListenerSnapshot {
 			return []transport.ListenerSnapshot{{Protocol: "amqp091", Listener: "amqp", Addr: "[::]:5672"}}
 		},
-		Version:   "0.5.0-test",
-		NodeName:  "swiftmq@test",
-		StartedAt: time.Now(),
+		Version:         "0.5.0-test",
+		DefaultLanguage: "zh-CN",
+		NodeName:        "swiftmq@test",
+		StartedAt:       time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("构造管理面失败: %v", err)

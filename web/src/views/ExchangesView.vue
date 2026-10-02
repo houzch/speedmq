@@ -2,6 +2,7 @@
 // 交换机列表：按名称过滤 + 绑定数（由 /api/bindings/{vhost} 聚合）
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { Delete, Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import { ApiError } from '@/api/client'
@@ -13,6 +14,7 @@ import { showError } from '@/utils/message'
 
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
 
 const refresh = useRefreshStore()
 
@@ -63,7 +65,7 @@ async function load(): Promise<void> {
     bindingCounts.value = counts
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取交换机列表失败')
+    showError(error, t('exchanges.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -74,13 +76,13 @@ function goDetail(row: TableRow): void {
 }
 
 // ---- 声明交换机（Add a new exchange）----
-/** 交换机类型的适用场景说明 */
-const EXCHANGE_TYPES: { value: string; hint: string }[] = [
-  { value: 'direct', hint: '按路由键精确匹配' },
-  { value: 'fanout', hint: '广播到所有绑定队列，忽略路由键' },
-  { value: 'topic', hint: '按路由键通配模式匹配（* 匹配一个词，# 匹配多个词）' },
-  { value: 'headers', hint: '按消息 headers 匹配，忽略路由键' },
-]
+/** 交换机类型的适用场景说明：value 是协议类型名（不翻译），hint 随语言切换 */
+const EXCHANGE_TYPES = computed(() => [
+  { value: 'direct', hint: t('exchanges.typeDirectHint') },
+  { value: 'fanout', hint: t('exchanges.typeFanoutHint') },
+  { value: 'topic', hint: t('exchanges.typeTopicHint') },
+  { value: 'headers', hint: t('exchanges.typeHeadersHint') },
+])
 
 /** 可选参数的值类型（键固定为 vstring） */
 type ArgValueType = 'string' | 'number' | 'boolean'
@@ -115,11 +117,11 @@ function removeArgRow(index: number): void {
   declareForm.value.args.splice(index, 1)
 }
 
-/** 写操作错误提示：优先展示服务端中文 reason */
+/** 写操作错误提示：优先展示服务端原因 */
 function messageOf(error: unknown): string {
   if (error instanceof ApiError) return error.reason || error.message
   if (error instanceof Error) return error.message
-  return '操作失败'
+  return t('common.operationFailed')
 }
 
 /** 把参数编辑器转成 arguments 对象；键为空的行忽略，数字非法时返回 null */
@@ -131,7 +133,7 @@ function buildArguments(): Record<string, unknown> | null {
     if (row.valueType === 'number') {
       const num = Number(row.value)
       if (row.value.trim() === '' || Number.isNaN(num)) {
-        ElMessage.warning(`参数「${key}」的值必须是数字`)
+        ElMessage.warning(t('common.numberInvalid', { key }))
         return null
       }
       result[key] = num
@@ -148,7 +150,7 @@ function buildArguments(): Record<string, unknown> | null {
 async function submitDeclare(): Promise<void> {
   const name = declareForm.value.name.trim()
   if (!name) {
-    ElMessage.warning('请输入交换机名称')
+    ElMessage.warning(t('exchanges.nameRequired'))
     return
   }
   const args = buildArguments()
@@ -163,7 +165,7 @@ async function submitDeclare(): Promise<void> {
   declaring.value = true
   try {
     await api.declareExchange(vhost.value, name, body)
-    ElMessage.success(`交换机 ${name} 已声明`)
+    ElMessage.success(t('exchanges.declared', { name }))
     declareVisible.value = false
     await load()
   } catch (error) {
@@ -195,64 +197,64 @@ onBeforeUnmount(() => {
   <div>
     <div class="page-header">
       <div>
-        <h2 class="page-title">交换机</h2>
-        <div class="page-subtitle">虚拟主机：{{ vhost }}</div>
+        <h2 class="page-title">{{ t('exchanges.title') }}</h2>
+        <div class="page-subtitle">{{ t('common.vhostSubtitle', { vhost }) }}</div>
       </div>
       <div>
-        <el-button type="primary" :icon="Plus" @click="openDeclare">添加交换机</el-button>
-        <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="openDeclare">{{ t('exchanges.add') }}</el-button>
+        <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
       </div>
     </div>
 
     <div class="toolbar">
-      <el-input v-model="filterName" :prefix-icon="Search" placeholder="按名称过滤" clearable style="width: 320px" />
-      <span class="page-subtitle">共 {{ exchanges.length }} 个交换机</span>
+      <el-input v-model="filterName" :prefix-icon="Search" :placeholder="t('exchanges.filterPlaceholder')" clearable style="width: 320px" />
+      <span class="page-subtitle">{{ t('exchanges.total', { count: exchanges.length }) }}</span>
     </div>
 
     <el-table v-loading="loading" :data="exchanges" stripe>
-      <el-table-column label="名称" min-width="200">
+      <el-table-column :label="t('common.name')" min-width="200">
         <template #default="{ row }">
           <span class="link-text" @click="goDetail(row)">{{ row.name }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="虚拟主机" prop="vhost" width="120" />
-      <el-table-column label="类型" width="110">
+      <el-table-column :label="t('common.vhost')" prop="vhost" width="120" />
+      <el-table-column :label="t('common.type')" width="110">
         <template #default="{ row }">
           <el-tag :type="typeTagType(row.type)" size="small" effect="plain">{{ row.type }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="持久化" width="90">
+      <el-table-column :label="t('common.durable')" width="90">
         <template #default="{ row }">
           <el-tag :type="row.durable ? 'success' : 'info'" effect="plain" size="small">
             {{ formatBoolean(row.durable) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="内部使用" width="100">
+      <el-table-column :label="t('common.internalUse')" width="100">
         <template #default="{ row }">{{ formatBoolean(row.internal) }}</template>
       </el-table-column>
-      <el-table-column label="绑定数" width="100" align="right">
+      <el-table-column :label="t('exchanges.bindingCount')" width="100" align="right">
         <template #default="{ row }">
           {{ bindingCount(row.name) === null ? '—' : formatNumber(bindingCount(row.name), 0) }}
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="100" fixed="right">
+      <el-table-column :label="t('common.actions')" width="100" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="goDetail(row)">详情</el-button>
+          <el-button link type="primary" @click="goDetail(row)">{{ t('common.detail') }}</el-button>
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="没有匹配的交换机" :image-size="80" />
+        <el-empty :description="t('exchanges.empty')" :image-size="80" />
       </template>
     </el-table>
 
     <!-- 声明交换机（Add a new exchange） -->
-    <el-dialog v-model="declareVisible" title="添加交换机" width="620px">
+    <el-dialog v-model="declareVisible" :title="t('exchanges.add')" width="620px">
       <el-form label-width="110px">
-        <el-form-item label="名称">
-          <el-input v-model="declareForm.name" placeholder="交换机名称" autocomplete="off" />
+        <el-form-item :label="t('common.name')">
+          <el-input v-model="declareForm.name" :placeholder="t('common.exchangeName')" autocomplete="off" />
         </el-form-item>
-        <el-form-item label="类型">
+        <el-form-item :label="t('common.type')">
           <el-select v-model="declareForm.type" style="width: 100%">
             <el-option v-for="item in EXCHANGE_TYPES" :key="item.value" :label="item.value" :value="item.value">
               <span>{{ item.value }}</span>
@@ -260,44 +262,42 @@ onBeforeUnmount(() => {
             </el-option>
           </el-select>
         </el-form-item>
-        <el-form-item label="持久化">
+        <el-form-item :label="t('common.durable')">
           <el-switch v-model="declareForm.durable" />
         </el-form-item>
-        <el-form-item label="自动删除">
+        <el-form-item :label="t('common.autoDelete')">
           <el-switch v-model="declareForm.autoDelete" />
         </el-form-item>
-        <el-form-item label="内部">
+        <el-form-item :label="t('common.internal')">
           <div style="width: 100%">
             <el-switch v-model="declareForm.internal" />
-            <div class="page-subtitle">内部交换机不接受客户端直接发布，只能作为其他交换机的绑定目标。</div>
+            <div class="page-subtitle">{{ t('exchanges.internalHint') }}</div>
           </div>
         </el-form-item>
-        <el-form-item label="可选参数">
+        <el-form-item :label="t('common.optionalArgs')">
           <div style="width: 100%">
             <div v-for="(row, index) in declareForm.args" :key="index" class="arg-row">
-              <el-input v-model="row.key" placeholder="键（vstring）" style="flex: 1" />
+              <el-input v-model="row.key" :placeholder="t('common.argKeyVstring')" style="flex: 1" />
               <el-select v-model="row.valueType" style="width: 96px">
-                <el-option value="string" label="字符串" />
-                <el-option value="number" label="数字" />
-                <el-option value="boolean" label="布尔" />
+                <el-option value="string" :label="t('common.typeString')" />
+                <el-option value="number" :label="t('common.typeNumber')" />
+                <el-option value="boolean" :label="t('common.typeBoolean')" />
               </el-select>
               <el-select v-if="row.valueType === 'boolean'" v-model="row.value" style="width: 110px">
                 <el-option value="true" label="true" />
                 <el-option value="false" label="false" />
               </el-select>
-              <el-input v-else v-model="row.value" placeholder="值" style="flex: 1" />
+              <el-input v-else v-model="row.value" :placeholder="t('common.argValue')" style="flex: 1" />
               <el-button link type="danger" :icon="Delete" @click="removeArgRow(index)" />
             </div>
-            <el-button link type="primary" :icon="Plus" @click="addArgRow">添加参数</el-button>
+            <el-button link type="primary" :icon="Plus" @click="addArgRow">{{ t('common.addArg') }}</el-button>
           </div>
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        这是一个「声明交换机」操作，与客户端 exchange.declare 同语义：交换机已存在且参数等价时不做改动，参数不一致会报错。
-      </div>
+      <div class="page-subtitle">{{ t('exchanges.declareNote') }}</div>
       <template #footer>
-        <el-button @click="declareVisible = false">取消</el-button>
-        <el-button type="primary" :loading="declaring" @click="submitDeclare">声明</el-button>
+        <el-button @click="declareVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="declaring" @click="submitDeclare">{{ t('common.declare') }}</el-button>
       </template>
     </el-dialog>
   </div>

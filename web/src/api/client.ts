@@ -1,6 +1,8 @@
 // 统一的 HTTP 客户端：Basic Auth、10 秒超时、错误体解析
 // 凭据只保存在 sessionStorage（不落 localStorage），关闭标签页即失效。
 
+import { i18n } from '@/locales'
+
 export interface Credentials {
   user: string
   password: string
@@ -123,7 +125,7 @@ export async function request<T>(method: string, path: string, options: RequestO
     if (response.status === 401) {
       clearCredentials()
       unauthorizedHandler?.()
-      throw new ApiError(401, 'Unauthorized', '用户名或密码错误')
+      throw new ApiError(401, 'Unauthorized', i18n.global.t('client.invalidCredentials'))
     }
 
     if (!response.ok) {
@@ -139,9 +141,9 @@ export async function request<T>(method: string, path: string, options: RequestO
   } catch (error) {
     if (error instanceof ApiError) throw error
     if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new ApiError(0, 'Request Timeout', `请求超时（${Math.round(timeout / 1000)} 秒），请检查服务端状态`)
+      throw new ApiError(0, 'Request Timeout', i18n.global.t('client.timeout', { seconds: Math.round(timeout / 1000) }))
     }
-    throw new ApiError(0, 'Network Error', error instanceof Error ? error.message : '网络请求失败')
+    throw new ApiError(0, 'Network Error', i18n.global.t('client.networkError'))
   } finally {
     window.clearTimeout(timer)
   }

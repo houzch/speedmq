@@ -4,6 +4,7 @@
 // 单机模式下"增删成员"由服务端返回 501 NOT_IMPLEMENTED，界面在这里**直接禁用并说明原因**，
 // 而不是让运维点了之后才看到报错。
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { Cluster, ClusterMembers, NodeInfo } from '@/api/types'
@@ -13,6 +14,7 @@ import { formatDuration, formatNumber } from '@/utils/format'
 import { showError } from '@/utils/message'
 
 const refresh = useRefreshStore()
+const { t } = useI18n()
 
 const cluster = ref<Cluster | null>(null)
 const members = ref<ClusterMembers>({ voters: [], learners: [] })
@@ -28,6 +30,16 @@ const memberRows = computed<{ id: string; role: 'voter' | 'learner' }[]>(() => [
   ...members.value.learners.map((id) => ({ id, role: 'learner' as const })),
 ])
 
+/** 顶部统计卡片：标签与取值随语言/数据变化 */
+const statCards = computed(() => [
+  { label: t('cluster.role'), value: cluster.value?.role ?? '—', small: true },
+  { label: t('cluster.term'), value: cluster.value ? String(cluster.value.term) : '—', small: true },
+  { label: t('cluster.leader'), value: cluster.value?.leader || t('cluster.noLeader'), small: true },
+  { label: t('cluster.hasQuorum'), value: cluster.value ? (cluster.value.has_quorum ? t('format.yes') : t('format.no')) : '—', small: true },
+  { label: t('cluster.voters'), value: cluster.value ? String(cluster.value.peers.length) : '—', small: false },
+  { label: t('cluster.learners'), value: cluster.value ? String(cluster.value.learners.length) : '—', small: false },
+])
+
 const addVisible = ref(false)
 const addForm = ref({ nodeId: '', addr: '' })
 const adding = ref(false)
@@ -41,7 +53,7 @@ async function load(): Promise<void> {
     nodes.value = nds
     refresh.markRefreshed()
   } catch (error) {
-    showError(error, '获取集群信息失败')
+    showError(error, t('cluster.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -57,17 +69,17 @@ async function submitAdd(): Promise<void> {
   const nodeId = addForm.value.nodeId.trim()
   const addr = addForm.value.addr.trim()
   if (!nodeId || !addr) {
-    ElMessage.warning('请填写节点 ID 与集群 RPC 地址')
+    ElMessage.warning(t('cluster.addRequired'))
     return
   }
   adding.value = true
   try {
     members.value = await api.addClusterMember(nodeId, addr)
-    ElMessage.success(`节点 ${nodeId} 已加入集群`)
+    ElMessage.success(t('cluster.addSuccess', { node: nodeId }))
     addVisible.value = false
     await load()
   } catch (error) {
-    showError(error, '加入集群成员失败')
+    showError(error, t('cluster.addFailed'))
   } finally {
     adding.value = false
   }
@@ -75,20 +87,20 @@ async function submitAdd(): Promise<void> {
 
 async function removeMember(id: string): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      `确定要把节点「${id}」移出集群吗？它将不再参与投票，也不再持有仲裁队列的副本。`,
-      '移除集群成员',
-      { type: 'warning', confirmButtonText: '移出集群', cancelButtonText: '取消' },
-    )
+    await ElMessageBox.confirm(t('cluster.removeConfirm', { id }), t('cluster.removeTitle'), {
+      type: 'warning',
+      confirmButtonText: t('cluster.removeButton'),
+      cancelButtonText: t('common.cancel'),
+    })
   } catch {
     return
   }
   try {
     members.value = await api.removeClusterMember(id)
-    ElMessage.success(`节点 ${id} 已移出集群`)
+    ElMessage.success(t('cluster.removeSuccess', { id }))
     await load()
   } catch (error) {
-    showError(error, '移除集群成员失败')
+    showError(error, t('cluster.removeFailed'))
   }
 }
 
@@ -99,13 +111,12 @@ useAutoRefresh(load)
   <div v-loading="loading">
     <div class="page-header">
       <div>
-        <h2 class="page-title">集群</h2>
+        <h2 class="page-title">{{ t('cluster.title') }}</h2>
         <div class="page-subtitle">
-          元数据层与成员管理
-          <span v-if="cluster">（模式 {{ cluster.mode }}，本节点 {{ cluster.node_id }}）</span>
+          {{ cluster ? t('cluster.subtitleWithMode', { mode: cluster.mode, node: cluster.node_id }) : t('cluster.subtitle') }}
         </div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="load">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
     </div>
 
     <el-alert
@@ -114,8 +125,8 @@ useAutoRefresh(load)
       type="info"
       show-icon
       :closable="false"
-      title="当前是单机模式，集群成员增删不可用"
-      description="单机部署没有 Raft 成员表可变更（服务端对成员接口返回 501 NOT_IMPLEMENTED）。启用 cluster 后本页会出现成员管理。"
+      :title="t('cluster.singleNodeAlertTitle')"
+      :description="t('cluster.singleNodeAlertDesc')"
     />
 
     <el-alert
@@ -124,19 +135,12 @@ useAutoRefresh(load)
       type="error"
       show-icon
       :closable="false"
-      title="节点已暂停服务（pause_minority：与多数派失联）"
-      description="该节点上的客户端连接会被主动断开，请把客户端重连到集群中的其他节点。"
+      :title="t('cluster.pausedAlertTitle')"
+      :description="t('cluster.pausedAlertDesc')"
     />
 
     <el-row :gutter="16">
-      <el-col v-for="item in [
-        { label: '角色', value: cluster?.role ?? '—', small: true },
-        { label: '任期', value: cluster ? String(cluster.term) : '—', small: true },
-        { label: '领导者', value: cluster?.leader || '（未选出）', small: true },
-        { label: '拥有多数派', value: cluster ? (cluster.has_quorum ? '是' : '否') : '—', small: true },
-        { label: '投票成员', value: cluster ? String(cluster.peers.length) : '—', small: false },
-        { label: '非投票成员', value: cluster ? String(cluster.learners.length) : '—', small: false },
-      ]" :key="item.label" :xs="12" :sm="8" :md="4">
+      <el-col v-for="item in statCards" :key="item.label" :xs="12" :sm="8" :md="4">
         <el-card class="section-card" shadow="never">
           <div class="stat-label">{{ item.label }}</div>
           <div class="stat-value" :class="{ 'stat-value--small': item.small }">{{ item.value }}</div>
@@ -147,52 +151,61 @@ useAutoRefresh(load)
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card class="section-card" shadow="never">
-          <template #header>元数据层状态</template>
+          <template #header>{{ t('cluster.metaStatus') }}</template>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="模式">
-              {{ cluster?.mode ?? '—' }}{{ cluster && !cluster.enabled ? '（cluster 未启用）' : '' }}
+            <el-descriptions-item :label="t('cluster.mode')">
+              {{ cluster?.mode ?? '—' }}{{ cluster && !cluster.enabled ? t('cluster.clusterDisabledSuffix') : '' }}
             </el-descriptions-item>
-            <el-descriptions-item label="本节点">{{ cluster?.node_id ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="角色">{{ cluster?.role ?? '—' }}</el-descriptions-item>
-            <el-descriptions-item label="任期">{{ cluster ? formatNumber(cluster.term, 0) : '—' }}</el-descriptions-item>
-            <el-descriptions-item label="领导者">{{ cluster?.leader || '（未选出）' }}</el-descriptions-item>
-            <el-descriptions-item label="服务状态">
-              <el-tag v-if="cluster?.paused" type="danger" size="small">已暂停</el-tag>
-              <el-tag v-else type="success" size="small">正常</el-tag>
+            <el-descriptions-item :label="t('cluster.thisNode')">{{ cluster?.node_id ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('cluster.role')">{{ cluster?.role ?? '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('cluster.term')">{{ cluster ? formatNumber(cluster.term, 0) : '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('cluster.leader')">{{ cluster?.leader || t('cluster.noLeader') }}</el-descriptions-item>
+            <el-descriptions-item :label="t('cluster.serviceState')">
+              <el-tag v-if="cluster?.paused" type="danger" size="small">{{ t('cluster.paused') }}</el-tag>
+              <el-tag v-else type="success" size="small">{{ t('cluster.normal') }}</el-tag>
             </el-descriptions-item>
-            <el-descriptions-item label="共识进度">
-              提交 {{ formatNumber(cluster?.commit_index, 0) }} / 已应用
-              {{ formatNumber(cluster?.last_applied, 0) }} / 累计 {{ formatNumber(cluster?.applied_records, 0) }} 条
+            <el-descriptions-item :label="t('cluster.consensus')">
+              {{
+                t('cluster.consensusValue', {
+                  commit: formatNumber(cluster?.commit_index, 0),
+                  applied: formatNumber(cluster?.last_applied, 0),
+                  records: formatNumber(cluster?.applied_records, 0),
+                })
+              }}
             </el-descriptions-item>
-            <el-descriptions-item label="元数据规模">
-              队列 {{ formatNumber(cluster?.object_totals.queues, 0) }} ·
-              交换机 {{ formatNumber(cluster?.object_totals.exchanges, 0) }} ·
-              绑定 {{ formatNumber(cluster?.object_totals.bindings, 0) }} ·
-              用户 {{ formatNumber(cluster?.object_totals.users, 0) }}
+            <el-descriptions-item :label="t('cluster.metaScale')">
+              {{
+                t('cluster.metaScaleValue', {
+                  queues: formatNumber(cluster?.object_totals.queues, 0),
+                  exchanges: formatNumber(cluster?.object_totals.exchanges, 0),
+                  bindings: formatNumber(cluster?.object_totals.bindings, 0),
+                  users: formatNumber(cluster?.object_totals.users, 0),
+                })
+              }}
             </el-descriptions-item>
           </el-descriptions>
         </el-card>
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card class="section-card" shadow="never">
-          <template #header>跨节点转发</template>
+          <template #header>{{ t('cluster.forwarding') }}</template>
           <el-descriptions :column="1" border>
-            <el-descriptions-item label="代理消费者">
+            <el-descriptions-item :label="t('cluster.proxyConsumers')">
               {{ formatNumber(cluster?.forwarding.proxy_consumers, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="远端消费者">
+            <el-descriptions-item :label="t('cluster.remoteConsumers')">
               {{ formatNumber(cluster?.forwarding.remote_consumers, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="持有中的投递">
+            <el-descriptions-item :label="t('cluster.heldDeliveries')">
               {{ formatNumber(cluster?.forwarding.held_deliveries, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="转发出去">
+            <el-descriptions-item :label="t('cluster.forwardedOut')">
               {{ formatNumber(cluster?.forwarding.forwarded_out, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="转发进来">
+            <el-descriptions-item :label="t('cluster.forwardedIn')">
               {{ formatNumber(cluster?.forwarding.forwarded_in, 0) }}
             </el-descriptions-item>
-            <el-descriptions-item label="推回的投递">
+            <el-descriptions-item :label="t('cluster.deliveries')">
               {{ formatNumber(cluster?.forwarding.deliveries, 0) }}
             </el-descriptions-item>
           </el-descriptions>
@@ -203,7 +216,7 @@ useAutoRefresh(load)
     <el-card class="section-card" shadow="never">
       <template #header>
         <div class="page-header" style="margin-bottom: 0">
-          <span>成员</span>
+          <span>{{ t('cluster.members') }}</span>
           <el-button
             type="primary"
             size="small"
@@ -211,24 +224,24 @@ useAutoRefresh(load)
             :disabled="!clusterEnabled"
             @click="openAdd"
           >
-            加入成员
+            {{ t('cluster.addMember') }}
           </el-button>
         </div>
       </template>
       <el-table :data="memberRows" stripe>
-        <el-table-column label="节点 ID" min-width="220">
+        <el-table-column :label="t('cluster.colNodeId')" min-width="220">
           <template #default="{ row }">
             <span class="mono">{{ row.id }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="成员类型" width="140">
+        <el-table-column :label="t('cluster.colMemberType')" width="140">
           <template #default="{ row }">
             <el-tag :type="row.role === 'voter' ? 'success' : 'info'" size="small">
-              {{ row.role === 'voter' ? '投票成员' : '非投票成员' }}
+              {{ row.role === 'voter' ? t('cluster.memberVoter') : t('cluster.memberLearner') }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" fixed="right">
+        <el-table-column :label="t('common.actions')" width="120" fixed="right">
           <template #default="{ row }">
             <el-button
               link
@@ -236,67 +249,64 @@ useAutoRefresh(load)
               :disabled="!clusterEnabled || members.voters.length <= 1"
               @click="removeMember(row.id)"
             >
-              移出
+              {{ t('cluster.remove') }}
             </el-button>
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="没有集群成员信息" :image-size="80" />
+          <el-empty :description="t('cluster.emptyMembers')" :image-size="80" />
         </template>
       </el-table>
       <div v-if="clusterEnabled" class="page-subtitle" style="margin-top: 8px">
-        移出操作在集群中只剩一个投票成员时被禁用（那样会让集群再也选不出领导者）。
+        {{ t('cluster.removeHint') }}
       </div>
     </el-card>
 
     <el-card class="section-card" shadow="never">
-      <template #header>节点</template>
+      <template #header>{{ t('cluster.nodes') }}</template>
       <el-table :data="nodes" stripe>
-        <el-table-column label="节点名称" prop="name" min-width="200" />
-        <el-table-column label="运行状态" width="100">
+        <el-table-column :label="t('cluster.colNodeName')" prop="name" min-width="200" />
+        <el-table-column :label="t('cluster.colRunning')" width="100">
           <template #default="{ row }">
             <el-tag :type="row.running ? 'success' : 'danger'" size="small">
-              {{ row.running ? '运行中' : '已停止' }}
+              {{ row.running ? t('cluster.running') : t('cluster.stopped') }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="运行时长" width="180">
+        <el-table-column :label="t('cluster.colUptime')" width="180">
           <template #default="{ row }">{{ formatDuration(row.uptime / 1000) }}</template>
         </el-table-column>
-        <el-table-column label="内存占用" width="140">
+        <el-table-column :label="t('cluster.colMem')" width="140">
           <template #default="{ row }">{{ formatNumber(row.mem_used / 1024 / 1024, 1) }} MiB</template>
         </el-table-column>
-        <el-table-column label="磁盘剩余" width="140">
+        <el-table-column :label="t('cluster.colDisk')" width="140">
           <template #default="{ row }">{{ formatNumber(row.disk_free / 1024 / 1024, 1) }} MiB</template>
         </el-table-column>
-        <el-table-column label="套接字" width="90">
+        <el-table-column :label="t('cluster.colSockets')" width="90">
           <template #default="{ row }">{{ formatNumber(row.sockets_used, 0) }}</template>
         </el-table-column>
-        <el-table-column label="系统进程号" width="110">
+        <el-table-column :label="t('cluster.colOsPid')" width="110">
           <template #default="{ row }">{{ formatNumber(row.os_pid, 0) }}</template>
         </el-table-column>
         <template #empty>
-          <el-empty description="没有节点信息" :image-size="80" />
+          <el-empty :description="t('cluster.emptyNodes')" :image-size="80" />
         </template>
       </el-table>
     </el-card>
 
-    <el-dialog v-model="addVisible" title="加入集群成员" width="480px">
+    <el-dialog v-model="addVisible" :title="t('cluster.addTitle')" width="480px">
       <el-form label-width="120px">
-        <el-form-item label="节点 ID">
-          <el-input v-model="addForm.nodeId" placeholder="例如 swiftmq@node4" />
+        <el-form-item :label="t('cluster.colNodeId')">
+          <el-input v-model="addForm.nodeId" :placeholder="t('cluster.nodeIdPlaceholder')" />
         </el-form-item>
-        <el-form-item label="集群 RPC 地址">
-          <el-input v-model="addForm.addr" placeholder="例如 10.0.0.4:25672" />
+        <el-form-item :label="t('cluster.addrLabel')">
+          <el-input v-model="addForm.addr" :placeholder="t('cluster.addrPlaceholder')" />
         </el-form-item>
       </el-form>
-      <div class="page-subtitle">
-        新节点需先以 learner 身份启动（cluster.join=true），加入后由后台追平日志再提升为投票成员，
-        可能耗时几十秒。
-      </div>
+      <div class="page-subtitle">{{ t('cluster.addNote') }}</div>
       <template #footer>
-        <el-button @click="addVisible = false">取消</el-button>
-        <el-button type="primary" :loading="adding" @click="submitAdd">加入</el-button>
+        <el-button @click="addVisible = false">{{ t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="adding" @click="submitAdd">{{ t('cluster.addButton') }}</el-button>
       </template>
     </el-dialog>
   </div>
