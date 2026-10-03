@@ -1485,34 +1485,56 @@ func (n *Node) applyCommitted() {
 			n.log.Error("已提交索引缺少日志条目", "index", index, "commit", n.commitIndex)
 			return
 		}
-		n.lastApplied = index
-		n.appliedSinceSnap++
-		needSnapshot := n.appliedSinceSnap >= n.snapshotThreshold
+		// 刻意**不**在 Apply 之前推进 lastApplied：Apply 失败时把它留在原地（后续提交信号会重试），
+		// 否则该条目会被当成"已应用"而永不重放 —— 状态机已变、内核未变，两边静默分叉。
+		needSnapshot := n.appliedSinceSnap+1 >= n.snapshotThreshold
 		n.mu.Unlock()
 
 		if entry.Type == EntryConfChange {
 			// 成员变更条目由 Raft 自己消化，不进上层状态机。
 			values, err := n.applyConfChangeEntry(index, entry.Data)
+			if err != nil {
+				n.fsmMu.Unlock()
+				n.deliverResult(index, nil, err)
+				n.log.Error("应用成员变更条目失败，已停止推进（等待重试）", "index", index, "err", err)
+				return
+			}
+			n.markApplied(index)
 			if needSnapshot {
 				n.takeSnapshot(index, entry.Term)
 			}
 			n.fsmMu.Unlock()
-			n.deliverResult(index, nil, err)
-			if err == nil && values.changed {
+			n.deliverResult(index, nil, nil)
+			if values.changed {
 				n.notifyMembership(values.membership)
 			}
 			continue
 		}
 
 		value, err := n.fsm.Apply(index, entry.Data)
-
+		if err != nil {
+			n.fsmMu.Unlock()
+			n.deliverResult(index, value, err)
+			n.log.Error("应用状态机条目失败，已停止推进（等待重试）", "index", index, "err", err)
+			return
+		}
+		n.markApplied(index)
 		if needSnapshot {
 			n.takeSnapshot(index, entry.Term)
 		}
 		n.fsmMu.Unlock()
-
-		n.deliverResult(index, value, err)
+		n.deliverResult(index, value, nil)
 	}
+}
+
+// markApplied 推进应用游标 lastApplied 与应用计数。
+//
+// 只在状态机**成功应用**之后调用：它是"这条已应用"的唯一凭据。
+func (n *Node) markApplied(index uint64) {
+	n.mu.Lock()
+	n.lastApplied = index
+	n.appliedSinceSnap++
+	n.mu.Unlock()
 }
 
 // confApplyOutcome 是一次成员变更的应用结果。

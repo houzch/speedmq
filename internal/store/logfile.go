@@ -167,11 +167,16 @@ func (l *logFile) sync() error {
 	return l.f.Sync()
 }
 
-// close 刷盘后关闭文件。
+// close 刷盘后关闭文件。可重复调用（第二次起为安全空操作），以满足 Close 幂等约定。
 func (l *logFile) close() error {
+	f := l.f
+	if f == nil {
+		return nil
+	}
+	l.f = nil
 	if err := l.w.Flush(); err != nil {
-		_ = l.f.Close()
+		_ = f.Close()
 		return err
 	}
-	return l.f.Close()
+	return f.Close()
 }

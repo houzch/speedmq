@@ -236,7 +236,8 @@ func (s *Server) getOverview(w http.ResponseWriter, _ *http.Request, _ params, a
 }
 
 func (s *Server) listenerObjects() []listenerObject {
-	var out []listenerObject
+	// 用非 nil 空切片：列表端点必须返回 []，返回 null 会让前端/脚本的遍历直接报错。
+	out := make([]listenerObject, 0)
 	if s.deps.Listeners == nil {
 		return out
 	}
@@ -453,7 +454,8 @@ func (s *Server) deleteClusterMember(w http.ResponseWriter, r *http.Request, p p
 }
 
 func (s *Server) enabledPlugins() []string {
-	var out []string
+	// 非 nil 空切片：列表端点必须返回 []。
+	out := make([]string, 0)
 	for _, p := range s.deps.Plugins.Plugins() {
 		if p.State == sdk.StateEnabled {
 			out = append(out, p.Name)
@@ -855,7 +857,9 @@ type growRequest struct {
 // 语义对齐 `rabbitmq-queues grow`：只增不减、副本集落进元数据（重启后仍生效）。
 // 非仲裁队列 / 超过集群规模 / 缩容 → 400 PRECONDITION_FAILED，队列不存在 → 404，单机模式 → 501。
 func (s *Server) growQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	// 副本集是集群级操作（对齐 rabbitmq-queues 需 administrator），
+	// 不接受 management 标签代劳，也不放行"只读该 vhost"的账号。
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -886,7 +890,8 @@ func (s *Server) growQueue(w http.ResponseWriter, r *http.Request, p params, au 
 // rebalanceQueue 实现 PUT /api/queues/{vhost}/{name}/rebalance：把该队列的 leader
 // 从承载 leader 最多的节点迁到副本集中较空的投票成员。
 func (s *Server) rebalanceQueue(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	// 与 growQueue 同理：再平衡是集群级操作，要求 administrator。
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -1805,7 +1810,7 @@ type userRequest struct {
 }
 
 func (s *Server) putUser(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2044,7 +2049,7 @@ func splitTags(s string) []string {
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2114,7 +2119,7 @@ type permissionRequest struct {
 }
 
 func (s *Server) putPermission(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2141,7 +2146,7 @@ func (s *Server) putPermission(w http.ResponseWriter, r *http.Request, p params,
 }
 
 func (s *Server) deletePermission(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2231,7 +2236,7 @@ type policyRequest struct {
 }
 
 func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2272,7 +2277,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, p params, au 
 }
 
 func (s *Server) deletePolicy(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2360,7 +2365,7 @@ func (s *Server) getVHostLimits(w http.ResponseWriter, _ *http.Request, p params
 //
 // 写成功返回 204（RabbitMQ 实测就是 204，不是 201）。
 func (s *Server) putVHostLimit(w http.ResponseWriter, r *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2389,7 +2394,7 @@ func (s *Server) putVHostLimit(w http.ResponseWriter, r *http.Request, p params,
 //
 // 对齐 RabbitMQ：删除不存在（或本来就没设）的限制同样返回 204。
 func (s *Server) deleteVHostLimit(w http.ResponseWriter, _ *http.Request, p params, au authUser) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}
@@ -2544,7 +2549,7 @@ func (s *Server) disablePlugin(w http.ResponseWriter, _ *http.Request, p params,
 }
 
 func (s *Server) setPluginState(w http.ResponseWriter, p params, au authUser, enable bool) {
-	if err := au.requireWrite(); err != nil {
+	if err := au.requireAdministrator(); err != nil {
 		writeKernelError(w, err)
 		return
 	}

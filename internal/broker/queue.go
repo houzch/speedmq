@@ -44,12 +44,18 @@ type queuedMsg struct {
 type consumer struct {
 	sub      plugin.Subscription
 	inFlight int
+	// failed 表示该消费者的投递已失败（多半是连接已断）：不再被选中投递，
+	// 直到协议层把它取消。没有它，dispatch 会在"投递失败→重入队→再选中"之间忙自旋。
+	failed bool
 }
 
 // hasCapacity 判断该消费者是否还有投递额度。
 //
 // no-ack 与 prefetch=0 都表示不限制；其余情况以 in-flight 数为闸门。
 func (c *consumer) hasCapacity() bool {
+	if c.failed {
+		return false
+	}
 	if c.sub.NoAck || c.sub.Prefetch == 0 {
 		return true
 	}
@@ -338,11 +344,12 @@ func (q *queue) publishLocal(msg *plugin.Message) (accepted bool, commit *store.
 			q.mu.Unlock()
 			return false, nil
 		case overflowRejectPublishDLX:
-			q.mu.Unlock()
+			// reject-publish-dlx：把被拒的消息直接送去死信。
+			// 必须在锁内调用（deadLetterLocked 要求持有 q.mu，且会读 q.store）。
 			if a.hasDeadLetter() {
-				// reject-publish-dlx：把被拒的消息直接送去死信
 				q.deadLetterLocked(item, deathReasonMaxLen)
 			}
+			q.mu.Unlock()
 			return false, nil
 		default:
 			// drop-head：先挤出队首腾出空间
@@ -775,13 +782,27 @@ func (q *queue) dispatch() {
 		}
 		q.mu.Unlock()
 		for _, item := range batch {
-			err := item.sub.Deliver(item.delivery)
-			if err != nil {
-				// 投递失败（多半是连接已断）：消息重新入队，避免丢失
+			if err := item.sub.Deliver(item.delivery); err != nil {
+				// 投递失败（多半是连接已断）：消息重新入队，避免丢失；
+				// 并把该消费者标记为失效，避免下一轮又选中同一条消息 → 100% CPU 忙自旋。
+				// 真正摘除消费者由协议层在连接拆除时调用 cancel 完成。
 				item.delivery.Settle(plugin.SettleRequeue)
+				q.mu.Lock()
+				q.markConsumerFailedLocked(item.sub.Tag)
+				q.mu.Unlock()
 			}
 		}
 		q.mu.Lock()
+	}
+}
+
+// markConsumerFailedLocked 把投递失败的消费者标记为失效（不再被选中）。调用方需持有 q.mu。
+func (q *queue) markConsumerFailedLocked(tag string) {
+	for _, c := range q.consumers {
+		if c.sub.Tag == tag {
+			c.failed = true
+			return
+		}
 	}
 }
 
@@ -910,10 +931,28 @@ func (q *queue) deadLetterLocked(item *queuedMsg, reason string) {
 	if q.deadLetter == nil || q.arg().deadLetterEx == "" {
 		return
 	}
-	// 复制一份：原消息可能仍被未确认集合引用，不能就地改它的头
+	// 复制一份再改写头部：原消息可能仍被未确认集合引用，而且 fanout 到多个队列时
+	// 各副本**共享同一张 Headers map**（见 cloneForQueue），就地改会污染其它队列的副本，
+	// 两个队列并发死信同一消息时还会并发写同一张 map。
 	clone := *item.msg
+	clone.Properties.Headers = cloneHeaders(item.msg.Properties.Headers)
 	addDeathHeader(&clone, reason, q.name, time.Now())
 	q.deadLetter(&clone, reason)
+}
+
+// cloneHeaders 复制消息头 map。
+//
+// 浅拷贝：值按只读共享（x-death 是整体替换某个键，不改动已有值的内部结构），
+// 只保证"改写键值"不会波及原 map。
+func cloneHeaders(h map[string]any) map[string]any {
+	if h == nil {
+		return nil
+	}
+	out := make(map[string]any, len(h))
+	for k, v := range h {
+		out[k] = v
+	}
+	return out
 }
 
 // storeAckLocked 在队列索引中把该消息标记为已离开队列。调用方需持有 q.mu。

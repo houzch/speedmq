@@ -10,7 +10,6 @@ import { Refresh } from '@element-plus/icons-vue'
 import { api } from '@/api'
 import type { NodeInfo, Overview } from '@/api/types'
 import { useAutoRefresh } from '@/composables/useAutoRefresh'
-import { useAuthStore } from '@/stores/auth'
 import { useRefreshStore } from '@/stores/refresh'
 import { formatBytes, formatDuration, formatNumber } from '@/utils/format'
 import { showError } from '@/utils/message'
@@ -18,11 +17,8 @@ import { showError } from '@/utils/message'
 echarts.use([LineChart, GridComponent, LegendComponent, TooltipComponent, CanvasRenderer])
 
 const refresh = useRefreshStore()
-const auth = useAuthStore()
 const { t, locale } = useI18n()
 
-/** 轮询间隔（毫秒）：每 5 秒采样一次 /api/overview */
-const POLL_INTERVAL = 5_000
 /** 内存中保留的最大样本数 */
 const MAX_SAMPLES = 60
 
@@ -49,7 +45,6 @@ const statCards = computed(() => [
 
 const chartRef = ref<HTMLDivElement | null>(null)
 let chart: ReturnType<typeof echarts.init> | null = null
-let pollTimer: number | null = null
 
 /** 渲染趋势图（图表数据全部来自前端累积的采样点） */
 function renderChart(): void {
@@ -126,7 +121,10 @@ async function loadNodes(): Promise<void> {
   }
 }
 
-/** 组合入口：概览 + 节点；供顶栏刷新按钮与全局自动刷新共用 */
+/** 组合入口：概览 + 节点；供顶栏刷新按钮与全局自动刷新共用。
+ *
+ * 采样统一跟随本函数（每次拉取追加一个采样点），不再另开一个定时器重复请求 overview ——
+ * 之前"独立采样定时器 + 自动刷新"会让同一周期请求两次、并重复压入两个采样点。 */
 async function refreshAll(): Promise<void> {
   await Promise.all([loadOverview(), loadNodes()])
   refresh.markRefreshed()
@@ -139,11 +137,6 @@ onMounted(() => {
   if (chartRef.value) {
     chart = echarts.init(chartRef.value)
   }
-  pollTimer = window.setInterval(() => {
-    // 未登录时不采样：这个定时器与自动刷新独立，登出/未登录期间会一直打 401
-    if (!auth.authenticated) return
-    void loadOverview(true)
-  }, POLL_INTERVAL)
   window.addEventListener('resize', resizeChart)
 })
 
@@ -151,7 +144,6 @@ onMounted(() => {
 useAutoRefresh(refreshAll)
 
 onBeforeUnmount(() => {
-  if (pollTimer !== null) window.clearInterval(pollTimer)
   window.removeEventListener('resize', resizeChart)
   chart?.dispose()
   chart = null
@@ -240,7 +232,7 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
         <el-table-column :label="t('overview.uptime')" width="180">
-          <template #default="{ row }">{{ formatDuration(row.uptime) }}</template>
+          <template #default="{ row }">{{ formatDuration(row.uptime / 1000) }}</template>
         </el-table-column>
         <el-table-column :label="t('overview.memUsed')" width="140">
           <template #default="{ row }">{{ formatBytes(row.mem_used) }}</template>

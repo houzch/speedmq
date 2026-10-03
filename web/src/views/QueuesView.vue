@@ -29,20 +29,27 @@ const loading = ref(false)
 const filterName = ref('')
 
 let debounceTimer: number | null = null
+/** 请求序号：只接受最新一次加载的结果，避免切换 vhost 后旧响应覆盖新列表 */
+let loadSeq = 0
 
 async function loadQueues(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   try {
-    queues.value = await api.queues({
+    const list = await api.queues({
       vhost: vhost.value,
       name: filterName.value.trim() || undefined,
       use_regex: false,
     })
+    // 迟到的旧 vhost 响应直接丢弃：否则会出现"顶栏已是 B、列表还显示 A"的错乱。
+    if (seq !== loadSeq) return
+    queues.value = list
     refresh.markRefreshed()
   } catch (error) {
+    if (seq !== loadSeq) return
     showError(error, t('queues.loadFailed'))
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

@@ -120,6 +120,9 @@ func (m *Manager) Load(ctx context.Context, plugins ...sdk.Plugin) error {
 			continue
 		}
 		if err := m.startLocked(p); err != nil {
+			// 启动失败也必须回收：Init 阶段可能已经拉起了外部插件进程（spawn 模式），
+			// 不 Stop 就会留下孤儿进程。Stop 约定幂等，未启动成功时是安全空操作。
+			_ = p.Stop(m.ctx)
 			m.state[p.Name()] = sdk.StateFailed
 			m.failed[p.Name()] = err
 			_, required, _ := m.cfg.PluginFlags(p.Name())
@@ -243,7 +246,9 @@ func (m *Manager) Stop(ctx context.Context) {
 
 	for i := len(m.order) - 1; i >= 0; i-- {
 		name := m.order[i]
-		if m.state[name] != sdk.StateEnabled {
+		// 不只停"已启用"的：被停用（disabled）或启动失败（failed）的插件可能已经拉起了
+		// 外部进程（Init 阶段 spawn），内核退出时必须一并停止，否则会留下孤儿进程。
+		if m.state[name] == sdk.StateStopped {
 			continue
 		}
 		if err := m.plugins[name].Stop(ctx); err != nil {

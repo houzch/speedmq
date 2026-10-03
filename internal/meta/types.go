@@ -175,8 +175,9 @@ type FeatureFlag struct {
 
 // State 是元数据的完整快照。
 //
-// 这是**只读视图**：调用方不得修改返回的 map/slice（内部需要拷贝时才拷贝，
-// 避免每次读取都做一次全量深拷贝）。
+// 这是**只读视图**：调用方不得修改其中的记录值。State() 返回时容器已被复制，
+// 因此调用方可以安全地在锁外遍历；但记录内部的 map/slice 仍与状态机共享，
+// 只读访问是安全的（状态机对记录只做整体替换，不原地改写）。
 type State struct {
 	VHosts      map[string]VHost
 	Exchanges   map[string]Exchange
@@ -315,7 +316,10 @@ func (s *Store) Write(ctx context.Context, op Op, payload any) error {
 	return s.impl.write(ctx, op, payload)
 }
 
-// State 返回当前元数据快照（只读）。
+// State 返回当前元数据快照。
+//
+// 返回的是**与状态机隔离的副本**：容器（map/slice）都已复制，调用方可以安全地在锁外
+// 遍历/索引，不会与状态机的写入竞争。记录值本身与状态机共享（记录进入状态后不再被原地改写）。
 func (s *Store) State() State { return s.impl.state() }
 
 // Status 返回元数据层状态。

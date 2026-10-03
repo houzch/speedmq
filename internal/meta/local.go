@@ -114,21 +114,21 @@ func (s *localStore) write(_ context.Context, op Op, payload any) error {
 	return nil
 }
 
-// state 返回当前快照（只读视图，调用方不得修改）。
+// state 返回当前快照的一个**隔离副本**（容器新复制，调用方可安全地在锁外遍历）。
 func (s *localStore) state() State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.st
+	return cloneState(s.st)
 }
 
 // status 返回单机模式的状态：没有共识，所以角色恒为 single、恒有"多数派"。
 func (s *localStore) status() Status {
 	s.mu.RLock()
-	st := s.st
+	// counts 读的是 map 长度，必须与状态写入同处读锁内：解锁后再统计会与 Apply 并发。
+	q, e, b, u := counts(s.st)
 	applied := s.applied
 	s.mu.RUnlock()
 
-	q, e, b, u := counts(st)
 	// 单机没有集群成员，Peers 只在 NodeID 已知时给出一项，避免对外展示一个空 ID。
 	var peers []string
 	if s.id != "" {

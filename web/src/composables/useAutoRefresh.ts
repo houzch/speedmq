@@ -34,17 +34,22 @@ export function useAutoRefresh(load: () => void | Promise<void>): void {
     }
   }
 
-  /** 先清后起：按当前状态重排定时器（未认证或间隔为 0 则不启动） */
+  /** 当前是否应该加载：已认证，且不在"强制改密"流程中 */
+  function shouldLoad(): boolean {
+    return auth.authenticated && !auth.mustChangePassword
+  }
+
+  /** 先清后起：按当前状态重排定时器（未认证、待强制改密或间隔为 0 则不启动） */
   function restart(): void {
     stop()
-    if (!auth.authenticated || refresh.intervalSeconds <= 0) return
+    if (!shouldLoad() || refresh.intervalSeconds <= 0) return
     timer = setInterval(() => {
       void load()
     }, refresh.intervalSeconds * 1000)
   }
 
   onMounted(() => {
-    if (auth.authenticated) {
+    if (shouldLoad()) {
       void load()
     }
     restart()
@@ -54,7 +59,18 @@ export function useAutoRefresh(load: () => void | Promise<void>): void {
   watch(
     () => auth.authenticated,
     (ok) => {
-      if (ok) {
+      if (ok && !auth.mustChangePassword) {
+        void load()
+      }
+      restart()
+    },
+  )
+
+  // 强制改密完成后放行：补一次加载并恢复轮询（改密期间不该请求任何业务数据）。
+  watch(
+    () => auth.mustChangePassword,
+    (must) => {
+      if (!must && auth.authenticated) {
         void load()
       }
       restart()

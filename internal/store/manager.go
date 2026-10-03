@@ -21,8 +21,9 @@ type Manager struct {
 	opts Options
 	log  *slog.Logger
 
-	mu   sync.Mutex
-	open map[*QueueStore]struct{}
+	mu     sync.Mutex
+	open   map[*QueueStore]struct{}
+	closed bool
 }
 
 // NewManager 构造存储管理器。dataDir 为节点数据目录。
@@ -62,17 +63,24 @@ func (m *Manager) Open(vhost, queue string, durable bool) (*QueueStore, []Recove
 		_ = st.Close()
 		return nil, nil, err
 	}
-	st.startFlusher()
-
+	// 先登记再启动刷盘协程：否则 CloseAll 可能取到不含本存储的快照，
+	// 这条存储就再也不会被关闭（刷盘协程与文件句柄泄漏）。
 	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		_ = st.Close()
+		return nil, nil, fmt.Errorf("存储管理器已关闭")
+	}
 	m.open[st] = struct{}{}
 	m.mu.Unlock()
+	st.startFlusher()
 	return st, recovered, nil
 }
 
 // CloseAll 关闭全部已打开的存储（收尾刷盘）。可重复调用。
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
+	m.closed = true
 	stores := make([]*QueueStore, 0, len(m.open))
 	for st := range m.open {
 		stores = append(stores, st)

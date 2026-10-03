@@ -50,13 +50,18 @@ function bindingCount(name: string): number | null {
   return bindingCounts.value[name] ?? null
 }
 
+/** 请求序号：只接受最新一次加载的结果，避免切换 vhost 后旧响应覆盖新列表 */
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const [exchangeList, bindingList] = await Promise.all([
       api.exchanges({ vhost: vhost.value, name: filterName.value.trim() || undefined }),
       api.bindings(vhost.value),
     ])
+    if (seq !== loadSeq) return // 已切到别的 vhost：丢弃迟到的旧响应
     exchanges.value = exchangeList
     const counts: Record<string, number> = {}
     for (const binding of bindingList) {
@@ -65,9 +70,10 @@ async function load(): Promise<void> {
     bindingCounts.value = counts
     refresh.markRefreshed()
   } catch (error) {
+    if (seq !== loadSeq) return
     showError(error, t('exchanges.loadFailed'))
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

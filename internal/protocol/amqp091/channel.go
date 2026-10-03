@@ -117,15 +117,29 @@ func (ch *channel) startPublish(pub spec.BasicPublish) error {
 	return nil
 }
 
-// setContentHeader 接收内容头帧。
-func (ch *channel) setContentHeader(header spec.ContentHeader) {
+// maxMessageSize 是单条消息体的上限，对齐 RabbitMQ 默认的 max_message_size（128 MiB）。
+//
+// 必须在收到内容头时就校验：BodySize 是客户端声明的 uint64，直接拿它做 make 的容量
+// 会因 int 溢出（≥2^63）得到负值而 panic（运行期无 recover，等于远程可崩进程）；
+// 即便不溢出，不设上限也等于把本机内存交给客户端支配。
+const maxMessageSize uint64 = 128 << 20
+
+// setContentHeader 接收内容头帧；声明的消息体超过上限时返回错误（由调用方关 channel）。
+func (ch *channel) setContentHeader(header spec.ContentHeader) error {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 	if ch.pending == nil {
-		return
+		return nil
+	}
+	if header.BodySize > maxMessageSize {
+		// 对齐 RabbitMQ：超限是软错误（406），只关 channel 不断连接。
+		return plugin.Errorf(plugin.KindPreconditionFailed,
+			"PRECONDITION_FAILED - message size %d is larger than configured max size %d",
+			header.BodySize, maxMessageSize)
 	}
 	ch.pending.header = header
 	ch.pending.body = make([]byte, 0, minInt(int(header.BodySize), 4096))
+	return nil
 }
 
 // appendBody 追加内容体；返回 true 表示内容已收齐。
@@ -463,11 +477,11 @@ func (ch *channel) serverCancel(entry *consumerEntry, reason string) {
 	delete(ch.consumers, entry.tag)
 	ch.mu.Unlock()
 
-	args, err := spec.EncodeBasicCancelOk(entry.tag)
+	args, err := spec.EncodeBasicCancel(entry.tag, false)
 	if err != nil {
 		return
 	}
-	// 服务端发起的取消用 Basic.Cancel（而非 Cancel-Ok），no-wait 语义由客户端处理
+	// 服务端发起的取消用 Basic.Cancel（而非 Cancel-Ok），no-wait 位由编码器写出
 	payload := spec.EncodeMethod(spec.ClassBasic, spec.MethodBasicCancel, args)
 	if err := ch.con.writeFrames(codec.Frame{Type: codec.FrameMethod, Channel: ch.id, Payload: payload}); err != nil {
 		ch.log.Debug("下发 basic.cancel 失败", "consumer_tag", entry.tag, "err", err)
@@ -577,9 +591,11 @@ func (ch *channel) takeUnacked(tag uint64, multiple bool) ([]*plugin.Delivery, e
 		return []*plugin.Delivery{d}, nil
 	}
 
+	// multiple=true：tag==0 表示"该通道上全部未确认投递"（RabbitMQ 语义）；
+	// 非零 tag 表示"所有 ≤ tag 的未确认投递"。此前 tag=0 时 `t <= 0` 恒不成立，会静默不结算。
 	var out []*plugin.Delivery
 	for t, d := range ch.unacked {
-		if t <= tag {
+		if tag == 0 || t <= tag {
 			out = append(out, d)
 			delete(ch.unacked, t)
 		}

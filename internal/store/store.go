@@ -193,14 +193,19 @@ func (s *QueueStore) recover() ([]Recovered, error) {
 
 	// 只打开"还有存活消息"的段；没有存活消息的段文件在下面统一清理。
 	out := make([]Recovered, 0, len(order))
+	// unreadable 记录"打不开"的段：它们绝不能进入删除集合 —— 打开失败可能是瞬时的
+	// （fd 耗尽、权限/IO 抖动），若被当成"陈旧段"删掉，段内仍存活的消息就永久丢失了。
+	unreadable := make(map[uint32]struct{})
 	for _, seq := range order {
 		e := alive[seq]
 		seg, ok := s.segs[e.seg]
 		if !ok {
 			opened, err := openSegment(s.dir, e.seg)
 			if err != nil {
-				s.log.Warn("打开段失败，该段的消息将被跳过", "dir", s.dir, "segment", e.seg, "err", err)
+				s.log.Warn("打开段失败，保留该段待下次重试（本次跳过其消息）",
+					"dir", s.dir, "segment", e.seg, "err", err)
 				s.segs[e.seg] = nil // 占位：避免对同一段反复尝试
+				unreadable[e.seg] = struct{}{}
 				continue
 			}
 			seg = opened
@@ -228,12 +233,16 @@ func (s *QueueStore) recover() ([]Recovered, error) {
 		out = append(out, Recovered{Seq: seq, Message: msg})
 	}
 
-	// 打不开的段占位项丢掉，并记下"必须保留"的段（有存活消息的）。
+	// 打不开的段从运行期集合里丢掉，但**保留其文件**（进 keep）——它们不是"陈旧段"，
+	// 只是这次读不了；同时记下"必须保留"的段（有存活消息的）。
 	keep := make(map[uint32]struct{}, len(s.segs))
 	maxSeg := uint32(0)
 	for id, seg := range s.segs {
 		if seg == nil {
 			delete(s.segs, id)
+			if _, bad := unreadable[id]; bad {
+				keep[id] = struct{}{}
+			}
 			continue
 		}
 		keep[id] = struct{}{}
@@ -376,10 +385,12 @@ func (s *QueueStore) writeRecords(pending []*pendingRecord) error {
 		// none 不会走到这里（不创建存储）；os 只写到操作系统，不 fsync
 		return nil
 	}
-	if err := s.idx.sync(); err != nil {
+	// 顺序很关键：先让段数据持久化，再 sync 索引。索引是"消息存在"的判据，
+	// 反过来（索引先落盘）会在两者之间崩溃时留下"索引可见、数据未落盘"的窗口。
+	if err := s.flushSegments(func(seg *segmentInfo) error { return seg.file.sync() }); err != nil {
 		return err
 	}
-	return s.flushSegments(func(seg *segmentInfo) error { return seg.file.sync() })
+	return s.idx.sync()
 }
 
 // flushSegments 对全部打开的段执行同一个动作（flush 或 sync）。

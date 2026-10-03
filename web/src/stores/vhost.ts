@@ -24,6 +24,10 @@ export const useVhostStore = defineStore('vhost', () => {
       if (!list.some((item) => item.name === current.value)) {
         current.value = list.length > 0 ? list[0].name : DEFAULT_VHOST
       }
+    } catch (error) {
+      // 权限收窄的账号可能读不到 /api/vhosts（403）：这里必须捕获，
+      // 否则调用方用 `void` 丢弃时会变成未处理的 Promise 拒绝（控制台报错、选择器空白且无提示）。
+      console.warn('加载 vhost 列表失败', error)
     } finally {
       loading.value = false
     }

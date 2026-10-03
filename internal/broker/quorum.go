@@ -496,7 +496,7 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 	}
 	candidate := &queuedMsg{msg: msg}
 	a := q.arg()
-	var drop []uint64
+	var dropped []*queuedMsg
 	if q.wouldExceedLocked(candidate) {
 		if a.overflow == overflowRejectPublish {
 			q.mu.Unlock()
@@ -506,7 +506,7 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 			head := q.ready[0]
 			q.ready = q.ready[1:]
 			q.readyBytes -= messageSize(head.msg)
-			drop = append(drop, head.seq)
+			dropped = append(dropped, head)
 		}
 	}
 	q.nextSeq++
@@ -517,10 +517,15 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 	}
 	q.mu.Unlock()
 
-	for _, s := range drop {
-		if err := g.propose(quorumCommand{Op: quorumOpAck, Seq: s}); err != nil {
-			q.log.Warn("仲裁队列挤出队首失败", "queue", q.name, "seq", s, "err", err)
-			break
+	for i, head := range dropped {
+		if err := g.propose(quorumCommand{Op: quorumOpAck, Seq: head.seq}); err != nil {
+			// 提案失败：本地已移除的队首必须**回插**，否则 leader 的 ready 与副本日志分叉
+			// —— 副本仍认为这些消息在队列里，leader 却已把它们从就绪集里丢掉。
+			q.mu.Lock()
+			q.insertFrontLocked(dropped[i:])
+			q.mu.Unlock()
+			q.log.Warn("仲裁队列挤出队首失败，已回滚本地移除", "queue", q.name, "seq", head.seq, "err", err)
+			return false, nil, plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - %v", err)
 		}
 	}
 
@@ -588,9 +593,13 @@ func (q *queue) sweepQuorum(now time.Time) {
 	q.mu.Unlock()
 
 	for _, item := range expired {
-		// 配了死信就按队列配置转出去（死信路由由派发器异步完成），随后把确认写进日志。
+		// 与经典队列保持一致：死信必须带上 x-death 头，且要复制后再改
+		// （原消息可能仍被队列引用，就地改会污染它）。死信路由由派发器异步完成。
 		if q.arg().hasDeadLetter() {
-			q.deadLetter(item.msg, deathReasonExpired)
+			clone := *item.msg
+			clone.Properties.Headers = cloneHeaders(item.msg.Properties.Headers)
+			addDeathHeader(&clone, deathReasonExpired, q.name, time.Now())
+			q.deadLetter(&clone, deathReasonExpired)
 		}
 		g.proposeAck(item.seq)
 	}
@@ -738,6 +747,11 @@ const (
 	quorumReconfigTimeout = 60 * time.Second
 	// quorumTransferTimeout 是 leader 让位的上限。
 	quorumTransferTimeout = 10 * time.Second
+	// quorumTransferSettleTimeout 是"确认让位真正生效"的上限：高负载下目标可能竞选失败、
+	// 旧 leader 回弹，需要在这个窗口内轮询并重试让位。
+	quorumTransferSettleTimeout = 20 * time.Second
+	// quorumTransferRetryInterval 是确认让位生效时的轮询/重试间隔。
+	quorumTransferRetryInterval = 500 * time.Millisecond
 	// quorumVotersWait 是"等本地组看到新投票成员"的上限（尽力而为，超时只告警）。
 	quorumVotersWait = 3 * time.Second
 )
@@ -1260,11 +1274,33 @@ func (b *Broker) RebalanceQuorumQueue(ctx context.Context, vhost, name string) (
 	if err := q.quorum.transferTo(ctx, target); err != nil {
 		return RebalanceResult{}, mapQuorumOpErr(err)
 	}
-	res.Moved = true
-	res.To = target
-	b.log.Info("仲裁队列 leader 已再平衡", "vhost", vhost, "queue", name,
-		"from", res.From, "to", target, "leader_counts", counts)
-	return res, nil
+	// 确认让位真正生效后再回报 Moved。让位是异步的选举：高负载下目标可能因日志落后
+	// 拿不到多数票而竞选失败，旧 leader 又依据选举超时赢回（表现为 From → 无 leader → From）。
+	// 因此这里带超时轮询，一旦回弹就重试让位；始终迁不走则如实报告未迁移（而不是谎报 Moved）。
+	deadline := time.Now().Add(quorumTransferSettleTimeout)
+	for {
+		if cur := q.quorum.leaderNode(); cur != "" && cur != leader {
+			res.Moved = true
+			res.To = target
+			b.log.Info("仲裁队列 leader 已再平衡", "vhost", vhost, "queue", name,
+				"from", res.From, "to", target, "leader_counts", counts)
+			return res, nil
+		}
+		if !time.Now().Before(deadline) {
+			res.Reason = fmt.Sprintf("让位请求已发出，但 leader %s 在 %s 内未被让出（目标可能正在选主），请稍后重试",
+				leader, quorumTransferSettleTimeout)
+			return res, nil
+		}
+		select {
+		case <-ctx.Done():
+			return RebalanceResult{}, mapQuorumOpErr(ctx.Err())
+		case <-time.After(quorumTransferRetryInterval):
+		}
+		if err := q.quorum.transferTo(ctx, target); err != nil {
+			b.log.Warn("仲裁队列 leader 让位重试未成功（将继续等待）",
+				"vhost", vhost, "queue", name, "target", target, "err", err)
+		}
+	}
 }
 
 // quorumLeaderCounts 统计各节点当前承担多少条仲裁队列的 leader（本节点视角）。

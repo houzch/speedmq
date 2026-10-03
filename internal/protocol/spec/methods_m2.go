@@ -445,6 +445,22 @@ func EncodeBasicCancelOk(consumerTag string) ([]byte, error) {
 	return e.Bytes(), nil
 }
 
+// EncodeBasicCancel 构造 Basic.Cancel 的参数区（consumer-tag + no-wait 位）。
+//
+// 服务端主动取消（consumer_cancel_notify）走的是 Basic.Cancel，参数区**含一个 nowait 位**；
+// 若借用只有 shortstr 的 Cancel-Ok 编码器，客户端按规范会在读完 shortstr 后继续读一个 bit，
+// 字节耗尽即解码失败并断开连接。
+func EncodeBasicCancel(consumerTag string, noWait bool) ([]byte, error) {
+	e := codec.NewEncoder()
+	if err := e.ShortStr(consumerTag); err != nil {
+		return nil, err
+	}
+	w := codec.NewBitWriter(e)
+	w.Bit(noWait)
+	w.Flush()
+	return e.Bytes(), nil
+}
+
 // BasicPublish 是 Basic.Publish 的参数区。
 type BasicPublish struct {
 	Exchange   string

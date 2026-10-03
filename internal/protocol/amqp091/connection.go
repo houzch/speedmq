@@ -27,6 +27,8 @@ const (
 	writeBufferSize = 4096
 	// closeWaitTimeout 是发出 Connection.Close 后等待对端 Close-Ok 的最长时间。
 	closeWaitTimeout = 2 * time.Second
+	// handshakeTimeout 是握手阶段（读到 Connection.Open 之前）的读超时。
+	handshakeTimeout = 10 * time.Second
 )
 
 // connection 是一条 AMQP 0-9-1 连接的状态机。
@@ -99,6 +101,12 @@ func (c *connection) run(ctx context.Context) error {
 	c.fr = codec.NewFrameReader(c.r, c.frameMax)
 	c.fw = codec.NewFrameWriter(c.w)
 
+	// 握手阶段设读超时：否则客户端发完协议头就停住不发，会永久占住连接与 goroutine
+	// （slowloris）。握手完成即清除，之后由心跳与主循环兜底。
+	if err := c.conn.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
+
 	if err := c.handshakeProtocolHeader(); err != nil {
 		return err
 	}
@@ -109,6 +117,11 @@ func (c *connection) run(ctx context.Context) error {
 		return err
 	}
 	if err := c.handshakeOpen(); err != nil {
+		return err
+	}
+
+	// 握手完成：清除握手读超时（0 值表示不再自动超时）。
+	if err := c.conn.SetReadDeadline(time.Time{}); err != nil {
 		return err
 	}
 
@@ -264,8 +277,8 @@ func (c *connection) handshakeOpen() error {
 			m.ClassID, m.MethodID)
 	}
 	if !c.core.VHostExists(vhost) {
-		// 对齐 RabbitMQ：vhost 不存在是硬错误 402 INVALID_PATH，直接关闭连接
-		return c.failConnection(spec.InvalidPath,
+		// 对齐 RabbitMQ：vhost 不存在是硬错误 530 NOT_ALLOWED（reply-text 同样以 NOT_ALLOWED 开头）。
+		return c.failConnection(spec.NotAllowed,
 			fmt.Sprintf("NOT_ALLOWED - vhost %s not found", vhost), m.ClassID, m.MethodID)
 	}
 	sess, err := c.core.Session(vhost)
@@ -293,6 +306,11 @@ func (c *connection) loop(ctx context.Context) error {
 			case <-c.closed:
 				return nil
 			default:
+			}
+			// 帧超过协商的 frame-max、或帧结构非法：按 RabbitMQ 回 501 FRAME_ERROR，
+			// 让客户端拿到明确的关闭原因，而不是只看到连接被重置。
+			if errors.Is(err, codec.ErrFrameTooLarge) || errors.Is(err, codec.ErrFrameEnd) {
+				return c.failConnection(spec.FrameError, err.Error(), 0, 0)
 			}
 			return err
 		}
@@ -551,7 +569,9 @@ func (c *connection) handleContentHeader(f codec.Frame) error {
 		return ch.fail(plugin.Errorf(plugin.KindPreconditionFailed,
 			"PRECONDITION_FAILED - 内容头解析失败: %v", err), spec.ClassBasic, 0)
 	}
-	ch.setContentHeader(header)
+	if err := ch.setContentHeader(header); err != nil {
+		return ch.fail(err, spec.ClassBasic, spec.MethodBasicPublish)
+	}
 	return ch.maybeFinishContent()
 }
 

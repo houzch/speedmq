@@ -183,31 +183,33 @@ func (b *Broker) Connections() []ConnectionSnapshot {
 
 	out := make([]ConnectionSnapshot, 0, len(entries))
 	for _, e := range entries {
-		// 快照回调在锁外调用：它要读协议层状态（比如通道表），
-		// 持内核锁调用外部回调是死锁风险最大的写法。
-		info := plugin.ConnectionInfo{}
-		if e.probe != nil {
-			info = e.probe()
-		}
+		// 内核侧字段在锁内取出；probe 回调在锁外调用（持锁调用外部回调是死锁风险最大的写法）。
 		b.connsMu.RLock()
+		probe := e.probe
+		id, name, user, vhost, createdAt, remote := e.id, e.name, e.user, e.vhost, e.createdAt, e.remote
+		b.connsMu.RUnlock()
+
+		info := plugin.ConnectionInfo{}
+		if probe != nil {
+			info = probe()
+		}
 		snap := ConnectionSnapshot{
-			ID:               e.id,
-			Name:             e.name,
-			User:             e.user,
-			VHost:            e.vhost,
+			ID:               id,
+			Name:             name,
+			User:             user,
+			VHost:            vhost,
 			Protocol:         info.Protocol,
 			State:            "running",
 			Channels:         len(info.Channels),
-			ConnectedAt:      e.createdAt,
+			ConnectedAt:      createdAt,
 			FrameMax:         info.FrameMax,
 			HeartbeatSeconds: info.HeartbeatSeconds,
 			AuthMechanism:    info.AuthMechanism,
 			ClientProperties: info.ClientProperties,
 		}
-		if e.remote != nil {
-			snap.PeerHost, snap.PeerPort = splitAddr(e.remote)
+		if remote != nil {
+			snap.PeerHost, snap.PeerPort = splitAddr(remote)
 		}
-		b.connsMu.RUnlock()
 		out = append(out, snap)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -235,17 +237,21 @@ func (b *Broker) Channels() []ChannelSnapshot {
 
 	var out []ChannelSnapshot
 	for _, e := range entries {
-		if e.probe == nil {
+		b.connsMu.RLock()
+		probe := e.probe
+		eid, ename, euser, evhost := e.id, e.name, e.user, e.vhost
+		b.connsMu.RUnlock()
+		if probe == nil {
 			continue
 		}
-		info := e.probe()
+		info := probe()
 		for _, ch := range info.Channels {
 			out = append(out, ChannelSnapshot{
-				ConnectionID:   e.id,
-				ConnectionName: e.name,
+				ConnectionID:   eid,
+				ConnectionName: ename,
 				Number:         ch.Number,
-				User:           e.user,
-				VHost:          e.vhost,
+				User:           euser,
+				VHost:          evhost,
 				State:          "running",
 				ConsumerCount:  ch.ConsumerCount,
 				PrefetchCount:  ch.PrefetchCount,

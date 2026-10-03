@@ -3,6 +3,8 @@ package meta
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 )
 
@@ -110,11 +112,32 @@ func (f *fsm) Restore(data []byte) error {
 	return nil
 }
 
-// state 返回当前状态（只读视图，调用方不得修改其中的 map/slice）。
+// state 返回当前状态的一个**隔离快照**：容器（map/slice）都是新的，调用方可以安全地在锁外遍历。
+//
+// 必须复制容器：Apply 会在写锁内**原地**改写 f.st 里的 map，而 State() 的调用方
+// （内核、管理面）拿到返回值后会解锁再遍历 —— 若共享同一份底层 map，就会与 Apply
+// 并发读写，触发 Go 运行期的 fatal error（进程崩溃，无法 recover）。
 func (f *fsm) state() State {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	return f.st
+	return cloneState(f.st)
+}
+
+// cloneState 复制状态的容器，得到与状态机隔离的只读快照。
+//
+// 只复制容器、不深拷贝记录：applyToState 对记录一律"整体替换或删键"，
+// 从不原地改写已插入记录的内部字段，因此记录值一旦进入状态就等价于不可变，共享是安全的。
+func cloneState(st State) State {
+	st.VHosts = maps.Clone(st.VHosts)
+	st.Exchanges = maps.Clone(st.Exchanges)
+	st.Queues = maps.Clone(st.Queues)
+	st.Users = maps.Clone(st.Users)
+	st.Permissions = maps.Clone(st.Permissions)
+	st.Policies = maps.Clone(st.Policies)
+	st.Limits = maps.Clone(st.Limits)
+	st.FeatureFlags = maps.Clone(st.FeatureFlags)
+	st.Bindings = slices.Clone(st.Bindings)
+	return st
 }
 
 // appliedRecords 返回累计应用过的条目数。

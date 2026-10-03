@@ -236,7 +236,13 @@ func (d *Decoder) fieldValue() (any, error) {
 		}
 		return string(b), nil
 	case 'x': // byte array
-		return d.LongStr()
+		b, err := d.LongStr()
+		if err != nil {
+			return nil, err
+		}
+		// 必须复制：LongStr 返回的是解码缓冲的子切片，而该缓冲在下一次读帧时被复用，
+		// 直接返回会让调用方持有的字节在下一次 Read 之后被静默改写（头部数据损坏）。
+		return append([]byte(nil), b...), nil
 	case 'T': // timestamp（秒）
 		v, err := d.LongLong()
 		if err != nil {

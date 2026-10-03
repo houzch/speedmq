@@ -233,7 +233,11 @@ func (c *Client) Open(ctx context.Context, meta Open) (*Stream, error) {
 	c.nextStream++
 	meta.Stream = c.nextStream
 	wait := make(chan OpenAck, 1)
+	// 先创建并登记流，再通知绑定 / 写出 kindOpen：插件收到 Open 后可能**立刻**回数据帧，
+	// 若等 OpenAck 才登记，这些早期数据帧会因"流不存在"被静默丢弃（开流后的首帧丢失）。
+	s := newStream(c.fw, meta.Stream, c.forgetStream)
 	c.opens[meta.Stream] = wait
+	c.streams[meta.Stream] = s
 	c.mu.Unlock()
 
 	// 在写出 kindOpen 之前通知绑定：此刻插件还不知道这个流号，因此不会出现
@@ -245,15 +249,18 @@ func (c *Client) Open(ctx context.Context, meta Open) (*Stream, error) {
 	payload, err := json.Marshal(meta)
 	if err != nil {
 		c.dropOpen(meta.Stream)
+		c.forgetStream(s)
 		return nil, err
 	}
 	if err := c.fw.write(kindOpen, payload); err != nil {
 		c.dropOpen(meta.Stream)
+		c.forgetStream(s)
 		return nil, err
 	}
 	select {
 	case ack := <-wait:
 		if !ack.OK {
+			c.forgetStream(s)
 			reason := ack.Error
 			if reason == "" {
 				reason = "插件拒绝打开流"
@@ -262,16 +269,14 @@ func (c *Client) Open(ctx context.Context, meta Open) (*Stream, error) {
 		}
 	case <-ctx.Done():
 		c.dropOpen(meta.Stream)
+		c.forgetStream(s)
 		return nil, ctx.Err()
 	case <-c.done:
 		c.dropOpen(meta.Stream)
+		c.forgetStream(s)
 		return nil, c.closedErr()
 	}
 
-	s := newStream(c.fw, meta.Stream, c.forgetStream)
-	c.mu.Lock()
-	c.streams[meta.Stream] = s
-	c.mu.Unlock()
 	return s, nil
 }
 

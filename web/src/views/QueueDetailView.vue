@@ -149,7 +149,11 @@ function resetForms(): void {
   fetched.value = false
 }
 
+/** 请求序号：只接受最新一次加载的结果，避免切换队列/vhost 后旧响应覆盖新数据 */
+let loadSeq = 0
+
 async function load(): Promise<void> {
+  const seq = ++loadSeq
   loading.value = true
   try {
     const [queueData, bindingList, consumerList, exchangeList] = await Promise.all([
@@ -158,6 +162,7 @@ async function load(): Promise<void> {
       api.consumers(vhost.value),
       api.exchanges({ vhost: vhost.value }),
     ])
+    if (seq !== loadSeq) return // 已切到别的队列/vhost：丢弃迟到的旧响应
     queue.value = queueData
     bindings.value = bindingList
     consumers.value = consumerList.filter(
@@ -166,9 +171,10 @@ async function load(): Promise<void> {
     exchanges.value = exchangeList
     refresh.markRefreshed()
   } catch (error) {
+    if (seq !== loadSeq) return
     showError(error, t('queueDetail.loadFailed'))
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

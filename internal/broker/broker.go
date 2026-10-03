@@ -25,10 +25,10 @@ import (
 
 // Version 是内核版本，也是管理 UI、/api/overview 与 /metrics 上显示的版本号来源。
 //
-// 必须与发布 tag 一致（tag 去掉 `v`）：tag `v1.1.0` ↔ `Version = "1.1.0"`。
+// 必须与发布 tag 一致（tag 去掉 `v`）：tag `v1.1.01` ↔ `Version = "1.1.01"`。
 // release 工作流里有一步 verify-version 会做这个校验，不一致直接让发布失败 ——
 // 曾经发生过 tag 打到 1.0.3、而这里仍是 1.0.0 导致镜像"标签写着 1.0.3、跑起来报 1.0.0"的事故。
-const Version = "1.1.0"
+const Version = "1.1.01"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -427,16 +427,15 @@ func processMemory() uint64 {
 // subscribeNotifications 登记一个连接的通知通道；阻塞中接入的连接会立刻收到当前状态。
 func (b *Broker) subscribeNotifications() (int, chan plugin.Notification) {
 	ch := make(chan plugin.Notification, 4)
-	// 先读状态再登记，避免"登记后被广播漏掉"与"登记前状态变化"两种竞态同时成立
-	blocked := b.flow.isBlocked()
-
+	// 先登记订阅、再读当前状态：反过来会出现"读完状态(未阻塞) → 水位切到阻塞并广播 → 才登记"
+	// 的窗口，该连接就永远漏掉 Connection.Blocked。
 	b.subsMu.Lock()
 	b.subSeq++
 	id := b.subSeq
 	b.subs[id] = ch
 	b.subsMu.Unlock()
 
-	if blocked {
+	if b.flow.isBlocked() {
 		select {
 		case ch <- plugin.Notification{Blocked: true, Reason: "资源水位超限"}:
 		default:

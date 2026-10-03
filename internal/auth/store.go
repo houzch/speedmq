@@ -5,6 +5,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"sort"
@@ -200,7 +201,9 @@ func (s *Store) ApplyDeletePermission(user, vhost string) {
 func (s *Store) ReplaceUsers(users map[string]config.User) {
 	cp := make(map[string]config.User, len(users))
 	for k, v := range users {
-		cp[k] = v
+		// 逐条深拷贝：只复制外层 map 会让内层 Permissions/Tags/APIGroups 仍与调用方共享，
+		// 调用方随后修改它们会反向改动本表（与 copyUser 的既有约定一致）。
+		cp[k] = copyUser(v)
 	}
 	s.mu.Lock()
 	s.users = cp
@@ -282,7 +285,8 @@ func (s *Store) Verify(user, password string, remote net.Addr) (config.User, err
 	s.mu.RLock()
 	rec, ok := s.users[user]
 	s.mu.RUnlock()
-	if !ok || rec.Password != password {
+	// 口令用常量时间比较：`!=` 会提前返回差异字节，理论上可被计时侧信道逐字节猜测。
+	if !ok || subtle.ConstantTimeCompare([]byte(rec.Password), []byte(password)) != 1 {
 		return config.User{}, fmt.Errorf("用户名或密码错误")
 	}
 	// 被禁用的账号与口令错误返回同一句话：禁用的目的就是让对方连不上，
@@ -337,7 +341,9 @@ func (s *Store) Authenticate(mechanism string, response []byte, remote net.Addr)
 
 	rec, ok := s.users[user]
 	// 用户不存在、口令错误、账号被禁用一律返回同一个错误，避免泄露账号是否存在。
-	if !ok || rec.Password != pass || rec.Disabled {
+	// 口令比较用常量时间实现（同上）。
+	passOK := ok && subtle.ConstantTimeCompare([]byte(rec.Password), []byte(pass)) == 1
+	if !passOK || rec.Disabled {
 		return "", &plugin.AuthError{
 			Kind: plugin.AuthFailureAccessRefused,
 			Text: fmt.Sprintf("ACCESS_REFUSED - Login was refused using authentication mechanism %s. "+

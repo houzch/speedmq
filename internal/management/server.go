@@ -514,6 +514,25 @@ func decodeBody(r *http.Request, out any) error {
 //
 // 映射规则对齐 RabbitMQ 的可观察行为：权限 → 403、不存在 → 404、参数不符 → 400。
 func writeKernelError(w http.ResponseWriter, err error) {
+	// 优先按内核错误的**类型**分类。按错误文本子串判定会被用户可控的资源名污染
+	// （例如把队列命名为"不存在"会让 400 变成 404）。
+	var ke *sdk.Error
+	if errors.As(err, &ke) {
+		switch ke.Kind {
+		case sdk.KindAccessRefused:
+			writeError(w, http.StatusForbidden, "Access refused", err.Error())
+			return
+		case sdk.KindNotFound:
+			writeError(w, http.StatusNotFound, "Object Not Found", err.Error())
+			return
+		case sdk.KindNotImplemented:
+			writeError(w, http.StatusNotImplemented, "Not Implemented", err.Error())
+			return
+		case sdk.KindPreconditionFailed:
+			writeError(w, http.StatusBadRequest, "Precondition Failed", err.Error())
+			return
+		}
+	}
 	text := err.Error()
 	switch {
 	case strings.Contains(text, "ACCESS_REFUSED"), strings.Contains(text, "缺少管理面所需"):

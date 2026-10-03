@@ -18,15 +18,25 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/houzch/swiftmq/pkg/plugin"
 )
+
+// takeoverTimeout 是接管同 Client ID 旧连接时，等待其收尾（取消消费者、释放独占队列）的上限。
+const takeoverTimeout = 2 * time.Second
 
 // Plugin 同时实现 plugin.Plugin 与 plugin.Protocol。
 type Plugin struct {
 	log      *slog.Logger
 	opts     options
 	retained *retainedStore
+
+	// conns 记录"每个 Client ID 当前的连接"，用于同 ID 重连时接管旧连接：
+	// MQTT 3.1.1 [MQTT-3.1.4-2] 要求服务端在 Client ID 冲突时断开旧连接。
+	connsMu sync.Mutex
+	conns   map[string]*conn
 }
 
 var (
@@ -35,7 +45,41 @@ var (
 )
 
 // New 构造 MQTT 协议插件。
-func New() *Plugin { return &Plugin{retained: newRetainedStore(), opts: options{}.withDefaults()} }
+func New() *Plugin {
+	return &Plugin{retained: newRetainedStore(), opts: options{}.withDefaults(), conns: map[string]*conn{}}
+}
+
+// adopt 登记新连接；若存在同 Client ID 的旧连接，则接管关闭它并等待其收尾。
+func (p *Plugin) adopt(c *conn) {
+	p.connsMu.Lock()
+	old := p.conns[c.clientID]
+	p.conns[c.clientID] = c
+	p.connsMu.Unlock()
+
+	if old == nil || old == c {
+		return
+	}
+	c.log.Info("接管同 Client ID 的旧连接", "client_id", c.clientID)
+	_ = old.nc.Close()
+	// 等旧连接收尾完成再返回：它的消费者与独占订阅队列需要先释放，
+	// 否则新连接的 SUBSCRIBE 会撞上尚未释放的独占队列而失败。有上限地等待，不拖死新连接。
+	select {
+	case <-old.done:
+	case <-time.After(takeoverTimeout):
+		c.log.Warn("等待旧连接收尾超时", "client_id", c.clientID)
+	}
+}
+
+// release 在连接结束时注销自己。
+//
+// 只有当注册表仍指向自己时才删除：否则"被接管的旧连接"在收尾时会把刚上任的新连接抹掉。
+func (p *Plugin) release(c *conn) {
+	p.connsMu.Lock()
+	if p.conns[c.clientID] == c {
+		delete(p.conns, c.clientID)
+	}
+	p.connsMu.Unlock()
+}
 
 // Name 实现 plugin.Plugin 与 plugin.Protocol。
 func (p *Plugin) Name() string { return "mqtt" }
@@ -102,5 +146,5 @@ func (p *Plugin) Serve(ctx context.Context, conn net.Conn, core plugin.Core) err
 	if log == nil {
 		log = slog.Default()
 	}
-	return newConn(log, conn, core, p.opts, p.retained).run(ctx)
+	return newConn(log, conn, core, p.opts, p.retained, p).run(ctx)
 }

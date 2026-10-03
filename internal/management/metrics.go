@@ -77,7 +77,8 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 	sb.WriteString("# TYPE swiftmq_queue_messages_acked_total counter\n")
 
 	for _, q := range b.QueueSnapshots("") {
-		labels := fmt.Sprintf("{vhost=%q,queue=%q}", escapeLabel(q.VHost), escapeLabel(q.Name))
+		// 值先经 escapeLabel 转义，再手工加引号：不能叠加 %q（会二次转义，标签值多出反斜杠）。
+		labels := `{vhost="` + escapeLabel(q.VHost) + `",queue="` + escapeLabel(q.Name) + `"}`
 		fmt.Fprintf(&sb, "swiftmq_queue_messages_ready%s %d\n", labels, q.Ready)
 		fmt.Fprintf(&sb, "swiftmq_queue_messages_unacknowledged%s %d\n", labels, q.Unacked)
 		fmt.Fprintf(&sb, "swiftmq_queue_consumers%s %d\n", labels, q.ConsumerCount)
@@ -92,7 +93,7 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 	sb.WriteString("# HELP swiftmq_plugin_up 插件是否在服务（1=enabled，0=其它状态：disabled/failed/down）\n")
 	sb.WriteString("# TYPE swiftmq_plugin_up gauge\n")
 	for _, p := range s.deps.Plugins.Plugins() {
-		fmt.Fprintf(&sb, "swiftmq_plugin_info{name=%q,version=%q,api_version=%q,state=%q} 1\n",
+		fmt.Fprintf(&sb, "swiftmq_plugin_info{name=\"%s\",version=\"%s\",api_version=\"%s\",state=\"%s\"} 1\n",
 			escapeLabel(p.Name), escapeLabel(p.Version), escapeLabel(p.APIVersion), escapeLabel(string(p.State)))
 		// up 单独给一条：用 state 标签做告警要写 "!= enabled"，
 		// 而按惯例 `swiftmq_plugin_up == 0` 才是最好写、最不容易写错的形式。
@@ -100,7 +101,7 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 		if p.State == sdk.StateEnabled {
 			up = 1
 		}
-		fmt.Fprintf(&sb, "swiftmq_plugin_up{name=%q,state=%q} %d\n",
+		fmt.Fprintf(&sb, "swiftmq_plugin_up{name=\"%s\",state=\"%s\"} %d\n",
 			escapeLabel(p.Name), escapeLabel(string(p.State)), up)
 	}
 

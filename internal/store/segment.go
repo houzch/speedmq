@@ -182,6 +182,12 @@ func (s *QueueStore) compactIndex() error {
 	idxPath := indexPath(s.dir, "000001.idx")
 	tmpPath := indexPath(s.dir, "index.compact.tmp")
 
+	// 上一轮压缩若在写完 tmp、rename 之前崩溃，磁盘上会残留一份**合法**（CRC 通过）的 tmp。
+	// openLogFile 只截断无效尾部、不截断合法记录，append 会把上一轮的陈旧记录混进新索引，
+	// 让那些早已 ack 的消息在重启后"复活"。因此每轮压缩都必须从空文件重建 tmp。
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清理索引压缩临时文件失败: %w", err)
+	}
 	tmp, err := openLogFile(tmpPath)
 	if err != nil {
 		return err

@@ -983,7 +983,9 @@ func waitForDurable(waits []func() error) func() error {
 
 // cloneForQueue 为每个目标队列复制一份消息。
 //
-// Redelivered 等状态是队列级的，不能跨队列共享；消息体与属性是只读的，可以共享。
+// Redelivered 等状态是队列级的，不能跨队列共享；消息体与只读属性可以共享。
+// 注意：Headers 是 map（引用类型），多个副本会共享同一张表 —— 因此凡是要**改写头部**的
+// 地方（如死信写 x-death）必须先自行复制，见 deadLetterLocked / cloneHeaders。
 func cloneForQueue(msg *plugin.Message) *plugin.Message {
 	clone := *msg
 	clone.Redelivered = false

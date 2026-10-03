@@ -102,6 +102,10 @@ type conn struct {
 	br       *bufio.Reader
 	opts     options
 	retained *retainedStore
+	owner    *Plugin
+
+	// done 在连接完全收尾后关闭，供"接管同 Client ID"等待旧连接清理完毕。
+	done chan struct{}
 
 	// writeMu 串行化整帧写出。
 	writeMu sync.Mutex
@@ -130,7 +134,7 @@ type conn struct {
 	recvPackets uint64
 }
 
-func newConn(log *slog.Logger, nc net.Conn, core plugin.Core, opts options, retained *retainedStore) *conn {
+func newConn(log *slog.Logger, nc net.Conn, core plugin.Core, opts options, retained *retainedStore, owner *Plugin) *conn {
 	return &conn{
 		log:         log,
 		nc:          nc,
@@ -138,6 +142,8 @@ func newConn(log *slog.Logger, nc net.Conn, core plugin.Core, opts options, reta
 		br:          bufio.NewReaderSize(nc, 4096),
 		opts:        opts,
 		retained:    retained,
+		owner:       owner,
+		done:        make(chan struct{}),
 		queues:      map[byte]*qosQueue{},
 		byTag:       map[string]*qosQueue{},
 		filterQoS:   map[string]map[byte]struct{}{},
@@ -148,17 +154,34 @@ func newConn(log *slog.Logger, nc net.Conn, core plugin.Core, opts options, reta
 
 // run 是连接的生命周期：握手 → 读循环 → 收尾（遗嘱、取消订阅、清连接级资源）。
 func (c *conn) run(ctx context.Context) error {
+	defer close(c.done)
 	err := c.serve(ctx)
 	// 无论因为什么结束（含客户端主动 DISCONNECT），都必须走一遍收尾。
 	c.shutdown()
+	if c.owner != nil {
+		c.owner.release(c)
+	}
 	if errors.Is(err, errClientDisconnect) {
 		return nil
 	}
 	return err
 }
 
+// handshakeTimeout 是握手阶段（读到 CONNECT 之前）的读超时。
+//
+// 没有它，客户端连上却不发 CONNECT 就能长期占住连接与 goroutine（slowloris）；
+// 主循环里的 Keep Alive 截止时间在握手之后才生效，覆盖不到这段窗口。
+const handshakeTimeout = 10 * time.Second
+
 func (c *conn) serve(ctx context.Context) error {
+	if err := c.nc.SetReadDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+		return err
+	}
 	if err := c.handshake(ctx); err != nil {
+		return err
+	}
+	// 握手完成：清除握手读超时，改由 Keep Alive 截止时间管理。
+	if err := c.nc.SetReadDeadline(time.Time{}); err != nil {
 		return err
 	}
 	for {
@@ -258,6 +281,12 @@ func (c *conn) handshake(ctx context.Context) error {
 	c.user = ident.User
 	c.vhost = vhost
 	c.sess = sess
+
+	// 同 Client ID 接管（MQTT 3.1.1 [MQTT-3.1.4-2]）：登记本连接并断开同 ID 的旧连接。
+	// 必须在 CONNACK 之前完成，保证客户端看到"已接管"时旧连接已收尾。
+	if c.owner != nil {
+		c.owner.adopt(c)
+	}
 
 	// Session Present：只在"持久会话 + 该客户端的订阅队列已存在"时为真。
 	sessionPresent := false
