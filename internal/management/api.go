@@ -2505,7 +2505,7 @@ func (s *Server) getPlugins(w http.ResponseWriter, _ *http.Request, _ params, au
 	infos := s.deps.Plugins.Plugins()
 	out := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
-		out = append(out, pluginObject(info))
+		out = append(out, pluginObject(info, s.pluginConsoleURL(info.Name)))
 	}
 	writeJSON(w, http.StatusOK, emptyIfNil(out))
 }
@@ -2520,10 +2520,20 @@ func (s *Server) getPlugin(w http.ResponseWriter, _ *http.Request, p params, au 
 		writeError(w, http.StatusNotFound, "Object Not Found", fmt.Sprintf("未找到插件 %s", p["name"]))
 		return
 	}
-	writeJSON(w, http.StatusOK, pluginObject(info))
+	writeJSON(w, http.StatusOK, pluginObject(info, s.pluginConsoleURL(info.Name)))
 }
 
-func pluginObject(info sdk.Info) map[string]any {
+// pluginConsoleURL 返回插件自带管理界面的地址（未声明时为空串）。
+//
+// 插件运行时是**可选**实现该能力，因此这里用类型断言而不是把它并进 PluginController。
+func (s *Server) pluginConsoleURL(name string) string {
+	if r, ok := s.deps.Plugins.(PluginConsoleResolver); ok {
+		return r.ConsoleURL(name)
+	}
+	return ""
+}
+
+func pluginObject(info sdk.Info, consoleURL string) map[string]any {
 	return map[string]any{
 		"name":         info.Name,
 		"version":      info.Version,
@@ -2537,6 +2547,9 @@ func pluginObject(info sdk.Info) map[string]any {
 		// runtime_note 是插件自报运行期状态的原因（如外部进程插件 down 的原因）：
 		// 没有它，运维只能看到状态变成了 down，却不知道为什么。
 		"runtime_note": info.RuntimeNote,
+		// console_url 是插件自带管理界面的地址（部署方在配置里声明，非插件 API 的一部分）：
+		// 有它，管理后台的插件页就能直接跳到该插件的操作界面。
+		"console_url": consoleURL,
 	}
 }
 

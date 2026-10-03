@@ -90,6 +90,18 @@ func resolveListeners(p sdk.Protocol, overrides []config.Listener) ([]sdk.Listen
 }
 
 // StopListeners 关闭某插件名下的全部监听。
+//
+// 接入层是按**协议名**归属监听的（它不认识插件），而这里拿到的是**插件名**：
+// 内置协议插件的插件名与协议名恰好相同，但外部进程插件（sidecar）可以不同
+// （配置里 `plugins.<插件名>` 与 `protocols[].name` 是两回事）。
+// 因此必须先经注册中心把插件映射到它注册的协议，再逐个关闭 ——
+// 否则热停用只会把状态位置成 disabled，对外端口仍然开着。
 func (l *listenerController) StopListeners(pluginName string) error {
-	return l.server.StopPlugin(pluginName)
+	var firstErr error
+	for _, p := range l.registry.ProtocolsOf(pluginName) {
+		if err := l.server.StopPlugin(p.Name()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

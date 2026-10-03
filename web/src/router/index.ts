@@ -70,6 +70,11 @@ const routes: RouteRecordRaw[] = [
     name: 'deprecated-features',
     component: () => import('@/views/DeprecatedFeaturesView.vue'),
   },
+  {
+    path: '/plugins',
+    name: 'plugins',
+    component: () => import('@/views/PluginsView.vue'),
+  },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

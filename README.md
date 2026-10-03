@@ -157,6 +157,7 @@ swiftmq/
 ├── web/                 # 管理 UI 前端工程（Vue 3 + Vite），产物构建时经 go:embed 打进二进制
 ├── configs/             # 示例配置
 ├── docs/ops/            # 运维文档：备份恢复 / 升级 / 安全基线 / 监控
+├── docs/plugin-development.md  # 外部进程插件（sidecar）开发与接入指南
 ├── Dockerfile、docker-compose.yml
 └── swiftmq-logo.PNG、1280X1280.PNG（交流群二维码）
 ```
@@ -167,6 +168,7 @@ swiftmq/
 
 欢迎提交 Issue 与 Pull Request。本项目的立身之本是**协议兼容**，因此：
 
+- 扩展 SwiftMQ（外部进程插件 sidecar：新增协议 / 二次定制，不改内核）请先读 [外部进程插件开发指南](docs/plugin-development.md)；
 - 修 bug 请说明对应的 RabbitMQ 行为（版本、客户端、复现步骤）；
 - 涉及协议细节的改动，请附上与 RabbitMQ 的对照结果；
 - 提交前确保 `gofmt -l .`、`go build ./...`、`go vet ./...` 通过（本仓库不含测试代码）；测试代码与 `go test ./...` 在独立的测试项目 `swiftmq-test/` 中进行。

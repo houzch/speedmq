@@ -226,6 +226,20 @@ func DefaultStorage() Storage {
 // fullPermission 表示不受限的权限。
 var fullPermission = Permission{Configure: ".*", Write: ".*", Read: ".*"}
 
+// stripUTF8BOM 去掉开头的 UTF-8 字节顺序标记（BOM）；没有则原样返回。
+//
+// 为什么要做：Windows 上不少编辑器与脚本（例如 PowerShell 的 `Set-Content -Encoding UTF8`、
+// 部分版本的记事本）会写出**带 BOM** 的文件，而 encoding/json 不接受 BOM，只会报一句
+// `invalid character 'ï' looking for beginning of value` —— 这个报错对使用者毫无指向性，
+// 排查成本很高（该字节肉眼不可见）。BOM 只可能出现在文件开头，剥离它对正常文件无影响。
+func stripUTF8BOM(raw []byte) []byte {
+	const bomLen = 3
+	if len(raw) >= bomLen && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF {
+		return raw[bomLen:]
+	}
+	return raw
+}
+
 // Load 读取配置文件；path 为空时直接返回默认配置。
 func Load(path string) (*Config, error) {
 	cfg := Default()
@@ -234,7 +248,7 @@ func Load(path string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取配置文件失败: %w", err)
 		}
-		if err := json.Unmarshal(raw, cfg); err != nil {
+		if err := json.Unmarshal(stripUTF8BOM(raw), cfg); err != nil {
 			return nil, fmt.Errorf("解析配置文件失败: %w", err)
 		}
 	}

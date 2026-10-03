@@ -469,3 +469,24 @@ export interface DeprecatedFeature {
   doc_url: string
   provided_by: string
 }
+
+/** 插件对象（GET /api/plugins） */
+export interface Plugin {
+  name: string
+  version: string
+  /** 插件依赖的插件 API 版本 */
+  api_version: string
+  /** enabled / disabled / failed / down / stopped */
+  state: string
+  /** 启动失败会阻塞内核启动（仅官方核心插件） */
+  required: boolean
+  /** 随内核编译进来；false 表示外部进程（sidecar）插件 */
+  builtin: boolean
+  capabilities: string[]
+  dependencies: string[]
+  description: string
+  /** 插件自报的运行期状态原因（如外部进程插件 down 的原因）；可为空 */
+  runtime_note: string
+  /** 插件自带管理界面的地址；为空表示没有可跳转的操作界面 */
+  console_url: string
+}

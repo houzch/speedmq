@@ -2,10 +2,12 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/houzch/swiftmq/internal/config"
@@ -307,6 +309,28 @@ func (m *Manager) Plugin(name string) (sdk.Info, bool) {
 		return sdk.Info{}, false
 	}
 	return m.infoLocked(name), true
+}
+
+// ConsoleURL 返回插件在配置里声明的**管理界面地址**（`plugins.<名>.console_url`）。
+//
+// 它只是"给管理后台一个跳转入口"：插件自带操作界面时（无论内置还是外部进程），
+// 运维就能从插件管理页直接跳过去；未声明返回空串。
+//
+// 为什么不放进 sdk.Info：那是插件的对外契约（pkg/plugin），而 console_url 属于
+// **部署方写在配置里的元数据**，与插件自身的实现无关，因此留在内核侧的配置读取层。
+func (m *Manager) ConsoleURL(name string) string {
+	raw := m.cfg.PluginConfig(name)
+	if len(raw) == 0 {
+		return ""
+	}
+	var probe struct {
+		ConsoleURL string `json:"console_url"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		// 段内其它字段非法不该影响这一项：按"未声明"处理。
+		return ""
+	}
+	return strings.TrimSpace(probe.ConsoleURL)
 }
 
 func (m *Manager) infoLocked(name string) sdk.Info {

@@ -17,6 +17,7 @@ import type {
   NodeInfo,
   Overview,
   Permission,
+  Plugin,
   Policy,
   PolicyRequest,
   PublishRequest,
@@ -206,4 +207,14 @@ export const api = {
   /** 弃用特性是只读清单：RabbitMQ 4.x 上没有 enable/disable 接口 */
   deprecatedFeatures: (): Promise<DeprecatedFeature[]> =>
     request<DeprecatedFeature[]>('GET', '/api/deprecated-features'),
+
+  // ---- 插件 ----
+  plugins: (): Promise<Plugin[]> => request<Plugin[]>('GET', '/api/plugins'),
+  plugin: (name: string): Promise<Plugin> => request<Plugin>('GET', `/api/plugins/${encodePath(name)}`),
+  /** 热启用插件（恢复其对外监听） */
+  enablePlugin: (name: string): Promise<void> =>
+    request<void>('PUT', `/api/plugins/${encodePath(name)}/enable`),
+  /** 热停用插件（关闭其对外监听） */
+  disablePlugin: (name: string): Promise<void> =>
+    request<void>('PUT', `/api/plugins/${encodePath(name)}/disable`),
 }

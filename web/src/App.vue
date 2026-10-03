@@ -4,7 +4,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowDown, Connection, Files, Grid, Histogram, Odometer, Postcard, SetUp, Share, SwitchButton, User, Warning } from '@element-plus/icons-vue'
+import { ArrowDown, Box, Connection, Files, Grid, Histogram, Odometer, Postcard, SetUp, Share, SwitchButton, User, Warning } from '@element-plus/icons-vue'
 import LoginDialog from '@/components/LoginDialog.vue'
 import ForcePasswordDialog from '@/components/ForcePasswordDialog.vue'
 import ChangePasswordDialog from '@/components/ChangePasswordDialog.vue'
@@ -63,6 +63,7 @@ const menuItems = computed<{ index: string; label: string; icon: Component; grou
   { index: 'feature-flags', label: t('menu.featureFlags'), icon: SwitchButton, group: 'feature_flags' },
   { index: 'deprecated-features', label: t('menu.deprecatedFeatures'), icon: Warning, group: 'feature_flags' },
   { index: 'cluster', label: t('menu.cluster'), icon: Grid, group: 'cluster' },
+  { index: 'plugins', label: t('menu.plugins'), icon: Box, group: 'plugins' },
 ])
 
 /** 路由名 → 所属功能组（详情页归到其列表页的功能组） */
@@ -80,6 +81,7 @@ const ROUTE_GROUPS: Record<string, string> = {
   limits: 'limits',
   'feature-flags': 'feature_flags',
   'deprecated-features': 'feature_flags',
+  plugins: 'plugins',
 }
 
 /** 当前路由所属的功能组；未知路由返回 null（不参与权限收窄） */

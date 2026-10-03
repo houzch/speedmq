@@ -40,6 +40,15 @@ type PluginController interface {
 	Disable(name string) error
 }
 
+// PluginConsoleResolver 由插件运行时**可选**实现：返回某插件自带管理界面的地址。
+//
+// 用独立的可选接口 + 类型断言扩展，而不是往 PluginController 上加方法：
+// 后者会强制所有实现方（含测试替身）跟着改，而"插件是否带管理界面"只是附加信息。
+type PluginConsoleResolver interface {
+	// ConsoleURL 返回插件声明的管理界面地址；未声明返回空串。
+	ConsoleURL(name string) string
+}
+
 // Deps 是管理面的依赖集合。
 type Deps struct {
 	// Addr 是监听地址，如 ":15672"。
