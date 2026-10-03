@@ -1,5 +1,7 @@
 # SwiftMQ 外部进程插件开发指南 —— Java
 
+> 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
+
 > **面向**：用 Java 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md)（心智模型 / 配置字段 / 线协议总表）。
 > **示例工程**：工作区 `swiftmq-plugin/java/SidecarPlugin.java`（单文件、仅 JDK 标准库，无需 Maven/Gradle）。
@@ -26,7 +28,9 @@
 
 ### 第一步：配置
 
-```jsonc
+`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
+
+```json
 {
   "plugins": {
     "java-sidecar": {

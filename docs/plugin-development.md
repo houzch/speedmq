@@ -1,5 +1,7 @@
 # SwiftMQ 外部进程插件（sidecar）开发指南
 
+> 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
+
 > **面向**：不想 fork / 重编内核，希望用**任意语言**给 SwiftMQ 扩展能力的开发者。
 > **范围**：本文只讲一种插件形态 —— **外部进程插件**（内核术语 `sidecar`）。内核内置协议插件（AMQP 0-9-1 / MQTT）不在本文范围。
 > **读法**：第 1–2 节建立心智模型，第 3 节写代码，**第 5 节是"开发完怎么接进来一起跑、对外提供服务"**；
@@ -447,7 +449,10 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 | 9 | Data | 双向 | `u32 BE stream` + 原始字节 |
 | 10 | Close | 双向 | JSON `Close` |
 
-**控制面 JSON 结构**（字段名与 `proto.go` 一致）：
+**控制面 JSON 结构**（字段名与 `proto.go` 一致）。
+
+> 这一段是**线协议报文示例**（同一块里按顺序给出多个报文，故用 `//` 分隔说明），
+> **不是能直接写进 `swiftmqd.json` 的配置**。
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -484,28 +489,28 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.1 在配置里声明插件
 
-外部插件**完全由配置托管**，内核不需要为它改任何代码。在 `swiftmqd.json` 的 `plugins` 段加一项：
+外部插件**完全由配置托管**，内核不需要为它改任何代码。在 `swiftmqd.json` 的 `plugins` 段加一项
+（**实际配置是标准 JSON，不能带注释**）：
 
-```jsonc
+```json
 {
   "listeners": {
-    // 可选：按“协议名”覆盖对外监听地址（见 §5.4）
     "myproto": [{ "addr": ":19002" }]
   },
   "plugins": {
-    "my-sidecar": {                     // ← 插件名：必须与插件自报的 HelloAck.name 一致
-      "builtin": false,                 // 外部插件：显式声明 false（否则管理面会当内置展示）
-      "enabled": true,                  // 关掉它 = 不拉进程、不建监听
-      "required": false,                // true 则启动失败会阻塞内核启动（外部插件不要开）
+    "my-sidecar": {
+      "builtin": false,
+      "enabled": true,
+      "required": false,
       "sidecar": {
-        "address": "tcp://127.0.0.1:19001",  // 内核去连的地址（内核是客户端）
+        "address": "tcp://127.0.0.1:19001",
         "spawn": ["/usr/local/bin/my-sidecar", "-addr", "tcp://127.0.0.1:19001"],
         "restart": "always",
         "protocols": [
           {
-            "name": "myproto",          // 协议名：参与嗅探优先级；也是 listeners 覆盖的键
-            "prefix": "",               // 空 = 不参与嗅探，只在专属端口服务
-            "listeners": [{ "name": "myproto", "addr": ":19002" }]  // 对外端口，由内核打开
+            "name": "myproto",
+            "prefix": "MP",
+            "listeners": [{ "name": "myproto", "addr": ":19002" }]
           }
         ]
       }
@@ -513,6 +518,16 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
   }
 }
 ```
+
+逐项说明（字段清单见下表）：
+
+- `plugins.<插件名>` 的键名**必须与插件自报的 `HelloAck.name` 一致**，否则握手被拒。
+- `builtin: false`：外部插件显式声明（不写会被管理面当内置展示）。
+- `enabled`：关掉它 = 不拉进程、不建监听。
+- `required: true` 时启动失败会阻塞内核启动 —— 外部插件不要开。
+- `address` 是**内核去连的地址**（内核是客户端）；`spawn` 非空时由内核代为拉起进程。
+- `protocols[].prefix` **必须非空**（嗅探规则见 §5.3）。
+- `listeners` 是该协议的**对外端口，由内核打开**（客户端连的是内核）。
 
 字段一览：
 
@@ -564,12 +579,13 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 - 对外监听地址可在**两处**给：`sidecar.protocols[].listeners[].addr`（默认）与
   `listeners.<协议名>`（按协议名整体覆盖）。二者同时存在时以 `listeners.<协议名>` 为准。
-- 需要 TLS 时，在 `listeners.<协议名>[i].tls` 里给证书（字段与内置协议一致）：
+- 需要 TLS 时，在 `listeners.<协议名>[i].tls` 里给证书（字段与内置协议一致）。
+  下面是一个 `listeners` 片段（**标准 JSON，不能带注释**）：第 1 项明文，第 2 项走 TLS。
 
-```jsonc
+```json
 "listeners": {
   "myproto": [
-    { "addr": ":19002" },                                   // 明文
+    { "addr": ":19002" },
     { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
                                  "key_file":  "/etc/swiftmq/tls/key.pem" } }
   ]
@@ -607,13 +623,14 @@ services:
       - "19002:19002"      # ← 你的协议对外端口（由内核监听）
 ```
 
-配置用 unix socket（避免额外占端口）：
+配置用 unix socket（避免额外占端口）。下面是 `plugins.my-sidecar` 里的 `sidecar` 片段
+（**标准 JSON，不能带注释**；`prefix` 仍要非空，见 §5.3）：
 
-```jsonc
+```json
 "sidecar": {
   "address": "unix:///tmp/my-sidecar.sock",
   "spawn": ["/usr/local/bin/my-sidecar", "-addr", "unix:///tmp/my-sidecar.sock"],
-  "protocols": [{ "name": "myproto", "prefix": "", "listeners": [{ "name": "myproto", "addr": ":19002" }] }]
+  "protocols": [{ "name": "myproto", "prefix": "MP", "listeners": [{ "name": "myproto", "addr": ":19002" }] }]
 }
 ```
 
@@ -668,15 +685,16 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 ### 5.8 在管理后台提供入口（可选）
 
-插件自带操作界面时，在 `plugins.<插件名>` 段里加一个 `console_url`（管理界面地址，其余字段见 §5.1）：
+插件自带操作界面时，在 `plugins.<插件名>` 段里加一个 `console_url`（管理界面地址，其余字段见 §5.1）。
+下面只画出 `plugins.my-sidecar` 这一项（**标准 JSON，不能带注释**；`sidecar` 段内容同 §5.1）：
 
-```jsonc
+```json
 "plugins": {
   "my-sidecar": {
     "builtin": false,
     "enabled": true,
-    "console_url": "http://127.0.0.1:19003/",   // ← 管理后台「插件管理」页据此提供直达入口
-    "sidecar": { /* 同 §5.1 */ }
+    "console_url": "http://127.0.0.1:19003/",
+    "sidecar": { }
   }
 }
 ```

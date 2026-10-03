@@ -1,5 +1,7 @@
 # SwiftMQ 外部进程插件开发指南 —— Python
 
+> 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
+
 > **面向**：用 Python 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md) —— 那里讲了心智模型、配置字段与线协议总表；
 > 本文只讲 **Python 怎么落地**，以及本机实测过的步骤与结果。
@@ -31,19 +33,19 @@
 
 ### 第一步：在配置里声明插件
 
-`swiftmqd.json`：
+`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
 
-```jsonc
+```json
 {
   "plugins": {
     "py-sidecar": {
       "builtin": false,
       "enabled": true,
       "sidecar": {
-        "address": "tcp://127.0.0.1:19001",          // 内核去连你的地址
+        "address": "tcp://127.0.0.1:19001",
         "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
-          { "name": "pyecho", "prefix": "PY",        // 非空前缀：客户端首字节须以此开头
+          { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
         ]
       }
@@ -52,8 +54,11 @@
 }
 ```
 
+- `address` 是**内核去连你的地址**（内核是客户端，插件是服务端）。
 - `spawn` 留空 = 内核只连不拉，进程由你自己管（systemd / supervisor / compose）。
-- 跨容器部署时 `address` 用**服务名**（如 `tcp://py-sidecar:19001`），且监听 `0.0.0.0`。
+- `prefix` **必须非空**：客户端发来的首字节须以此开头（内核按前缀嗅探决定连接交给谁）。
+- `listeners` 是对外端口，由内核打开（客户端连的是内核，不是你）。
+- 跨容器部署时 `address` 用**服务名**（如 `tcp://py-sidecar:19001`），且插件要监听 `0.0.0.0`。
 
 ### 第二步：启动
 
