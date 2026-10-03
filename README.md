@@ -169,7 +169,7 @@ swiftmq/
 
 - 修 bug 请说明对应的 RabbitMQ 行为（版本、客户端、复现步骤）；
 - 涉及协议细节的改动，请附上与 RabbitMQ 的对照结果；
-- 提交前确保 `go build ./...`、`go vet ./...`、`go test ./...`、`gofmt -l .` 均通过。
+- 提交前确保 `gofmt -l .`、`go build ./...`、`go vet ./...` 通过（本仓库不含测试代码）；测试代码与 `go test ./...` 在独立的测试项目 `swiftmq-test/` 中进行。
 
 ***
 

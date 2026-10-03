@@ -1,8 +1,12 @@
-# 持续集成：push 到 master 或提 PR 时，在三个支持平台上跑格式化检查、vet 与单测。
+# 持续集成：push 到 master 或提 PR 时，在三个支持平台上跑格式化检查、vet 与编译。
+#
+# 为什么不在这里跑测试：本仓库**不存放测试代码** —— 内核单测与真实客户端探针
+# 全部放在独立的测试项目 swiftmq-test/ 下（见 AGENTS.md §10.1）。
+# 因此本仓库 CI 只保证内核自身“格式干净、静态检查通过、三平台都能编译”。
 #
 # 为什么要跨平台跑：项目承诺支持 Linux / Windows / macOS，其中平台相关代码
 # （internal/store/sysinfo_*.go、internal/config/timezone_*.go）只在各自平台上才会被编译到，
-# 只在 Linux 上跑测试是守不住这些分支的。
+# 只在 Linux 上构建是守不住这些分支的。
 #
 # 发布流程见 release.yml。
 name: CI
@@ -49,5 +53,6 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      - name: go test
-        run: go test -count=1 ./...
+      # 本仓库无测试代码（测试在 swiftmq-test/），这里只保证三平台都能编译内核
+      - name: go build
+        run: go build ./...
