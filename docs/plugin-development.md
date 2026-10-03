@@ -2,7 +2,8 @@
 
 > **面向**：不想 fork / 重编内核，希望用**任意语言**给 SwiftMQ 扩展能力的开发者。
 > **范围**：本文只讲一种插件形态 —— **外部进程插件**（内核术语 `sidecar`）。内核内置协议插件（AMQP 0-9-1 / MQTT）不在本文范围。
-> **读法**：第 1–2 节建立心智模型，第 3 节写代码，**第 5 节是"开发完怎么接进来一起跑、对外提供服务"**。
+> **读法**：第 1–2 节建立心智模型，第 3 节写代码，**第 5 节是"开发完怎么接进来一起跑、对外提供服务"**；
+> **用其它语言（Python / Node.js / PHP / Java）请看 §4 的分语言指南**（各带一个实测跑通的完整示例工程）。
 > 文中代码是最小可运行骨架，可直接复制为起点。简体中文为源语言。
 
 ---
@@ -265,13 +266,23 @@ func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
 	}
 	streamID := stream.ID()
 
-	// 1) 打开会话（内核会做与内置协议插件相同的权限校验）
+	// 1) 认证：连接的内核操作面在认证前没有身份，会话一定打不开。
+	//    response 就是你自己协议里的凭据（这里以 SASL PLAIN 为例）。
+	plain := append([]byte("\x00guest\x00"), []byte("guest")...)
+	var ident sidecar.AuthIdentityDTO
+	if err := br.Call(ctx, sidecar.MethodCoreAuthenticate, sidecar.CoreAuthenticateParams{
+		Stream: streamID, Mechanism: "PLAIN", Response: plain,
+	}, &ident); err != nil {
+		return err
+	}
+
+	// 2) 打开会话（内核会做与内置协议插件相同的权限校验）
 	if err := br.Call(ctx, sidecar.MethodSessionOpen,
 		sidecar.SessionOpenParams{Stream: streamID, VHost: "/"}, nil); err != nil {
 		return err
 	}
 
-	// 2) 声明一个临时队列
+	// 3) 声明一个临时队列
 	var q sidecar.QueueInfoResult
 	if err := br.Call(ctx, sidecar.MethodSessionDeclareQueue, sidecar.QueueDeclareParams{
 		Stream: streamID, Exclusive: true, AutoDelete: true,
@@ -279,7 +290,7 @@ func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
 		return err
 	}
 
-	// 3) 发布一条消息（持久化等待在内核应答前已完成：调用返回即已按 fsync 档位落盘）
+	// 4) 发布一条消息（持久化等待在内核应答前已完成：调用返回即已按 fsync 档位落盘）
 	if err := br.Call(ctx, sidecar.MethodSessionPublish, sidecar.PublishParams{
 		Stream: streamID, RoutingKey: q.Name,
 		Message: sidecar.MessageDTO{Body: []byte("hello")},
@@ -287,7 +298,7 @@ func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
 		return err
 	}
 
-	// 4) 注册消费者；投递随后以正向调用 session.deliver 到达 Handler.Call
+	// 5) 注册消费者；投递随后以正向调用 session.deliver 到达 Handler.Call
 	var c sidecar.ConsumeResult
 	return br.Call(ctx, sidecar.MethodSessionConsume, sidecar.ConsumeParams{
 		Stream: streamID, Queue: q.Name, Prefetch: 32,
@@ -316,7 +327,8 @@ func (h *handler) handleDeliver(ctx context.Context, params json.RawMessage) (an
 
 | 分组 | 线名字（常量） | 说明 |
 | --- | --- | --- |
-| 会话 | `session.open`（`MethodSessionOpen`） | 在流上打开某 vhost 的会话；**必须先做** |
+| 认证 | `core.authenticate`（`MethodCoreAuthenticate`） | **必须先做**：把协议里的凭据交给内核校验；参数 `{stream, mechanism, response}`，返回 `{user}` |
+| 会话 | `session.open`（`MethodSessionOpen`） | 在流上打开某 vhost 的会话；**认证之后**才能做 |
 | | `session.close`（`MethodSessionClose`） | 释放该流上的会话（取消消费者、删独占队列） |
 | 交换机 | `session.declare_exchange` / `session.delete_exchange` | 增删（被动声明不存在 → `KindNotFound`） |
 | | `session.bind_exchange` / `session.unbind_exchange` | 交换机到交换机的绑定 |
@@ -329,12 +341,15 @@ func (h *handler) handleDeliver(ctx context.Context, params json.RawMessage) (an
 | 结算 | `session.settle` | 结算一条投递（`ack` / `requeue` / `reject`） |
 | **正向** | `session.deliver` | **内核 → 插件**：投递回推（在你的 `Handler.Call` 里处理） |
 
-**必须遵守的三条约定**：
+**必须遵守的四条约定**：
 
-1. **先 `session.open`**：未开会话就调其他方法，内核返回 `KindPreconditionFailed`（"流 N 尚未打开会话"）。
-2. **每条投递恰好结算一次**：`Ack` / `Requeue` / `Reject` 三选一。
+1. **先 `core.authenticate`**：连接的内核操作面在认证前没有身份，
+   此时 `session.open` 会被拒（`ACCESS_REFUSED - access to vhost '/' refused for user ''`）。
+   插件负责从自己的协议里取凭据；认证逻辑与用户表仍在内核，插件不接触口令库。
+2. **再 `session.open`**：未开会话就调其他方法，内核返回 `KindPreconditionFailed`（"流 N 尚未打开会话"）。
+3. **每条投递恰好结算一次**：`Ack` / `Requeue` / `Reject` 三选一。
    `Ack` 与 `Reject` 都丢弃消息，**只有 `Reject` 走死信**。
-3. **未结算的投递不会丢**：流结束（客户端断开 / `Handler.Open` 返回）或插件连接断开时，
+4. **未结算的投递不会丢**：流结束（客户端断开 / `Handler.Open` 返回）或插件连接断开时，
    内核把所有未结算投递**按"回队"处理**，避免消息滞留。
 
 **错误还原**：内核的 `*plugin.Error` 经桥以 `*sidecar.RPCError`（字段 `Kind` / `Text`）到达，
@@ -394,6 +409,18 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 `pkg/sidecar` 是零依赖的对外契约；线协议本身很简单，任何语言都能实现。
 要对接，你需要实现下面这些"字节级"约定（源码见 `pkg/sidecar/frame.go`、`proto.go`）。
+
+> **已提供带完整示例工程的分语言指南**（示例都实测跑通过握手 → 认证 → 语义桥 → 投递/结算 → 字节流）：
+>
+> | 语言 | 指南 | 示例工程（工作区 `swiftmq-plugin/`） |
+> | --- | --- | --- |
+> | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py`（仅标准库） |
+> | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js`（仅标准库） |
+> | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php`（仅标准库） |
+> | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java`（单文件，仅 JDK） |
+>
+> Go 的完整参考实现见独立测试工程 `swiftmq-test/test/integration/echosidecar/`（它直接用 `pkg/sidecar.Server`，
+> 无需关心下面的字节层细节）。
 
 **帧格式**（所有帧统一）：
 
@@ -519,15 +546,19 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 > 方向别搞反：**插件监听的地址** = `address`；**对外开放给客户端的端口** = `protocols[].listeners`。
 
-### 5.3 对外提供服务：两种被识别方式
+### 5.3 对外提供服务：靠 `prefix` 被识别
 
-内核为每个 `protocols[]` 项建立服务入口，有两种识别方式：
+接入层分发连接时**只看嗅探结果**：它对每个已启用协议按注册顺序问 `Sniff(peek)`（peek 最多 8 字节），
+命中者接管这条连接。因此：
 
-1. **专属端口**（`prefix` 为空）：只在你声明的 `listeners[].addr` 上服务，来者即你的协议。
-   适合"新协议有自己的端口"（本例 `:19002`）。
-2. **参与嗅探**（`prefix` 非空）：内核在**所有协议共享的监听**上读前几个字节，
-   命中前缀就交给你的插件。适合"与别的协议同端口共存"。
-   嗅探按协议注册顺序匹配，**先匹配者生效**；前缀是 ASCII，最长按 8 字节匹配。
+1. **`prefix` 必须非空**（ASCII，≤ 8 字节）。客户端发来的前几个字节等于它，连接才会交给你的插件。
+   例：`"prefix": "PY"` → 客户端首字节须是 `PY`（可以把前缀当作你协议的魔法头）。
+2. **`prefix` 为空表示不参与嗅探**：这类连接**不会**被交给插件（实测：监听端口上的连接会被立刻断开）。
+   因此空 `prefix` 只适合"另有协议会在同端口上帮你转发"的场景，**不要**用它来做专属端口。
+3. `listeners[].addr` 决定"在哪个端口上对外开放"，`prefix` 决定"这条连接算不算你的"——
+   两者要配套使用：**专属端口也要给一个非空 `prefix`**（这也是内核示例配置里
+   `echo-sidecar` 同时写 `prefix: "ECHO"` 与 `listeners: [":1885"]` 的原因）。
+4. 嗅探按协议注册顺序匹配，**先匹配者生效**：多个插件共存时，前缀要有区分度（例如都以同一字节开头会互相遮挡）。
 
 ### 5.4 覆盖监听地址与 TLS
 
@@ -678,16 +709,20 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 1. 插件只允许依赖 `pkg/sidecar`（以及可选的 `pkg/plugin`）；**不得**依赖内核 `internal/**`。
 2. 插件名必须与配置一致、`APIVersion` 必须与内核一致，否则无法接入（这是防"静默跑着不生效"）。
-3. 用 `session.*` 时：**先 `session.open`**，每条投递**恰好结算一次**。
-4. `Hello` 里拒绝要**明确回 error**（不要静默）——否则内核只能看到"连接被关闭"，定位不到原因。
+3. 用 `session.*` 时：**先 `core.authenticate`、再 `session.open`**，每条投递**恰好结算一次**。
+4. `protocols[].prefix` 必须非空，否则连接不会被交给插件（见 §5.3）。
+5. `Hello` 里拒绝要**明确回 error**（不要静默）——否则内核只能看到"连接被关闭"，定位不到原因。
 
 **已知边界**
 
-- **嗅探在内核侧**：外部插件不能自定义嗅探函数，只能按 `prefix`（最长 8 字节）或专属端口被识别。
+- **嗅探在内核侧**：外部插件不能自定义嗅探函数，只能靠 `prefix`（ASCII，≤ 8 字节）匹配；
+  `prefix` 为空即"拿不到连接"（见 §5.3）。
 - **数据面走本机代理**：无 fd 传递（Windows 无 `SCM_RIGHTS`），比进程内多一次内存拷贝；
   反向调用每次也多一次本机 RPC。
 - **属性表类型会退化**：`Properties.Headers` 经 JSON 中转，`int32` / `double` 之类区分丢失（见 §3.4）。
 - **单流背压影响整条连接**：一条流的接收缓冲满时会阻塞该连接的分发协程；按流限速属后续优化。
+- **认证失败只透传文本**：内核认证失败是 `*plugin.AuthError`（与 `plugin.ErrorKind` 不是同一套分类），
+  经桥到达插件时只有文本，插件需按自己的约定映射成协议错误码。
 - **只有 `net.listen` 能力真正生效**：`store.read/write`、`http.route`、`cluster.metadata.write`、
   `auth.verify` 是**预留位**，声明后仅参与审计（见 §5.6 的治理展示），当前没有对应扩展点。
 
@@ -703,9 +738,11 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 状态 `failed`，原因含"连接外部插件失败" | 进程没起来 / `address` 写错 / socket 路径不可写（容器里注意 `swiftmq` 用户权限） |
 | 状态 `down` | 插件进程崩了或连接断了；`restart=always` 会自动重连，`never` 需人工拉起 |
 | 端口没开 / 客户端连不上 | `protocols[].listeners` 没配或地址被 `listeners.<协议名>` 覆盖掉了；核对两处 |
-| 客户端连上别的端口后立刻断开 | 该端口不匹配你的协议，且 `prefix` 为空（不参与嗅探）；给该端口配 `listeners`，或配 `prefix` |
-| 反向调用报"流 N 尚未打开会话" | 先 `session.open` 再调其他 `session.*` |
+| 客户端连上别的端口后立刻断开 | 该端口不匹配你的协议（`prefix` 为空或前缀不符）；给协议配一个非空 `prefix`（见 §5.3） |
+| 报 `ACCESS_REFUSED - ... for user ''` | 语义桥前**没有认证**；先调 `core.authenticate` 再 `session.open` |
+| 反向调用报"流 N 尚未打开会话" | 先 `core.authenticate`、再 `session.open`，然后才能调其他 `session.*` |
 | 收不到消费投递 | 投递以**正向调用** `session.deliver` 到达你的 `Call`；确认已处理该方法 |
+| 插件在容器外、内核在容器内，连不上 | `address` 用 `tcp://host.docker.internal:<port>`（或把插件也放进容器、用服务名）；插件需监听 `0.0.0.0` |
 
 ---
 
@@ -721,4 +758,5 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 插件生命周期与治理（隔离/状态/审计） | [`internal/plugin/manager.go`](../internal/plugin/manager.go)、[`registry.go`](../internal/plugin/registry.go) |
 | 配置项与示例（含 sidecar 段） | [`internal/config/config.go`](../internal/config/config.go)、[`configs/swiftmqd.json`](../configs/swiftmqd.json) |
 | 进程装配（sidecar 如何被装配进内核） | [`cmd/swiftmqd/main.go`](../cmd/swiftmqd/main.go) |
-| 参考实现（完整可读的示例插件） | 独立测试工程 `swiftmq-test/test/integration/echosidecar/`（含 `session.*` 桥的封装示例） |
+| Go 参考实现（用 `pkg/sidecar.Server`，含 `session.*` 桥与 `core.authenticate`） | 独立测试工程 `swiftmq-test/test/integration/echosidecar/` |
+| **分语言指南 + 示例工程** | 本目录 `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`；示例在**工作区** `swiftmq-plugin/{python,nodejs,php,java}/` |

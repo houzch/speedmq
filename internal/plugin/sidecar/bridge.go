@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"sync"
 
 	sdk "github.com/houzch/swiftmq/pkg/plugin"
@@ -21,10 +22,22 @@ import (
 //     插件再经 session.settle 结算；未结算的投递在流关闭 / 插件断开时一律按"回队"处理
 //     （与 internal/protocol/amqp091 的 drainPending 同一口径，避免消息滞留）。
 
+// streamAttachment 是随流绑定到内核侧的不透明句柄内容（见 pkg/sidecar.Open.Attachment）。
+//
+// 除内核操作面外还带上**客户端地址**：core.authenticate 会把它交给内核的认证存储，
+// 而用户表里的 remote_access 要按真实来源判定（默认账号只允许回环登录）。
+// 若伪造一个回环地址，就等于静默放宽了这条安全约束。
+type streamAttachment struct {
+	core   sdk.Core
+	remote net.Addr
+}
+
 // bridgeStream 是一条流上的桥状态。
 type bridgeStream struct {
 	// core 是这条连接的内核操作面（由 protocolHost.Serve 随流绑定）。
 	core sdk.Core
+	// remote 是客户端地址（认证时判定 remote_access 用）。
+	remote net.Addr
 	// sess 是在该流上打开的会话；为 nil 表示插件还没调 session.open。
 	sess sdk.Session
 	// consumers 是本会话注册的消费者（标签 → 状态）。
@@ -88,12 +101,16 @@ type pendingDelivery struct {
 // 把流与这条连接的内核操作面绑定。之所以要早于帧写出：插件一旦知道流号就可能立刻
 // 发起 session.open，绑定若晚一步就会命中"未知流"。
 func (p *Plugin) onStreamOpen(stream uint32, meta sidecar.Open) {
-	core, ok := meta.Attachment.(sdk.Core)
-	if !ok || core == nil {
+	att, ok := meta.Attachment.(streamAttachment)
+	if !ok || att.core == nil {
 		return
 	}
 	p.sessMu.Lock()
-	p.streams[stream] = &bridgeStream{core: core, consumers: map[string]*bridgeConsumer{}}
+	p.streams[stream] = &bridgeStream{
+		core:      att.core,
+		remote:    att.remote,
+		consumers: map[string]*bridgeConsumer{},
+	}
 	p.sessMu.Unlock()
 }
 
@@ -199,8 +216,14 @@ func (p *Plugin) sessionFor(stream uint32) (sdk.Session, error) {
 // ---------------------------------------------------------------------------
 
 // onCall 是 pkg/sidecar.ClientOptions.OnCall 的实现：插件发来的反向调用在这里落到内核语义。
-func (p *Plugin) onCall(_ context.Context, method string, params json.RawMessage) (any, error) {
+func (p *Plugin) onCall(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case sidecar.MethodCoreAuthenticate:
+		var req sidecar.CoreAuthenticateParams
+		if err := unmarshal(params, &req); err != nil {
+			return nil, err
+		}
+		return p.authenticate(ctx, req)
 	case sidecar.MethodSessionOpen:
 		var req sidecar.SessionOpenParams
 		if err := unmarshal(params, &req); err != nil {
@@ -217,6 +240,26 @@ func (p *Plugin) onCall(_ context.Context, method string, params json.RawMessage
 	default:
 		return p.dispatchSession(method, params)
 	}
+}
+
+// authenticate 让插件按自己的协议完成认证（core.authenticate）。
+//
+// 认证成功后这条连接的内核操作面才有身份，后续 session.open 才能通过权限检查 ——
+// 这正是外部进程插件与进程内协议插件在认证上的等价点（后者直接调 core.Authenticate）。
+// 刻意不持 sessMu 调用：认证会落到用户表（另有自己的锁），没必要占着桥的锁。
+func (p *Plugin) authenticate(ctx context.Context, req sidecar.CoreAuthenticateParams) (any, error) {
+	p.sessMu.Lock()
+	bs := p.streams[req.Stream]
+	p.sessMu.Unlock()
+	if bs == nil {
+		return nil, &sidecar.RPCError{Kind: int(sdk.KindNotFound),
+			Text: fmt.Sprintf("sidecar: 未知的流 %d（内核未把该流绑定到连接）", req.Stream)}
+	}
+	ident, err := bs.core.Authenticate(ctx, req.Mechanism, req.Response, bs.remote)
+	if err != nil {
+		return nil, errToRPC(err)
+	}
+	return sidecar.AuthIdentityDTO{User: ident.User, VHost: ident.VHost}, nil
 }
 
 func (p *Plugin) openSession(req sidecar.SessionOpenParams) error {

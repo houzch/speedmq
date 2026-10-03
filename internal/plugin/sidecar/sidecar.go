@@ -556,9 +556,11 @@ func (ph *protocolHost) Serve(ctx context.Context, conn net.Conn, core sdk.Core)
 		return fmt.Errorf("外部插件 %s 当前不可用（%s）", ph.p.name, reason)
 	}
 	stream, err := c.Open(ctx, sidecar.Open{
-		Remote:     addrString(conn.RemoteAddr()),
-		Local:      addrString(conn.LocalAddr()),
-		Attachment: core, // 随流携带内核操作面（不进帧），供插件反向调用时定位会话
+		Remote: addrString(conn.RemoteAddr()),
+		Local:  addrString(conn.LocalAddr()),
+		// 随流携带内核操作面与客户端地址（不进帧）：前者供插件反向调用时定位会话，
+		// 后者供 core.authenticate 按真实来源判定 remote_access。
+		Attachment: streamAttachment{core: core, remote: conn.RemoteAddr()},
 	})
 	if err != nil {
 		// Open 失败时拿不到流号，用 core 身份反查回收可能已绑定的桥状态。

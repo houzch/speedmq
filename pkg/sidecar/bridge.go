@@ -15,6 +15,13 @@ import "time"
 
 // 反向调用（插件 → 内核）与投递回推（内核 → 插件）的方法名。
 const (
+	// MethodCoreAuthenticate 让插件按自己的协议完成认证：params CoreAuthenticateParams → AuthIdentityDTO。
+	//
+	// 为什么必须有它：连接的内核操作面（plugin.Core）在认证前没有身份，
+	// 此时任何 session.open 都会因"无权限"被拒。进程内协议插件在 Serve 里直接调
+	// core.Authenticate；外部进程插件隔着一条连接，因此需要一条等价的桥接方法。
+	// 调用成功后才可用 session.*（顺序：core.authenticate → session.open → 其他）。
+	MethodCoreAuthenticate = "core.authenticate"
 	// MethodSessionOpen 打开某条流上的会话：params SessionOpenParams。
 	MethodSessionOpen = "session.open"
 	// MethodSessionClose 释放某条流上的会话：params SessionCloseParams。
@@ -71,6 +78,27 @@ const (
 type SessionOpenParams struct {
 	Stream uint32 `json:"stream"`
 	VHost  string `json:"vhost"`
+}
+
+// CoreAuthenticateParams 是 MethodCoreAuthenticate 的参数。
+//
+// Mechanism / Response 与 plugin.Core.Authenticate 的入参同一口径：
+// 插件把自己协议里的凭据（例如 AMQP 的 SASL PLAIN 响应）原样交给内核校验，
+// 认证逻辑与用户表仍由内核持有（插件不接触口令库）。
+type CoreAuthenticateParams struct {
+	Stream uint32 `json:"stream"`
+	// Mechanism 是认证机制名，如 PLAIN / AMQPLAIN。
+	Mechanism string `json:"mechanism"`
+	// Response 是机制对应的响应字节（JSON 里是 base64）。
+	Response []byte `json:"response,omitempty"`
+}
+
+// AuthIdentityDTO 是认证通过后的调用方身份。
+type AuthIdentityDTO struct {
+	// User 是通过认证的用户名。
+	User string `json:"user"`
+	// VHost 该连接最终打开的 vhost（在 session.open 阶段才会填充，此处通常为空）。
+	VHost string `json:"vhost,omitempty"`
 }
 
 // SessionCloseParams 是 MethodSessionClose 的参数。
