@@ -4,9 +4,9 @@
 #   git push swiftmq v1.1.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
 #                                # tag 必须等于源码里的 broker.Version，否则 verify-version 直接失败
 #
-# 一次发布的完整步骤：把 4 处版本号改齐 → 提交并推送 → 打 tag 推送 → 等 Actions 跑完。
-# 4 处 = internal/broker/broker.go 的 broker.Version、web/package.json、web/package-lock.json、
-# docker-compose.yml 的 image tag（由下面的 verify-version 强制校验）。
+# 一次发布的完整步骤：用 go run ./scripts/version <版本> 改齐版本号 → 提交并推送 → 打 tag 推送 → 等 Actions 跑完。
+# 版本号由 scripts/version 统一写入（内核常量、npm 元数据、compose/README/docs 与 swiftmq-test 镜像 tag）；
+# 下面的 verify-version 会对其中 4 个关键处（broker.go / package.json / package-lock.json / docker-compose.yml）做门禁校验。
 #
 # 平台口径：Linux / Windows / macOS 都在支持范围内（amd64 与 arm64）。
 # 容器镜像只出 Linux（不提供 Windows 容器镜像）。

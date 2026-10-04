@@ -100,7 +100,7 @@ my-sidecar/
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.01
+go get github.com/houzch/swiftmq@v1.1.02
 # 本地联调时可改用 replace 指向源码：
 #   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
 ```
@@ -610,7 +610,7 @@ Sau đó trong cấu hình đặt `spawn: ["/usr/local/bin/my-sidecar", "-addr",
 ```yaml
 services:
   swiftmq:
-    image: houzch/swiftmq:1.1.01
+    image: houzch/swiftmq:1.1.02
     command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
     volumes:
       - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
@@ -637,7 +637,7 @@ Cấu hình dùng unix socket (tránh chiếm thêm cổng). Dưới đây là �
 ```yaml
 services:
   swiftmq:
-    image: houzch/swiftmq:1.1.01
+    image: houzch/swiftmq:1.1.02
     volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]

@@ -26,7 +26,7 @@ Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 イメージは 2 か所に同一内容で公開しています（速い方をお使いください）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`。どちらも `linux/amd64` と `linux/arm64` を提供します。

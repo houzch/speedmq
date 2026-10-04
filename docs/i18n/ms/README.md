@@ -26,7 +26,7 @@ Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap),
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 Imej diterbitkan di dua tempat dengan kandungan sama (pilih yang lebih laju): Docker Hub `houzch/swiftmq` dan GitHub GHCR `ghcr.io/houzch/swiftmq`; kedua-duanya menyediakan `linux/amd64` dan `linux/arm64`.

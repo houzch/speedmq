@@ -26,7 +26,7 @@
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 Образ публикуется в двух местах с одинаковым содержимым (выбирайте, где быстрее): Docker Hub `houzch/swiftmq` и GitHub GHCR `ghcr.io/houzch/swiftmq`; оба дают `linux/amd64` и `linux/arm64`.

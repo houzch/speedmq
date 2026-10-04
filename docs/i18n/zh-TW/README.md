@@ -26,7 +26,7 @@
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 映像檔同時發佈在兩處（內容相同，挑網路較快的）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`；兩個倉庫都提供 `linux/amd64` 與 `linux/arm64`。

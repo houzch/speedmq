@@ -25,10 +25,11 @@ import (
 
 // Version 是内核版本，也是管理 UI、/api/overview 与 /metrics 上显示的版本号来源。
 //
-// 必须与发布 tag 一致（tag 去掉 `v`）：tag `v1.1.01` ↔ `Version = "1.1.01"`。
+// 必须与发布 tag 一致：tag 去掉 `v` 前缀后应与本常量完全相同。
+// 改版本号请用 `go run ./scripts/version <新版本号>`（它会连前端、compose、文档与镜像 tag 一起改齐）。
 // release 工作流里有一步 verify-version 会做这个校验，不一致直接让发布失败 ——
 // 曾经发生过 tag 打到 1.0.3、而这里仍是 1.0.0 导致镜像"标签写着 1.0.3、跑起来报 1.0.0"的事故。
-const Version = "1.1.01"
+const Version = "1.1.02"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。

@@ -25,7 +25,7 @@ services:
       dockerfile: Dockerfile
     # 指向已发布的镜像，这样 `docker compose pull` 能直接拉到；
     # 本地开发用 `docker compose up -d --build` 时会用同名 tag 覆盖它（两个仓库都发布同一份镜像）
-    image: houzch/swiftmq:1.1.01
+    image: houzch/swiftmq:1.1.02
     container_name: swiftmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动

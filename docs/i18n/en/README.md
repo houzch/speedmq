@@ -26,7 +26,7 @@ Capabilities already available: persistence (segment log + fsync level + crash r
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 The image is published in two places with identical content (pick whichever is faster for you): Docker Hub `houzch/swiftmq` and GitHub GHCR `ghcr.io/houzch/swiftmq`; both provide `linux/amd64` and `linux/arm64`.

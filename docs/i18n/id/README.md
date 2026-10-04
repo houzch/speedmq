@@ -26,7 +26,7 @@ Kemampuan yang sudah dimiliki: persistensi (log segmen + tingkat fsync + pemulih
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.0
+  houzch/swiftmq:1.1.02
 ```
 
 Image dipublikasikan di dua tempat dengan isi yang sama (pilih yang lebih cepat): Docker Hub `houzch/swiftmq` dan GitHub GHCR `ghcr.io/houzch/swiftmq`; keduanya menyediakan `linux/amd64` dan `linux/arm64`.

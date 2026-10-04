@@ -100,7 +100,7 @@ my-sidecar/
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.01
+go get github.com/houzch/swiftmq@v1.1.02
 # 本地联调时可改用 replace 指向源码：
 #   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
 ```
@@ -610,7 +610,7 @@ con `address` igual al mismo valor. El kernel lo lanzará al arrancar.
 ```yaml
 services:
   swiftmq:
-    image: houzch/swiftmq:1.1.01
+    image: houzch/swiftmq:1.1.02
     command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
     volumes:
       - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
@@ -637,7 +637,7 @@ La configuración usa un unix socket (para evitar ocupar un puerto extra). A con
 ```yaml
 services:
   swiftmq:
-    image: houzch/swiftmq:1.1.01
+    image: houzch/swiftmq:1.1.02
     volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
