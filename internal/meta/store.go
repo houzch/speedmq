@@ -321,6 +321,8 @@ func (c *clusterStore) status() Status {
 		Leader:         rs.Leader,
 		CommitIndex:    rs.CommitIndex,
 		LastApplied:    rs.LastApplied,
+		ProposeEntries: rs.ProposeEntries,
+		FsyncTotal:     rs.FsyncTotal,
 		Peers:          rs.Peers,
 		Learners:       rs.Learners,
 		HasQuorum:      c.node.HasQuorum(),

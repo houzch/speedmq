@@ -130,6 +130,11 @@ type Status struct {
 	Leader string
 	// CommitIndex 是已提交的最大日志索引。
 	CommitIndex uint64
+	// DurableIndex 是已 fsync 落盘的最大日志索引。
+	//
+	// 不变量：**CommitIndex ≤ DurableIndex** —— 未落盘的条目绝不允许被计入提交
+	// （组提交下 leader 的自身一票以本值而非内存 lastIndex 为准）。
+	DurableIndex uint64
 	// LastLogIndex 是本地日志的最后一条索引（含未提交）。
 	LastLogIndex uint64
 	// LastApplied 是已应用到状态机的最大索引。
@@ -142,6 +147,15 @@ type Status struct {
 	Learners []string
 	// Progress 是 leader 视角下各成员已复制的最大索引（非 leader 为空）。
 	Progress map[string]uint64
+	// ProposeEntries 是本节点作为 leader 累计追加到日志的条目数（M4 观测）。
+	//
+	// 只统计"本节点发起的提案"（含当选时追加的无操作条目与成员变更），follower 复制进来的
+	// 条目不在此列 —— 因此它是本节点实际承担的写路径计数（多组时由上层求和）。
+	ProposeEntries uint64
+	// FsyncTotal 是本节点作为 leader 累计执行的组提交 fsync 次数（M4 观测）。
+	//
+	// ProposeEntries / FsyncTotal 即组提交的平均批大小（FsyncTotal=0 时无意义）。
+	FsyncTotal uint64
 }
 
 // FSM 是 Raft 之上的状态机。

@@ -26,7 +26,7 @@
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.02
+  houzch/swiftmq:1.1.03
 ```
 
 อิมเมจเผยแพร่ไว้สองที่ด้วยเนื้อหาเดียวกัน (เลือกที่เร็วกว่า): Docker Hub `houzch/swiftmq` และ GitHub GHCR `ghcr.io/houzch/swiftmq` ทั้งสองที่มี `linux/amd64` และ `linux/arm64`

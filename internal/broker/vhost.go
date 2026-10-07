@@ -898,12 +898,15 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 			return res, nil
 		}
 		if s.vh.queueRemote(q) {
-			routed, rejected, err := s.vh.broker.forwardPublish(s.vh.name, routingKey, s.vh.queueOwner(q), msg)
+			// 流水线化转发（M0.5）：登记后立即返回，把"落盘/多数派"的等待交给 res.Durable，
+			// 因此连接读循环不会被跨节点 RPC 阻塞，转发得以成批。
+			wait, err := s.vh.broker.forwardPublishAsync(s.vh.name, routingKey, s.vh.queueOwner(q), msg)
 			if err != nil {
 				return res, err
 			}
-			res.Routed, res.Rejected = routed, rejected
-			// 落盘/复制的等待在服务节点完成，转发应答即代表"已按其档位持久化"。
+			// 目标队列来自本节点路由表：登记即视为已路由（见 forwardPublishAsync 的取舍说明）。
+			res.Routed = true
+			res.Durable = wait
 			return res, nil
 		}
 		accepted, wait, err := q.publish(cloneForQueue(msg))
@@ -927,15 +930,13 @@ func (s *vhostSession) Publish(msg *plugin.Message, exchangeName, routingKey str
 		}
 		// 命中远端队列：把消息转发给服务节点（数据面在那边，本节点只做代理）。
 		if s.vh.queueRemote(q) {
-			routed, rejected, err := s.vh.broker.forwardPublish(s.vh.name, name, s.vh.queueOwner(q), msg)
+			wait, err := s.vh.broker.forwardPublishAsync(s.vh.name, name, s.vh.queueOwner(q), msg)
 			if err != nil {
 				return res, err
 			}
-			if routed {
-				res.Routed = true
-			}
-			if rejected {
-				res.Rejected = true
+			res.Routed = true
+			if wait != nil {
+				waits = append(waits, wait)
 			}
 			continue
 		}
@@ -1091,6 +1092,34 @@ func (v *vhost) snapshot() VHostSnapshot {
 	}
 	s.Messages = s.MessagesReady + s.MessagesUnacked
 	return s
+}
+
+// quorumWriteStats 汇总本 vhost 全部仲裁队列 Raft 组上"本节点作为 leader"的写路径计数。
+//
+// 遍历队列数与 /metrics 的抓取频率相称（秒级），无需缓存。
+func (v *vhost) quorumWriteStats() QuorumWriteStats {
+	v.mu.RLock()
+	queues := make([]*queue, 0, len(v.queues))
+	for _, q := range v.queues {
+		queues = append(queues, q)
+	}
+	v.mu.RUnlock()
+
+	var out QuorumWriteStats
+	for _, q := range queues {
+		g := q.quorum // 与 queueSnapshot 同一读法：组生命周期随队列，停止后 raftNode 返回 nil
+		if g == nil {
+			continue
+		}
+		node := g.raftNode()
+		if node == nil {
+			continue
+		}
+		st := node.Status()
+		out.ProposeEntries += st.ProposeEntries
+		out.FsyncTotal += st.FsyncTotal
+	}
+	return out
 }
 
 // queueSnapshots 返回本 vhost 全部队列的快照（按名字排序，保证输出稳定）。

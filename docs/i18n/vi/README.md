@@ -26,7 +26,7 @@ Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn +
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.02
+  houzch/swiftmq:1.1.03
 ```
 
 Image được phát hành ở hai nơi với nội dung giống nhau (chọn nơi nhanh hơn): Docker Hub `houzch/swiftmq` và GitHub GHCR `ghcr.io/houzch/swiftmq`; cả hai đều có `linux/amd64` và `linux/arm64`.

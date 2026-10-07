@@ -6,6 +6,7 @@ package broker
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
@@ -29,7 +30,7 @@ import (
 // 改版本号请用 `go run ./scripts/version <新版本号>`（它会连前端、compose、文档与镜像 tag 一起改齐）。
 // release 工作流里有一步 verify-version 会做这个校验，不一致直接让发布失败 ——
 // 曾经发生过 tag 打到 1.0.3、而这里仍是 1.0.0 导致镜像"标签写着 1.0.3、跑起来报 1.0.0"的事故。
-const Version = "1.1.02"
+const Version = "1.1.03"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
@@ -114,11 +115,213 @@ type Broker struct {
 	// fwdLastLease / fwdLastReap 是后台维护的节流时间戳。
 	fwdLastLease time.Time
 	fwdLastReap  time.Time
+	// fwdRepointUntil 是"每个代理标签下次允许改挂的最早时刻"：改挂失败后按退避窗口重试，
+	// 同时保证同一消费者不会并发/反复改挂（见 repointForwards）。
+	fwdRepointUntil map[string]time.Time
+	// fwdQueueOwner 是"每个队列最近一次观察到的 owner"，键为 vhost + \x00 + queue。
+	// 用于把稳态的归属校正降到 O(队列数)：只有 owner 真变了才去遍历代理（O(代理数)）。
+	fwdQueueOwner map[string]string
 
 	// 转发计数（只增不减，供管理面与日志观测）。
 	fwdOut        atomic.Uint64
 	fwdIn         atomic.Uint64
 	fwdDeliveries atomic.Uint64
+	// fwdBatches 是"发布转发 RPC 次数"。与 fwdOut（消息条数）相除即平均批大小（M0.5 的观测口径）。
+	fwdBatches atomic.Uint64
+	// ackBatches / ackSeqs 是 ack 合批（M2）的观测计数：写入日志的 ack_batch 条目数与其中的
+	// 确认条数。二者之比即 ack 的平均批大小（见 QuorumWriteStats / metrics）。
+	ackBatches atomic.Uint64
+	ackSeqs    atomic.Uint64
+	// publishBatches / publishItems 是 publish 合批（M3）的观测计数：写入日志的 publish_batch
+	// 条目数与其中的消息条数。二者之比即发布的平均批大小。
+	publishBatches atomic.Uint64
+	publishItems   atomic.Uint64
+
+	// handleForwardPublish 各分支的计数（Owner 侧），用于把"转发成功的发布"与"被拒/被丢的发布"
+	// 分开观测（B5-follow-2 排查：确认是否存在"静默丢弃却回成功"的路径）。
+	fwdQueueMissing   atomic.Uint64 // vhost / queue 在 Owner 本地缺失（**静默丢弃候选**）
+	fwdRemoteMismatch atomic.Uint64 // 本节点并非该队列的服务节点
+	fwdPublishErr     atomic.Uint64 // 入队失败
+	fwdDurableErr     atomic.Uint64 // 落盘/多数派等待失败
+	fwdRejected       atomic.Uint64 // 长度限制拒绝
+	fwdNoWait         atomic.Uint64 // 仲裁队列发布未给出落盘等待（=队列已关闭，未入队）
+	// fwdPhantomOK 统计代理侧收到的"未路由且未拒绝且无错误"的转发应答 —— 这正是"静默丢弃"
+	// （既没入队、又被当成功上报确认）的签名。应为 0；非 0 即还有静默成功路径（B5-follow-2 排查）。
+	fwdPhantomOK atomic.Uint64
+
+	// 仲裁队列发布的"接受 vs 应用"计数与重复序号探测（B5-follow-2 排查）：
+	// 正常应满足 applied == accepted 且 dupSeq == 0。若 applied < accepted，说明有发布被接受却没落进队列；
+	// 若 dupSeq > 0，说明 leader 在"已提交但尚未应用"的窗口里分配了与既有条目冲突的序号
+	// （选主后 apply 滞后），随后的确认可能删错条目 —— 表现为"已确认却丢消息"。
+	quorumAcceptedPublish atomic.Uint64
+	quorumAppliedPublish  atomic.Uint64
+	quorumDupSeq          atomic.Uint64
+	// quorumAckRemovedUndelivered 统计"确认命中 ready"的次数（仅在本节点作为 leader 时计入）。
+	// leader 的 ready 只含未投递消息，因此该值应恒为 0；非 0 即"从未投递的消息被确认删掉"= 丢消息。
+	quorumAckRemovedUndelivered atomic.Uint64
+	// 按 id 追踪被移除原因（B5-follow-2 插桩）：记录被"确认命中 ready"删掉的消息样本。id 取消息体
+	// 前 8 字节的大端整数（测试客户端的 check-loss 约定），seq 为队列内序号。用于与客户端的
+	// confirmed/consumed id 集合直接对账 —— 命中即"被错删"，未命中即"根本不是这条路径丢的"。
+	quorumAckRemovedMu   sync.Mutex
+	quorumAckRemovedIDs  []uint64
+	quorumAckRemovedSeqs []uint64
+	// 转发边界按 id 追踪（B5-follow-2 插桩）：把"代理侧判定转发成功/失败"与"Owner 侧实际接受/出错"
+	// 的消息 id 各留一份样本，用于判定"每转发批丢 1 条且拿到成功应答"发生在边界哪一侧。id 取消息体
+	// 前 8 字节大端整数（check-loss 约定）。
+	//
+	// 四组集合**一律用固定大小的尾窗**（只留最近若干条，容量恒定）；写入一旦发生覆盖即由
+	// `*_truncated` 标记显式暴露，避免"样本不全"被当成"完整样本"做对账。
+	//
+	// 为什么失败集合也要设上限（R1 实测）：持续失败下坏集合会**快速无界增长**——测得的极端速率约
+	// 4.3 万条/s（≈0.34 MB/s ⇒ 1.2 GB/h），足以在数小时内把节点内存吃光。诊断样本不能反过来成为
+	// 压垮 broker 的原因，因此改为有界尾窗。
+	fwdTraceMu     sync.Mutex
+	fwdSentOKRing  fwdIDRing
+	fwdSentBadRing fwdIDRing
+	fwdInRing      fwdIDRing
+	fwdInBadRing   fwdIDRing
+	// fwdPipe 是发布转发流水线的待处理队列（见 forward.go 的 forwardPublishAsync / runForwardPipeline）。
+	fwdPipe chan *fwdPending
+}
+
+// fwdTraceOKWindow / fwdTraceBadWindow 分别是"成功 / 失败"id 尾窗的容量。
+// 成功集合按本轮转发量取 65536；失败集合取更大的 262144（≈2 MiB/集合）以尽量容纳一次故障窗口的失败批次。
+const (
+	fwdTraceOKWindow  = 65536
+	fwdTraceBadWindow = 262144
+)
+
+// fwdIDRing 是固定容量的 id 尾窗环形缓冲：容量满后覆盖最旧一条，用 truncated 标记是否发生过覆盖。
+// 之所以不是简单切片 + cap：切片达到上限后 "静默丢弃后续" 会让对账把"样本不全"当成"完整样本"；
+// 尾窗 + 显式截断标记能在恒定内存下保留**最近**（最相关）的样本，并把不确定性暴露出来。
+type fwdIDRing struct {
+	buf  []uint64
+	next int
+	tot  uint64
+}
+
+// newFwdIDRing 构造容量为 n 的尾窗。
+func newFwdIDRing(n int) fwdIDRing {
+	if n < 0 {
+		n = 0
+	}
+	return fwdIDRing{buf: make([]uint64, n)}
+}
+
+// add 写入一条 id；容量满后覆盖最旧一条。
+func (r *fwdIDRing) add(id uint64) {
+	if len(r.buf) == 0 {
+		return
+	}
+	r.buf[r.next] = id
+	r.next++
+	if r.next == len(r.buf) {
+		r.next = 0
+	}
+	r.tot++
+}
+
+// snapshot 返回尾窗内的 id 副本（顺序与对账无关，是按集合使用的）。
+func (r *fwdIDRing) snapshot() []uint64 {
+	if len(r.buf) == 0 || r.tot == 0 {
+		return nil
+	}
+	if r.tot < uint64(len(r.buf)) {
+		return append([]uint64(nil), r.buf[:r.next]...)
+	}
+	out := make([]uint64, 0, len(r.buf))
+	out = append(out, r.buf[r.next:]...)
+	out = append(out, r.buf[:r.next]...)
+	return out
+}
+
+// truncated 表示尾窗是否发生过覆盖（即样本已不代表全量）。
+func (r *fwdIDRing) truncated() bool { return r.tot > uint64(len(r.buf)) }
+
+// messageID 从消息体前 8 字节解出测试客户端的 check-loss 消息 id（非该约定的消息返回 0）。
+func messageID(body []byte) uint64 {
+	if len(body) < 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(body[:8])
+}
+
+// traceFwdSent 记录代理侧一条转发的判定结果（成功/失败）。
+func (b *Broker) traceFwdSent(id uint64, ok bool) {
+	if id == 0 {
+		return
+	}
+	b.fwdTraceMu.Lock()
+	if ok {
+		b.fwdSentOKRing.add(id)
+	} else {
+		b.fwdSentBadRing.add(id)
+	}
+	b.fwdTraceMu.Unlock()
+}
+
+// traceFwdIn 记录 Owner 侧一条转发的入队结果（接受/失败）。
+func (b *Broker) traceFwdIn(id uint64, ok bool) {
+	if id == 0 {
+		return
+	}
+	b.fwdTraceMu.Lock()
+	if ok {
+		b.fwdInRing.add(id)
+	} else {
+		b.fwdInBadRing.add(id)
+	}
+	b.fwdTraceMu.Unlock()
+}
+
+// ForwardSentIDs 返回代理侧"转发成功/失败"的 id 样本副本与两组集合是否被截断。
+func (b *Broker) ForwardSentIDs() (ok, bad []uint64, okTruncated, badTruncated bool) {
+	b.fwdTraceMu.Lock()
+	defer b.fwdTraceMu.Unlock()
+	ok = b.fwdSentOKRing.snapshot()
+	okTruncated = b.fwdSentOKRing.truncated()
+	bad = b.fwdSentBadRing.snapshot()
+	badTruncated = b.fwdSentBadRing.truncated()
+	return ok, bad, okTruncated, badTruncated
+}
+
+// ForwardInIDs 返回 Owner 侧"接受入队/失败"的 id 样本副本与两组集合是否被截断。
+func (b *Broker) ForwardInIDs() (ok, bad []uint64, okTruncated, badTruncated bool) {
+	b.fwdTraceMu.Lock()
+	defer b.fwdTraceMu.Unlock()
+	ok = b.fwdInRing.snapshot()
+	okTruncated = b.fwdInRing.truncated()
+	bad = b.fwdInBadRing.snapshot()
+	badTruncated = b.fwdInBadRing.truncated()
+	return ok, bad, okTruncated, badTruncated
+}
+
+// quorumAckRemovedSampleMax 是"按 id 追踪移除原因"样本的上限，避免异常路径下无界增长。
+const quorumAckRemovedSampleMax = 128
+
+// recordQuorumAckRemoved 记录一条"确认命中 ready（从未投递即被删）"的消息样本：id + 序号。
+func (b *Broker) recordQuorumAckRemoved(seq uint64, msg *plugin.Message) {
+	var id uint64
+	if msg != nil && len(msg.Body) >= 8 {
+		id = binary.BigEndian.Uint64(msg.Body[:8])
+	}
+	b.quorumAckRemovedMu.Lock()
+	if len(b.quorumAckRemovedIDs) < quorumAckRemovedSampleMax {
+		b.quorumAckRemovedIDs = append(b.quorumAckRemovedIDs, id)
+		b.quorumAckRemovedSeqs = append(b.quorumAckRemovedSeqs, seq)
+	}
+	b.quorumAckRemovedMu.Unlock()
+}
+
+// QuorumAckRemovedIDs 返回被"确认命中 ready"删掉的消息样本（id 与序号的浅拷贝副本）。
+func (b *Broker) QuorumAckRemovedIDs() ([]uint64, []uint64) {
+	b.quorumAckRemovedMu.Lock()
+	defer b.quorumAckRemovedMu.Unlock()
+	ids := make([]uint64, len(b.quorumAckRemovedIDs))
+	copy(ids, b.quorumAckRemovedIDs)
+	seqs := make([]uint64, len(b.quorumAckRemovedSeqs))
+	copy(seqs, b.quorumAckRemovedSeqs)
+	return ids, seqs
 }
 
 // New 构造内核。返回 error 是因为集群模式下元数据层可能启动失败
@@ -132,22 +335,29 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 	names = append(names, cfg.DefaultVHost)
 
 	b := &Broker{
-		log:       log,
-		cfg:       cfg,
-		auth:      auth.NewStore(cfg.Users),
-		vhosts:    map[string]*vhost{},
-		stores:    store.NewManager(cfg.DataDir, storageOptions(cfg), log),
-		flow:      newFlowGate(),
-		subs:      map[int]chan plugin.Notification{},
-		conns:     map[string]*connEntry{},
-		dlxCh:     make(chan deadLetterEntry, deadLetterBuffer),
-		done:      make(chan struct{}),
-		nodeID:    cfg.Cluster.NodeID,
-		clusterOn: cfg.Cluster.Enabled,
-		fwdLocal:  map[string]*localProxy{},
-		fwdRemote: map[string]*remoteProxy{},
-		fwdHeld:   map[uint64]*heldDelivery{},
-		fwdGets:   map[uint64]string{},
+		log:             log,
+		cfg:             cfg,
+		auth:            auth.NewStore(cfg.Users),
+		vhosts:          map[string]*vhost{},
+		stores:          store.NewManager(cfg.DataDir, storageOptions(cfg), log),
+		flow:            newFlowGate(),
+		subs:            map[int]chan plugin.Notification{},
+		conns:           map[string]*connEntry{},
+		dlxCh:           make(chan deadLetterEntry, deadLetterBuffer),
+		fwdPipe:         make(chan *fwdPending, fwdPipeDepth),
+		fwdSentOKRing:   newFwdIDRing(fwdTraceOKWindow),
+		fwdSentBadRing:  newFwdIDRing(fwdTraceBadWindow),
+		fwdInRing:       newFwdIDRing(fwdTraceOKWindow),
+		fwdInBadRing:    newFwdIDRing(fwdTraceBadWindow),
+		done:            make(chan struct{}),
+		nodeID:          cfg.Cluster.NodeID,
+		clusterOn:       cfg.Cluster.Enabled,
+		fwdLocal:        map[string]*localProxy{},
+		fwdRemote:       map[string]*remoteProxy{},
+		fwdHeld:         map[uint64]*heldDelivery{},
+		fwdGets:         map[uint64]string{},
+		fwdRepointUntil: map[string]time.Time{},
+		fwdQueueOwner:   map[string]string{},
 	}
 	b.memWatermark.Store(math.Float64bits(cfg.Storage.MemoryHighWatermark))
 	b.diskLimit.Store(cfg.Storage.DiskFreeLimit)
@@ -176,6 +386,13 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 		b.bootstrapUsers(ctx)
 	}()
 	go b.background(ctx)
+	// 发布转发流水线（M0.5）：与内核同生命周期。放在这里（而非按需惰性启动）是为了
+	// 避免与 Close 里的 bg.Wait() 竞争（WaitGroup 不允许 Wait 与 Add 并发）。
+	b.bg.Add(1)
+	go func() {
+		defer b.bg.Done()
+		b.runForwardPipeline(ctx)
+	}()
 	return b, nil
 }
 

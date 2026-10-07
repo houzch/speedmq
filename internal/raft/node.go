@@ -144,11 +144,25 @@ type Node struct {
 
 	appliedSinceSnap uint64
 
+	// ---- M4 写路径观测计数（见 Status.ProposeEntries / FsyncTotal）----
+	// 只统计"本节点作为 leader"的活动：追加的提案条目数与组提交 fsync 次数。
+	// 二者之比即组提交的平均批大小。读写都在主锁（mu）保护下进行。
+	proposeEntries uint64
+	fsyncTotal     uint64
+
 	proposals map[uint64]chan applyResult
 
-	done     chan struct{}
-	applyCh  chan struct{}
-	resetCh  chan struct{}
+	done    chan struct{}
+	applyCh chan struct{}
+	resetCh chan struct{}
+	// tickCh 让 leader 在追加新条目后立即广播一轮复制，而不是等下一个心跳节拍。
+	//
+	// 队列级 Raft 的心跳间隔（quorumHeartbeat=100ms）刻意比元数据组宽松，若把"数据复制"
+	// 绑在这个节拍上，就会退化成"每个节拍只推进一条提交"（实测发布吞吐被钉在 ~10 msg/s）。
+	// 心跳节拍保持不变（避免选举风暴），只在"有新数据"时额外唤醒一次。
+	tickCh chan struct{}
+	// flushCh 触发组提交：把"自上次 fsync 以来追加的全部条目"合并成一次落盘（见 flushOnce）。
+	flushCh  chan struct{}
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 
@@ -227,6 +241,8 @@ func New(opt Options) (*Node, error) {
 		done:       make(chan struct{}),
 		applyCh:    make(chan struct{}, 1),
 		resetCh:    make(chan struct{}, 1),
+		tickCh:     make(chan struct{}, 1),
+		flushCh:    make(chan struct{}, 1),
 	}
 	n.registerMemberAddrs(members)
 	if hasSnap {
@@ -380,9 +396,10 @@ func (n *Node) Start() error {
 	n.started = true
 	n.mu.Unlock()
 
-	n.wg.Add(2)
+	n.wg.Add(3)
 	go n.runLoop()
 	go n.applyLoop()
+	go n.flushLoop()
 	select {
 	case n.applyCh <- struct{}{}:
 	default:
@@ -401,6 +418,9 @@ func (n *Node) Stop() {
 		n.closed = true
 		n.failProposalsLocked(ErrStopped)
 		n.mu.Unlock()
+
+		// 收尾落盘：把已追加但尚未 fsync 的条目刷下去（已提交条目本就在多数派落盘，此处只是稳妥）。
+		n.flushOnce()
 
 		close(n.done)
 		n.wg.Wait()
@@ -442,7 +462,10 @@ func (n *Node) Propose(ctx context.Context, data []byte) (any, error) {
 	}
 	ch := make(chan applyResult, 1)
 	n.proposals[index] = ch
-	n.maybeAdvanceCommitLocked()
+	// 组提交：由 flushLoop 批量 fsync 后再推进提交（未落盘绝不提交）。
+	n.signalFlush()
+	// 有新条目要复制：立刻唤醒 runLoop，不必等下一个心跳节拍（否则提交延迟被节拍钉死）。
+	n.signalLeaderTick()
 	n.mu.Unlock()
 
 	select {
@@ -483,17 +506,20 @@ func (n *Node) Status() Status {
 		}
 	}
 	return Status{
-		ID:            n.id,
-		Role:          n.role,
-		Term:          n.term,
-		Leader:        n.leaderID,
-		CommitIndex:   n.commitIndex,
-		LastLogIndex:  n.rlog.lastIndex(),
-		LastApplied:   n.lastApplied,
-		SnapshotIndex: n.rlog.snapIndex(),
-		Peers:         n.voterIDsLocked(),
-		Learners:      n.learnerIDsLocked(),
-		Progress:      progress,
+		ID:             n.id,
+		Role:           n.role,
+		Term:           n.term,
+		Leader:         n.leaderID,
+		CommitIndex:    n.commitIndex,
+		DurableIndex:   n.rlog.durableIndex,
+		LastLogIndex:   n.rlog.lastIndex(),
+		LastApplied:    n.lastApplied,
+		SnapshotIndex:  n.rlog.snapIndex(),
+		Peers:          n.voterIDsLocked(),
+		Learners:       n.learnerIDsLocked(),
+		Progress:       progress,
+		ProposeEntries: n.proposeEntries,
+		FsyncTotal:     n.fsyncTotal,
 	}
 }
 
@@ -668,6 +694,7 @@ func (n *Node) runLoop() {
 		// 造成没必要的换届（对外表现为 Propose 偶发 ErrNotLeader）。
 		if role == RoleLeader && !wasLeader {
 			wasLeader = true
+			n.flushOnce() // 兜底：把成为 leader 时追加的无操作条目落盘
 			n.tickLeader()
 			continue
 		}
@@ -685,6 +712,13 @@ func (n *Node) runLoop() {
 		case <-n.resetCh:
 			timer.Stop()
 			continue
+		case <-n.tickCh:
+			timer.Stop()
+			// 有新提案：立即广播一轮复制。tickLeader 自带"角色仍是 leader"的判定，
+			// 期间若已卸任则是空操作。
+			n.flushOnce() // 兜底：把待落盘条目刷下去（正常路径由 flushLoop 完成）
+			n.tickLeader()
+			continue
 		case <-timer.C:
 		}
 
@@ -697,6 +731,7 @@ func (n *Node) runLoop() {
 		}
 		switch {
 		case role == RoleLeader:
+			n.flushOnce() // 兜底：周期把待落盘条目刷下去（并让 sync 失败可被重试）
 			n.tickLeader()
 		case selfVoter:
 			n.startElection()
@@ -787,33 +822,31 @@ func (n *Node) becomeLeaderLocked() {
 		// 乐观初始应答时间：首轮心跳返回前不至于误判"无多数派"，窗口过后若无应答即判失去联系。
 		n.lastAck[m.ID] = now
 	}
-	n.matchIndex[n.id] = last
+	n.matchIndex[n.id] = n.rlog.durableIndex
 	n.log.Info("当选领导者", "id", n.id, "term", n.term, "last_log_index", last)
 
 	if _, err := n.appendLocked(nil); err != nil {
 		n.log.Error("追加无操作条目失败", "err", err)
 	} else {
-		n.maybeAdvanceCommitLocked()
+		// 组提交：无操作条目同样先落盘（批量）再推进提交，用于隐式提交此前任期的条目。
+		n.signalFlush()
 	}
 	// 立即重置 runLoop 的计时：否则它还在按"候选人选举超时"等待，
 	// 期间 follower 可能先超时发起新一轮竞选，造成无谓的选举抖动。
 	n.resetElectionLocked()
 }
 
-// appendLocked 追加一条日志并落盘（fsync），返回新条目索引。
+// appendLocked 追加一条日志（只写入，不 fsync），返回新条目索引。
+//
+// 落盘由组提交统一完成（见 flushOnce）：leader 只有在条目 fsync 之后才把自己计入多数派，
+// 因此这里**不**更新 matchIndex[self] —— 它由 flushOnce 依据 durableIndex 推进。
 func (n *Node) appendLocked(data []byte) (uint64, error) {
 	index := n.rlog.lastIndex() + 1
 	e := Entry{Index: index, Term: n.term, Data: data}
 	if err := n.rlog.append(e); err != nil {
 		return 0, err
 	}
-	// 日志落盘后才允许对外宣称"已复制"：这是 AppendEntries 成功语义的前提。
-	if err := n.rlog.sync(); err != nil {
-		return 0, err
-	}
-	if n.role == RoleLeader {
-		n.matchIndex[n.id] = index
-	}
+	n.proposeEntries++
 	return index, nil
 }
 
@@ -960,6 +993,10 @@ func (n *Node) sendInstallSnapshot(peer string, args installSnapshotArgs) {
 	}
 	n.nextIndex[peer] = n.matchIndex[peer] + 1
 	n.maybeAdvanceCommitLocked()
+	// 快照安装后该 peer 若仍落后，继续按事件推进，不必等下一个心跳节拍。
+	if n.matchIndex[peer] < n.rlog.lastIndex() {
+		n.signalLeaderTick()
+	}
 }
 
 // handleAppendReply 处理 AppendEntries 应答：推进 progress 或回退重试。
@@ -985,20 +1022,31 @@ func (n *Node) handleAppendReply(peer string, args appendEntriesArgs, reply appe
 		}
 		n.nextIndex[peer] = n.matchIndex[peer] + 1
 		n.maybeAdvanceCommitLocked()
+		// 该 peer 仍有未复制的条目：立即再推一批（合批续推）。这样复制由"提案 + 应答"事件驱动，
+		// 一次往返推一批，而不是"每个心跳节拍推一批"——心跳退化为纯保活与兜底。
+		if n.matchIndex[peer] < n.rlog.lastIndex() {
+			n.signalLeaderTick()
+		}
 		return
 	}
 	// 失败：回退 nextIndex。只允许后退，避免应答乱序时把进度推过头。
+	prevNext := n.nextIndex[peer]
 	next := reply.LastLogIndex + 1
 	if next < 1 {
 		next = 1
 	}
-	if next > n.nextIndex[peer] {
-		next = n.nextIndex[peer]
+	if next > prevNext {
+		next = prevNext
 	}
 	if args.PrevLogIndex > 0 && next > args.PrevLogIndex {
 		next = args.PrevLogIndex
 	}
 	n.nextIndex[peer] = next
+	// 只有真正回退了才立即重试（加速从日志分歧中恢复）；退无可退时不再触发，
+	// 否则会变成无休止的重试风暴。
+	if next < prevNext {
+		n.signalLeaderTick()
+	}
 }
 
 // maybeAdvanceCommitLocked 依据"多数派已复制"推进 commitIndex。
@@ -1011,7 +1059,9 @@ func (n *Node) maybeAdvanceCommitLocked() {
 		return
 	}
 	candidates := make([]uint64, 0, n.voterCountLocked())
-	candidates = append(candidates, n.rlog.lastIndex())
+	// leader 自己这一票以**已落盘**的 durableIndex 为准（而不是内存 lastIndex）：
+	// 组提交下条目可能已 append 但尚未 fsync，绝不能据此推进提交（否则确认先于落盘）。
+	candidates = append(candidates, n.rlog.durableIndex)
 	for _, m := range n.members {
 		if m.Learner || m.ID == n.id {
 			// learner 的复制进度不参与提交判定（它不是多数派的一部分）。
@@ -1042,6 +1092,77 @@ func (n *Node) signalApplyLocked() {
 	case n.applyCh <- struct{}{}:
 	default:
 	}
+}
+
+// signalLeaderTick 唤醒 runLoop 立即广播一轮 AppendEntries（非阻塞，可重复调用）。
+//
+// 通道容量 1：多条并发提案只会合并成一次额外 tick，不会放大 RPC（合批由 tickLeader 的
+// entriesFrom(next, maxAppendEntries) 自然完成）。等待中的提案因此不必等到下一个心跳节拍。
+func (n *Node) signalLeaderTick() {
+	select {
+	case n.tickCh <- struct{}{}:
+	default:
+	}
+}
+
+// signalFlush 唤醒 flushLoop 做一次组提交（非阻塞；容量 1 自动合并重复信号）。
+func (n *Node) signalFlush() {
+	select {
+	case n.flushCh <- struct{}{}:
+	default:
+	}
+}
+
+// flushLoop 是组提交的驱动：把"自上次 fsync 以来追加的全部条目"合并成一次落盘。
+//
+// 天然成批：一次 fsync（毫秒级）期间新到达的追加会并入下一轮，**无需人为延迟**。
+// 它只负责"落盘"，不负责复制（复制由 runLoop 的 tick 驱动）。
+func (n *Node) flushLoop() {
+	defer n.wg.Done()
+	for {
+		select {
+		case <-n.done:
+			return
+		case <-n.flushCh:
+			n.flushOnce()
+		}
+	}
+}
+
+// flushOnce 执行一次组提交：锁外 fsync 全部待落盘条目，再推进 durableIndex 与提交点。
+//
+// fsync 刻意放在**主锁之外**：否则 fsync 期间的新提案会被主锁挡住、聚不成一批。
+// 与"日志重写（压缩/安装快照）"的互斥由 raftStorage.logMu 保证（重写持写锁，fsync 持读锁）。
+func (n *Node) flushOnce() {
+	n.mu.Lock()
+	upTo := n.rlog.lastIndex()
+	need := upTo > n.rlog.durableIndex
+	n.mu.Unlock()
+
+	synced := false
+	if need {
+		// 只认"调用前已写入"的这段（upTo）；fsync 期间新追加的条目并入下一轮。
+		if err := n.rlog.sync(); err != nil {
+			// 不推进 durableIndex：下一次 flush 信号或心跳兜底会重试。
+			n.log.Error("raft 日志批量落盘失败", "up_to", upTo, "err", err)
+			return
+		}
+		synced = true
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if synced {
+		n.fsyncTotal++
+	}
+	if upTo > n.rlog.durableIndex {
+		n.rlog.markDurable(upTo)
+		if n.role == RoleLeader && n.matchIndex[n.id] < upTo {
+			n.matchIndex[n.id] = upTo
+		}
+	}
+	// 落盘推进后重算多数派提交（同时覆盖"仅由 follower 应答推进"的常规路径）。
+	n.maybeAdvanceCommitLocked()
 }
 
 // failProposalsLocked 让所有等待中的提案立即失败。
@@ -1265,6 +1386,7 @@ func (n *Node) handleAppendEntries(_ context.Context, _ string, payload []byte) 
 			n.mu.Unlock()
 			return nil, fmt.Errorf("日志落盘失败: %w", err)
 		}
+		n.rlog.markDurable(n.rlog.lastIndex())
 	}
 	if args.LeaderCommit > n.commitIndex {
 		commit := args.LeaderCommit
@@ -1713,7 +1835,10 @@ func (n *Node) ChangeMembership(ctx context.Context, cc ConfChange) error {
 	n.pendingConfIndex = index
 	ch := make(chan applyResult, 1)
 	n.proposals[index] = ch
-	n.maybeAdvanceCommitLocked()
+	// 组提交：成员变更同样先落盘（批量）再推进提交。
+	n.signalFlush()
+	// 成员变更也是一条待复制日志：同样立即触发一轮复制，缩短改组生效延迟。
+	n.signalLeaderTick()
 	n.mu.Unlock()
 
 	select {
@@ -1759,17 +1884,14 @@ func (n *Node) validateConfChangeLocked(cc ConfChange) error {
 	return nil
 }
 
-// appendConfLocked 追加一条成员变更日志并落盘。
+// appendConfLocked 追加一条成员变更日志（只写入，不 fsync；落盘同样走组提交）。
 func (n *Node) appendConfLocked(data []byte) (uint64, error) {
 	index := n.rlog.lastIndex() + 1
 	e := Entry{Index: index, Term: n.term, Data: data, Type: EntryConfChange}
 	if err := n.rlog.append(e); err != nil {
 		return 0, err
 	}
-	if err := n.rlog.sync(); err != nil {
-		return 0, err
-	}
-	n.matchIndex[n.id] = index
+	n.proposeEntries++
 	return index, nil
 }
 

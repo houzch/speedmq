@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -69,6 +70,17 @@ const (
 	fwdCatchUpTimeout = 3 * time.Second
 	// fwdCatchUpPoll 是等待本地追平的轮询间隔。
 	fwdCatchUpPoll = 10 * time.Millisecond
+	// fwdRepointBackoff 是代理消费者改挂失败后的退避窗口。
+	//
+	// 没有退避时，一次选主会让一批代理反复改挂，而每次 RPC 最长阻塞 fwdControlTimeout（5s）。
+	// 窗口取 10s（> 最坏完成时间：queueOwner 3s + RPC 5s），既避免反复 stall，
+	// 也保证同一消费者不会因为上一轮还没跑完而被并发改挂两次。
+	fwdRepointBackoff = 10 * time.Second
+	// fwdBatchMax 是一次转发 RPC 最多携带的发布条数（也是流水线的成批上限）。
+	fwdBatchMax = 128
+	// fwdPipeDepth 是发布转发流水线的待处理队列深度（背压上界：
+	// 队列满时登记方阻塞，等价于给生产者限流，避免内存被客户端支配）。
+	fwdPipeDepth = 4096
 )
 
 // ---------------------------------------------------------------------------
@@ -91,10 +103,35 @@ type fwdPublishReq struct {
 	Msg   []byte `json:"msg"`
 }
 
-type fwdPublishResp struct {
+// fwdBatchPublishItem 是批量转发里的单条发布。
+type fwdBatchPublishItem struct {
+	VHost string `json:"vhost"`
+	Queue string `json:"queue"`
+	Msg   []byte `json:"msg"`
+}
+
+// fwdBatchPublishReq 是"一次 RPC 携带多条发布"的请求。
+//
+// 存在的理由：代理节点此前每条消息一次 RPC 且同步等待，单连接吞吐被钉在 ~1/RTT（~200 msg/s）。
+// 批量化后一次往返携带整批，Owner 侧再借组提交统一落盘。
+type fwdBatchPublishReq struct {
+	Items []fwdBatchPublishItem `json:"items"`
+}
+
+// fwdBatchPublishItemResp 是单条发布的结果。
+//
+// Error 非空表示该条未成功（落盘失败/队列不可用等），调用方据此对该条否定确认；
+// 它独立于信封的 OK（信封只表示"这次 RPC 本身"成功与否）。
+type fwdBatchPublishItemResp struct {
+	Routed   bool   `json:"routed"`
+	Rejected bool   `json:"rejected"`
+	Error    string `json:"err,omitempty"`
+}
+
+// fwdBatchPublishResp 是批量转发的应答，Results 与请求 Items 一一对应。
+type fwdBatchPublishResp struct {
 	fwdEnvelope
-	Routed   bool `json:"routed"`
-	Rejected bool `json:"rejected"`
+	Results []fwdBatchPublishItemResp `json:"results"`
 }
 
 type fwdGetReq struct {
@@ -270,10 +307,13 @@ func (b *Broker) serveForwardMethods(t raft.Transport) error {
 // 代理节点侧（客户端连着我，队列数据在别的节点）
 // ---------------------------------------------------------------------------
 
-// forwardPublish 把一条消息转发到 Owner 节点上的指定队列。
+// forwardPublish 把一条消息**同步**转发到 Owner 节点上的指定队列。
 //
 // 返回的 routed/rejected 与本地发布同义；持久消息的落盘等待在 Owner 侧完成后才应答，
 // 因此调用方不需要再等 durability —— 拿到应答就意味着已按 Owner 的 fsync 档位落盘。
+//
+// 只用于"没有前台生产者在等"的内部路由（死信），它需要同步的 routed/rejected 来决定是否重新入队；
+// 客户端发布路径请用 forwardPublishAsync（流水线化，见 M0.5）。两者共用同一套批量线协议。
 func (b *Broker) forwardPublish(vhost, queue, owner string, msg *plugin.Message) (routed, rejected bool, err error) {
 	raw, err := b.encodeMessage(msg)
 	if err != nil {
@@ -281,12 +321,173 @@ func (b *Broker) forwardPublish(vhost, queue, owner string, msg *plugin.Message)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fwdPublishTimeout)
 	defer cancel()
-	var resp fwdPublishResp
-	if err := b.fwdCall(ctx, owner, fwdMethodPublish, fwdPublishReq{VHost: vhost, Queue: queue, Msg: raw}, &resp); err != nil {
+	var resp fwdBatchPublishResp
+	req := fwdBatchPublishReq{Items: []fwdBatchPublishItem{{VHost: vhost, Queue: queue, Msg: raw}}}
+	if err := b.fwdCall(ctx, owner, fwdMethodPublish, req, &resp); err != nil {
 		return false, false, err
 	}
+	if len(resp.Results) != 1 {
+		return false, false, fmt.Errorf("转发应答与请求条数不一致: %d", len(resp.Results))
+	}
+	r := resp.Results[0]
+	if r.Error != "" {
+		return false, false, errors.New(r.Error)
+	}
 	b.fwdOut.Add(1)
-	return resp.Routed, resp.Rejected, nil
+	b.fwdBatches.Add(1)
+	return r.Routed, r.Rejected, nil
+}
+
+// ---------------------------------------------------------------------------
+// 发布转发流水线（M0.5）
+// ---------------------------------------------------------------------------
+
+// fwdPending 是一条"已登记、待成批转发"的发布。
+type fwdPending struct {
+	owner string
+	req   fwdPublishReq
+	// id 是消息体前 8 字节解出的 check-loss 消息 id（非该约定为 0），供转发边界按 id 追踪使用。
+	id   uint64
+	done chan fwdBatchPublishItemResp
+}
+
+// errFwdRejected 表示 Owner 侧因队列长度限制拒绝了该条发布。
+//
+// 借"落盘等待返回错误"这条既有通路把"拒绝"传到确认层（confirm 模式下回 basic.nack），
+// 因而无需改动 plugin.PublishResult 的字段。
+var errFwdRejected = errors.New("队列因长度限制拒绝了发布")
+
+// forwardPublishAsync 登记一条待转发的发布并**立即返回**。
+//
+// 与 forwardPublish 的区别：不在调用方（协议层连接读循环）里同步等 RPC，而是投入转发流水线，
+// 由流水线按 Owner 成批发往 Owner。返回的 wait 在整条链路完成后返回：
+//   - nil：已入队并按 Owner 的 fsync 档位落盘；
+//   - errFwdRejected：队列因长度限制拒绝（调用方应否定确认）；
+//   - 其它 error：转发失败（队列不可用 / 网络失败等）。
+//
+// 关于 Routed：目标队列来自本节点路由表，登记时即视为"已路由"，因此 `mandatory` 的
+// Basic.Return 判定不受影响；唯一偏差是"登记后、Owner 处理前队列被删"这一竞态窗口内不再回 Return
+// （原同步路径能回）——这是把"路由判定"与"投递"解耦所必需付出的、可接受的代价。
+func (b *Broker) forwardPublishAsync(vhost, queue, owner string, msg *plugin.Message) (func() error, error) {
+	raw, err := b.encodeMessage(msg)
+	if err != nil {
+		return nil, err
+	}
+	p := &fwdPending{
+		owner: owner,
+		req:   fwdPublishReq{VHost: vhost, Queue: queue, Msg: raw},
+		id:    messageID(msg.Body),
+		done:  make(chan fwdBatchPublishItemResp, 1),
+	}
+	select {
+	case b.fwdPipe <- p:
+	case <-b.done:
+		return nil, errors.New("broker 正在关闭，发布未转发")
+	}
+	return func() error {
+		select {
+		case r := <-p.done:
+			if r.Error != "" {
+				return errors.New(r.Error)
+			}
+			if r.Rejected {
+				return errFwdRejected
+			}
+			return nil
+		case <-b.done:
+			return errors.New("broker 正在关闭，转发结果未知")
+		}
+	}, nil
+}
+
+// runForwardPipeline 是发布转发的流水线：把登记进来的发布按 Owner 分组，一组一次 RPC。
+//
+// 天然成批：登记方（连接读循环）不再被 RPC 阻塞，队列自然积压，一次收满 fwdBatchMax 条即可。
+// **顺序**：同一 Owner 内严格按登记顺序发送，因此单发布者看到的队列 FIFO 不会被流水线打乱。
+func (b *Broker) runForwardPipeline(ctx context.Context) {
+	for {
+		var first *fwdPending
+		select {
+		case <-ctx.Done():
+			b.failPendingForwards()
+			return
+		case first = <-b.fwdPipe:
+		}
+		batch := []*fwdPending{first}
+	collect:
+		for len(batch) < fwdBatchMax {
+			select {
+			case p := <-b.fwdPipe:
+				batch = append(batch, p)
+			default:
+				break collect
+			}
+		}
+		b.dispatchForwardBatch(batch)
+	}
+}
+
+// failPendingForwards 在流水线退出时把仍在队列里的登记项全部置为失败，避免等待方永久挂起。
+func (b *Broker) failPendingForwards() {
+	for {
+		select {
+		case p := <-b.fwdPipe:
+			p.done <- fwdBatchPublishItemResp{Error: "broker 正在关闭，转发未完成"}
+		default:
+			return
+		}
+	}
+}
+
+// dispatchForwardBatch 按 Owner 分组（组内保序），逐组发一次 RPC 并回填结果。
+func (b *Broker) dispatchForwardBatch(batch []*fwdPending) {
+	groups := make(map[string][]*fwdPending, 1)
+	owners := make([]string, 0, 1)
+	for _, p := range batch {
+		if _, ok := groups[p.owner]; !ok {
+			owners = append(owners, p.owner)
+		}
+		groups[p.owner] = append(groups[p.owner], p)
+	}
+	for _, owner := range owners {
+		b.sendForwardBatch(owner, groups[owner])
+	}
+}
+
+func (b *Broker) sendForwardBatch(owner string, items []*fwdPending) {
+	req := fwdBatchPublishReq{Items: make([]fwdBatchPublishItem, 0, len(items))}
+	for _, p := range items {
+		req.Items = append(req.Items, fwdBatchPublishItem{VHost: p.req.VHost, Queue: p.req.Queue, Msg: p.req.Msg})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), fwdPublishTimeout)
+	defer cancel()
+	var resp fwdBatchPublishResp
+	if err := b.fwdCall(ctx, owner, fwdMethodPublish, req, &resp); err != nil {
+		for _, p := range items {
+			b.traceFwdSent(p.id, false)
+			p.done <- fwdBatchPublishItemResp{Error: err.Error()}
+		}
+		return
+	}
+	if len(resp.Results) != len(items) {
+		for _, p := range items {
+			b.traceFwdSent(p.id, false)
+			p.done <- fwdBatchPublishItemResp{Error: "转发应答与请求条数不一致"}
+		}
+		return
+	}
+	b.fwdOut.Add(uint64(len(items)))
+	b.fwdBatches.Add(1)
+	for i, p := range items {
+		r := resp.Results[i]
+		// 诊断：应答"未路由且未拒绝且无错误"意味着既没入队、又会被当成功上报确认 —— 静默丢弃签名。
+		if !r.Routed && !r.Rejected && r.Error == "" {
+			b.fwdPhantomOK.Add(1)
+		}
+		// 按 id 追踪：代理侧把"成功"记为未拒且无错（与确认层口径一致）。
+		b.traceFwdSent(p.id, r.Error == "" && !r.Rejected)
+		p.done <- r
+	}
 }
 
 // forwardGet 从 Owner 节点上的队列主动拉取一条消息。
@@ -447,6 +648,7 @@ func (b *Broker) remoteCancel(vhost, queue, owner, tag string) error {
 	wireTag := b.wireTagOf(vhost, tag)
 	b.fwdMu.Lock()
 	delete(b.fwdLocal, wireTag)
+	delete(b.fwdRepointUntil, wireTag)
 	b.fwdMu.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), fwdControlTimeout)
@@ -497,41 +699,87 @@ func (b *Broker) forwardSettle(owner string, deliveryID uint64, action plugin.Se
 // ---------------------------------------------------------------------------
 
 func (b *Broker) handleForwardPublish(_ context.Context, _ string, payload []byte) ([]byte, error) {
-	var req fwdPublishReq
+	var req fwdBatchPublishReq
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析发布转发请求失败: %w", err)
 	}
-	msg, err := b.decodeMessage(req.Msg)
-	if err != nil {
-		// 编解码失败是协议级错误：报给调用方，让它按"发布失败"处理，绝不能静默丢消息。
-		return nil, err
+	results := make([]fwdBatchPublishItemResp, len(req.Items))
+	// ids 按 id 追踪用：记录每条请求解出的 check-loss id（解码失败留 0，不参与追踪）。
+	ids := make([]uint64, len(req.Items))
+	// 先把整批逐条入队并收集"落盘/多数派等待"，最后统一等待：
+	// 同一批共享一次组提交（M1）与多数派往返，而不是每条各等一轮。
+	type durableWait struct {
+		idx  int
+		wait func() error
 	}
-	v, ok := b.vhostOf(req.VHost)
-	if !ok {
-		return fwdJSON(fwdPublishResp{fwdEnvelope: fwdOK})
-	}
-	q, ok := v.getQueue(req.Queue)
-	if !ok {
-		// 队列在路由与转发之间被删掉了：按"未路由"回，客户端在 mandatory 下会收到 Basic.Return。
-		return fwdJSON(fwdPublishResp{fwdEnvelope: fwdOK})
-	}
-	if v.queueRemote(q) {
-		return fwdErr(plugin.KindInternal,
-			"INTERNAL_ERROR - 队列 '%s' 的服务节点不一致（本节点并不持有它的数据）", req.Queue)
-	}
-	accepted, wait, err := q.publish(cloneForQueue(msg))
-	if err != nil {
-		return fwdErrFrom(err)
-	}
-	if wait != nil {
-		// 持久消息等落盘、仲裁队列等复制到多数派：都完成后再应答，
-		// 这样代理节点回给客户端的 confirm 才是诚实的。
-		if err := wait(); err != nil {
-			return nil, fmt.Errorf("等待队列 %s 持久化失败: %w", req.Queue, err)
+	waits := make([]durableWait, 0, len(req.Items))
+	for i, it := range req.Items {
+		msg, err := b.decodeMessage(it.Msg)
+		if err != nil {
+			// 编解码失败是协议级错误：报给该条，让它按"发布失败"处理，绝不能静默丢消息。
+			results[i].Error = err.Error()
+			continue
+		}
+		ids[i] = messageID(msg.Body)
+		v, ok := b.vhostOf(it.VHost)
+		if !ok {
+			// **不能静默成功**：Owner 本地没有该 vhost，消息并未入队。若回"成功"，
+			// 代理节点会把它当已落盘而上报确认 → 已确认消息丢失。按失败回，让发布方重试。
+			b.fwdQueueMissing.Add(1)
+			results[i].Error = fmt.Sprintf("目标 vhost '%s' 在本节点不存在（未能入队）", it.VHost)
+			continue
+		}
+		q, ok := v.getQueue(it.Queue)
+		if !ok {
+			// 同理：队列在 Owner 本地缺失（多为节点重启后元数据尚未回放完的瞬态），
+			// 必须按失败回，绝不能让"静默丢弃"伪装成"已确认"。
+			b.fwdQueueMissing.Add(1)
+			results[i].Error = fmt.Sprintf("目标队列 '%s' 在本节点不存在（未能入队）", it.Queue)
+			continue
+		}
+		if v.queueRemote(q) {
+			b.fwdRemoteMismatch.Add(1)
+			results[i].Error = fmt.Sprintf("队列 '%s' 的服务节点不一致（本节点并不持有它的数据）", it.Queue)
+			continue
+		}
+		accepted, wait, err := q.publish(cloneForQueue(msg))
+		if err != nil {
+			b.fwdPublishErr.Add(1)
+			results[i].Error = err.Error()
+			continue
+		}
+		results[i].Routed = true
+		results[i].Rejected = !accepted
+		if !accepted {
+			b.fwdRejected.Add(1)
+		}
+		if wait != nil {
+			waits = append(waits, durableWait{idx: i, wait: wait})
+		} else if q.isQuorum() {
+			// 仲裁队列发布成功时**必然**给出"落盘/多数派"等待；wait==nil 只可能是队列已关闭，
+			// 此时消息并未入队 —— 绝不能当成功上报（否则又是"已确认却从未入队"）。
+			b.fwdNoWait.Add(1)
+			results[i].Routed = false
+			results[i].Rejected = false
+			results[i].Error = fmt.Sprintf("队列 '%s' 当前不可用（未能入队）", it.Queue)
 		}
 	}
-	b.fwdIn.Add(1)
-	return fwdJSON(fwdPublishResp{fwdEnvelope: fwdOK, Routed: true, Rejected: !accepted})
+	for _, w := range waits {
+		if err := w.wait(); err != nil {
+			// 落盘/多数派失败：该条按失败回，代理节点会对它否定确认。
+			b.fwdDurableErr.Add(1)
+			results[w.idx].Routed = false
+			results[w.idx].Rejected = false
+			results[w.idx].Error = fmt.Sprintf("等待队列 %s 持久化失败: %v", req.Items[w.idx].Queue, err)
+		}
+	}
+	b.fwdIn.Add(uint64(len(req.Items)))
+	// 按 id 追踪：Owner 侧记录每条转发的最终入队结果（接受/失败），供与代理侧样本对账。
+	for i := range results {
+		r := results[i]
+		b.traceFwdIn(ids[i], r.Error == "" && !r.Rejected)
+	}
+	return fwdJSON(fwdBatchPublishResp{fwdEnvelope: fwdOK, Results: results})
 }
 
 func (b *Broker) handleForwardGet(_ context.Context, from string, payload []byte) ([]byte, error) {
@@ -541,11 +789,14 @@ func (b *Broker) handleForwardGet(_ context.Context, from string, payload []byte
 	}
 	v, ok := b.vhostOf(req.VHost)
 	if !ok {
-		return fwdJSON(fwdGetResp{fwdEnvelope: fwdOK, Empty: true})
+		return fwdErr(plugin.KindNotFound, "NOT_FOUND - vhost '%s' 不存在", req.VHost)
 	}
 	q, ok := v.getQueue(req.Queue)
 	if !ok {
-		return fwdJSON(fwdGetResp{fwdEnvelope: fwdOK, Empty: true})
+		// **不能回"空"**：目标节点本地没有这条队列时回 Empty，会让调用方（尤其红线的"拉空证空"）
+		// 把"这一侧根本没有该队列"误读成"队列已空"，从而漏判真实丢失。按 NOT_FOUND 回，让调用方
+		// 判定为"未能证空"（null）而不是"已确认无丢失"。
+		return fwdErr(plugin.KindNotFound, "NOT_FOUND - no queue '%s' in vhost '%s'", req.Queue, req.VHost)
 	}
 	d, ok := q.get(req.NoAck)
 	if !ok {
@@ -746,6 +997,7 @@ func (b *Broker) handleForwardCanceled(_ context.Context, _ string, payload []by
 	b.fwdMu.Lock()
 	lp := b.fwdLocal[req.WireTag]
 	delete(b.fwdLocal, req.WireTag)
+	delete(b.fwdRepointUntil, req.WireTag)
 	b.fwdMu.Unlock()
 	if lp != nil {
 		lp.session.forgetConsumer(lp.tag)
@@ -875,6 +1127,200 @@ func (b *Broker) dropProxiesForQueue(vhost, queue, reason string) {
 	}
 }
 
+// adoptLocalProxiesAsConsumers 把"代理到旧 leader"的本地消费者改挂为本节点队列上的本地消费者。
+//
+// 场景：客户端连在 follower 上、消费者被代理到 leader；leader 宕机后**本节点当选新 leader**。
+// 旧 leader 已经无法发出 basic.cancel，本节点 q.consumers 里也没有这些消费者 —— 若不改挂，
+// 客户端会静默收不到消息、队列持续堆积（实测：选主后 consumers 归零、ready 一路涨）。
+//
+// 改挂后 Deliver 直接走会话投给客户端（不再经跨节点回推），Cancel 仍走协议层。
+// 返回成功改挂的数量。
+func (b *Broker) adoptLocalProxiesAsConsumers(v *vhost, q *queue) int {
+	b.fwdMu.Lock()
+	adopted := make([]*localProxy, 0, 4)
+	for tag, p := range b.fwdLocal {
+		if p.vhost == v.name && p.queue == q.name {
+			delete(b.fwdLocal, tag)
+			delete(b.fwdRepointUntil, tag)
+			adopted = append(adopted, p)
+		}
+	}
+	b.fwdMu.Unlock()
+
+	n := 0
+	for _, p := range adopted {
+		sub := p.sub
+		// 队列层标签用**客户端标签**，不能用 wireTag：adopt 之后这条消费者就是本节点队列上的
+		// 本地消费者，而客户端后续的 basic.cancel（[vhostSession.Cancel]）与会话关闭清理都是按
+		// **客户端标签**调用 q.cancel 的。若这里用 wireTag 注册，q.cancel(客户端标签) 就找不到条目
+		// —— 消费者永久泄漏：管理面 `consumers` 不归零、队列持续向已断开的会话投递。
+		// 投递与结算本来就走会话/队列的本地路径（与标签取值无关），因此改用客户端标签是安全的。
+		sub.Tag = p.tag
+		sub.Queue = q.name
+		if err := q.subscribe(sub); err != nil {
+			b.log.Warn("改挂代理消费者为本地消费者失败",
+				"queue", q.name, "wire_tag", p.wireTag, "err", err)
+			// 挂不上就显式取消并通知客户端，避免再次静默。
+			if p.sub.Cancel != nil {
+				p.sub.Cancel("CONSUMER_CANCELLED - quorum queue leader changed")
+			}
+			continue
+		}
+		b.log.Info("已把代理消费者改挂为本地消费者",
+			"queue", q.name, "wire_tag", p.wireTag, "tag", p.tag)
+		n++
+	}
+	return n
+}
+
+// queueOwnerKey 生成"队列归属"缓存与集合的键（vhost + 队列名唯一确定一条队列）。
+func queueOwnerKey(vhost, queue string) string { return vhost + "\x00" + queue }
+
+// refreshChangedQueues 遍历各 vhost 的仲裁队列，与 owner 缓存比较，返回 owner 发生变化的队列集合。
+//
+// 这是稳态快路径：只有仲裁队列的 owner 会随选举变化（经典队列的 owner 创建即定、永不变），
+// 因此只遍历仲裁队列（O(仲裁队列数)），owner 不变时返回空集，调用方据此**跳过** O(代理数) 的扫描。
+func (b *Broker) refreshChangedQueues() map[string]struct{} {
+	changed := make(map[string]struct{})
+	for _, v := range b.vhostList() {
+		v.mu.RLock()
+		queues := make([]*queue, 0, len(v.queues))
+		for _, q := range v.queues {
+			if q.quorum != nil {
+				queues = append(queues, q)
+			}
+		}
+		v.mu.RUnlock()
+		for _, q := range queues {
+			owner := v.queueOwnerBestEffort(q)
+			key := queueOwnerKey(v.name, q.name)
+			b.fwdMu.Lock()
+			prev, ok := b.fwdQueueOwner[key]
+			if !ok || prev != owner {
+				b.fwdQueueOwner[key] = owner
+				changed[key] = struct{}{}
+			}
+			b.fwdMu.Unlock()
+		}
+	}
+	return changed
+}
+
+// repointForwards 周期性校正本地代理消费者的归属：目标节点已不是队列 owner 时改挂过去。
+//
+// 为什么需要它（实测缺陷）：仲裁队列换 leader（甚至旧 leader 直接宕机）时，
+// 代理消费者原本挂在旧 leader 上；旧 leader 要么宕机、要么只能清理自己的注册，
+// 而**代理节点自己不知道目标变了**，于是客户端静默收不到消息、队列持续堆积。
+// checkQuorumLeadership 只在本节点 leader 身份变化时动作，覆盖不到"一直是 follower"的代理节点，
+// 所以这里按周期做校正：
+//   - 新 owner 就是本节点 → 就地转成本地消费者（本地操作，直接做）；
+//   - 新 owner 是别的节点 → 到新 owner 重新注册（含 RPC，交给独立协程，见 repointProxy）。
+//
+// 开销控制（O(队列数)）：稳态下先只比较各仲裁队列的 owner（见 refreshChangedQueues），
+// **没有任何队列换主、也没有待重试的改挂时直接返回**，不触碰代理表 —— 每 tick 耗时与代理数量解耦。
+// 只有在"确实换主"或"还有改挂在退避重试"这两条罕见路径上，才遍历代理（O(代理数)）。
+//
+// 本函数跑在共享后台协程上（与水位/集群/选主检查同一条），因此**自身绝不发起网络调用**：
+// 否则一次选主里的批量改挂会把水位流控与选主感知一起卡住（见评估报告 §3）。
+func (b *Broker) repointForwards() {
+	if !b.clusterOn {
+		return
+	}
+	changed := b.refreshChangedQueues()
+	b.fwdMu.Lock()
+	pending := len(b.fwdRepointUntil) > 0
+	b.fwdMu.Unlock()
+	if len(changed) == 0 && !pending {
+		return // 稳态：无换主、无待重试 → 直接返回，不做 O(代理数) 扫描
+	}
+
+	now := time.Now()
+	b.fwdMu.Lock()
+	proxies := make([]*localProxy, 0, len(b.fwdLocal))
+	for _, p := range b.fwdLocal {
+		proxies = append(proxies, p)
+	}
+	b.fwdMu.Unlock()
+
+	for _, p := range proxies {
+		// 因换主进入时，只处理换主队列的代理（避免为一次换主遍历全部代理）。
+		// 纯重试（无换主）时不做此过滤：待重试的代理可能属于 owner 未再次变化的队列。
+		if !pending && len(changed) > 0 {
+			if _, ok := changed[queueOwnerKey(p.vhost, p.queue)]; !ok {
+				continue
+			}
+		}
+		v, ok := b.vhostOf(p.vhost)
+		if !ok {
+			continue
+		}
+		q, ok := v.getQueue(p.queue)
+		if !ok {
+			continue
+		}
+		// 用 best-effort 版本：queueOwner 在"还不知道 leader"时会阻塞轮询最多 quorumLeaderWait（3s），
+		// 绝不能在共享后台协程里等。拿不到 owner 就跳过，下一轮（1s 后）再试。
+		owner := v.queueOwnerBestEffort(q)
+		if owner == "" || owner == p.owner {
+			continue
+		}
+		if owner == b.nodeID {
+			b.adoptLocalProxiesAsConsumers(v, q)
+			continue
+		}
+		// 退避：同一消费者在窗口内最多发起一次改挂，避免失败时每轮都发一遍 RPC。
+		if !b.beginRepoint(p.wireTag, now) {
+			continue
+		}
+		go b.repointProxy(p, q, owner)
+	}
+}
+
+// beginRepoint 判断该代理标签现在是否可以发起一次改挂尝试（带退避与在途去重）。
+func (b *Broker) beginRepoint(wireTag string, now time.Time) bool {
+	b.fwdMu.Lock()
+	defer b.fwdMu.Unlock()
+	if until, ok := b.fwdRepointUntil[wireTag]; ok && now.Before(until) {
+		return false
+	}
+	b.fwdRepointUntil[wireTag] = now.Add(fwdRepointBackoff)
+	return true
+}
+
+// repointProxy 在独立协程里把一条代理消费者改挂到新的 owner 节点。
+//
+// 失败时**恢复旧登记**（remoteConsume 失败会把它从表里删掉）并保留退避记录，下一轮再试 ——
+// 绝不静默丢消费者；成功则清理节流记录（此后 owner 已一致，不再进入本路径）。
+func (b *Broker) repointProxy(p *localProxy, q *queue, newOwner string) {
+	err := b.remoteConsume(p.session, q, p.sub)
+	if err != nil {
+		b.restoreLocalProxy(p)
+		b.log.Info("改挂代理消费者到新 owner 失败，将退避后重试",
+			"queue", p.queue, "wire_tag", p.wireTag, "new_owner", newOwner, "err", err)
+		return
+	}
+	b.log.Info("代理消费者的队列归属已变化，已改挂到新 owner",
+		"queue", p.queue, "old_owner", p.owner, "new_owner", newOwner)
+	b.fwdMu.Lock()
+	delete(b.fwdRepointUntil, p.wireTag)
+	b.fwdMu.Unlock()
+}
+
+// restoreLocalProxy 在改挂失败后把旧登记放回（仅当该标签当前不在表里）。
+//
+// remoteConsume 的语义是"先登记再发起注册、失败即删除"，对首次订阅（失败要报给客户端）是对的；
+// 但改挂复用它会连旧登记一起删掉，使该消费者永远不再重试。这里补上恢复，保证可重试。
+func (b *Broker) restoreLocalProxy(p *localProxy) {
+	b.fwdMu.Lock()
+	if _, ok := b.fwdLocal[p.wireTag]; !ok {
+		b.fwdLocal[p.wireTag] = p
+	} else {
+		// 已被并发改挂成功/取消：本轮的旧指针无意义，连同节流记录一起清掉。
+		delete(b.fwdRepointUntil, p.wireTag)
+	}
+	b.fwdMu.Unlock()
+}
+
 // dropRemoteProxy 摘除一个代理消费者（先从登记表移除，再真正取消）。
 func (b *Broker) dropRemoteProxy(p *remoteProxy, reason string) {
 	b.fwdMu.Lock()
@@ -950,6 +1396,8 @@ func (b *Broker) maintainForwards(now time.Time) {
 	}
 	b.sendForwardKeepalive(now)
 	b.reapForwards(now)
+	// 校正代理消费者归属：队列换 leader（含旧 leader 宕机）后必须改挂，否则客户端静默收不到消息。
+	b.repointForwards()
 }
 
 // sendForwardKeepalive 按周期向各 Owner 节点续租本节点持有的代理消费者与未结算拉取。
@@ -1037,8 +1485,31 @@ type ForwardStatus struct {
 	// ForwardedOut / ForwardedIn 是转发出去与接收进来的消息条数。
 	ForwardedOut uint64
 	ForwardedIn  uint64
+	// ForwardedBatches 是转发发布所用 RPC 次数：ForwardedOut/ForwardedBatches 即平均批大小。
+	ForwardedBatches uint64
 	// Deliveries 是推回代理节点的投递条数。
 	Deliveries uint64
+	// Owner 侧 handleForwardPublish 的分支计数（B5-follow-2 排查用）。
+	QueueMissing   uint64 // vhost/queue 在 Owner 本地缺失（静默丢弃候选）
+	RemoteMismatch uint64 // 本节点并非该队列的服务节点
+	PublishErr     uint64 // 入队失败
+	DurableErr     uint64 // 落盘/多数派等待失败
+	Rejected       uint64 // 长度限制拒绝
+	NoWait         uint64 // 仲裁队列发布未给出落盘等待（=队列已关闭，未入队）
+	// PhantomOK 是代理侧收到的"未路由且未拒绝且无错误"的应答数（静默丢弃签名，应为 0）。
+	PhantomOK uint64
+	// 转发边界按 id 追踪样本（B5-follow-2 排查）：代理侧转发成功/失败的 id、
+	// Owner 侧接受入队/失败的 id。用于判定"每转发批丢 1 条且拿到成功应答"发生在边界哪一侧。
+	// 四组集合均为**尾窗**（容量恒定，成功 65536 / 失败 262144）；对应的 `*Truncated` 为 true
+	// 表示该组发生过覆盖、已是"最近窗口"而非全量样本。
+	SentOKIDs        []uint64
+	SentBadIDs       []uint64
+	SentOKTruncated  bool
+	SentBadTruncated bool
+	InOKIDs          []uint64
+	InBadIDs         []uint64
+	InOKTruncated    bool
+	InBadTruncated   bool
 }
 
 // ForwardStatus 汇总转发层状态。
@@ -1052,7 +1523,17 @@ func (b *Broker) ForwardStatus() ForwardStatus {
 	b.fwdMu.Unlock()
 	st.ForwardedOut = b.fwdOut.Load()
 	st.ForwardedIn = b.fwdIn.Load()
+	st.ForwardedBatches = b.fwdBatches.Load()
 	st.Deliveries = b.fwdDeliveries.Load()
+	st.QueueMissing = b.fwdQueueMissing.Load()
+	st.RemoteMismatch = b.fwdRemoteMismatch.Load()
+	st.PublishErr = b.fwdPublishErr.Load()
+	st.DurableErr = b.fwdDurableErr.Load()
+	st.Rejected = b.fwdRejected.Load()
+	st.NoWait = b.fwdNoWait.Load()
+	st.PhantomOK = b.fwdPhantomOK.Load()
+	st.SentOKIDs, st.SentBadIDs, st.SentOKTruncated, st.SentBadTruncated = b.ForwardSentIDs()
+	st.InOKIDs, st.InBadIDs, st.InOKTruncated, st.InBadTruncated = b.ForwardInIDs()
 	return st
 }
 
@@ -1100,7 +1581,10 @@ func (b *Broker) fwdCall(ctx context.Context, node, method string, req, out any)
 		return plugin.Errorf(plugin.KindInternal,
 			"INTERNAL_ERROR - 队列的服务节点暂不可知（%s），请重试", method)
 	}
-	if b.cluster == nil {
+	// 只读一次 b.cluster：Close() 会在运行期把它置为 nil，若在这里分两次读取字段，
+	// 第一次判空通过、第二次已变 nil，就会变成"在 nil 接口上调用方法"而 panic。
+	c := b.cluster
+	if c == nil {
 		return plugin.Errorf(plugin.KindInternal,
 			"INTERNAL_ERROR - 本节点未启用集群，无法与节点 %s 通信（%s）", node, method)
 	}
@@ -1108,7 +1592,7 @@ func (b *Broker) fwdCall(ctx context.Context, node, method string, req, out any)
 	if err != nil {
 		return plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - 编码转发请求失败（%s）: %v", method, err)
 	}
-	resp, err := b.cluster.Call(ctx, node, method, raw)
+	resp, err := c.Call(ctx, node, method, raw)
 	if err != nil {
 		return plugin.Errorf(plugin.KindInternal,
 			"INTERNAL_ERROR - 与节点 %s 通信失败（%s）: %v", node, method, err)

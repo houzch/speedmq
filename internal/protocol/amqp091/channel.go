@@ -44,7 +44,29 @@ type channel struct {
 	directReply *directReply
 	// closing 表示已因软错误关闭，等待客户端的 Channel.Close-Ok
 	closing bool
+
+	// ---- 发布确认流水线（M0）----
+	// confirm 模式下，连接读循环**不再同步等** res.Durable()：只把"待确认项"投进 confirmCh，
+	// 由 confirmLoop 协程按发布序号顺序等落盘后再回 basic.ack/nack。这样同一连接可同时存在多条
+	// 在途提案 —— 否则服务端永远只有 1 条在途，组提交无对象可合并（单发布者吞吐被卡死）。
+	// 这三个字段在 enableConfirm 时建立，此后只读。
+	confirmCh   chan confirmItem
+	confirmStop chan struct{}
+	stopOnce    sync.Once
 }
+
+// confirmItem 是一条等待确认的发布（confirm 模式下由读循环登记、确认器消费）。
+type confirmItem struct {
+	seq uint64
+	// durable 等"按 fsync 档位落盘 / 已多数派"完成；可能为 nil（瞬时消息 / 非持久档位）。
+	durable func() error
+	// rejected 表示被队列因长度限制拒绝（应回 nack）。
+	rejected bool
+}
+
+// confirmQueueDepth 是每通道"待确认发布"的队列深度：既是内存上界，也是背压点
+// （队列满时读循环阻塞，起到限流作用）。
+const confirmQueueDepth = 4096
 
 // txOpKind 区分事务缓冲里的一项操作。
 type txOpKind uint8
@@ -211,20 +233,10 @@ func (ch *channel) finishPublish() error {
 	if !confirmed {
 		return nil
 	}
-	// 持久消息：必须等到按 fsync 档位真正落盘后再确认。
-	// 否则客户端把 confirm 当成"不会丢"的依据，而消息其实只在内存里 ——
-	// 这是 M3 遗留下来、必须由 M4 修正的语义弱点。
-	if res.Durable != nil {
-		if err := res.Durable(); err != nil {
-			ch.log.Error("持久化失败，已对发布者否定确认", "err", err)
-			return ch.sendConfirmNack(seq, false)
-		}
-	}
-	if res.Rejected {
-		// 被队列因长度限制拒绝：否定确认，让生产者知道这条没进队列
-		return ch.sendConfirmNack(seq, false)
-	}
-	return ch.sendConfirmAck(seq, false)
+	// M0：不再在连接读循环里同步等落盘 —— 只登记，由 confirmLoop 按序号顺序确认。
+	// 语义不变：basic.ack 仍然只在 res.Durable()（落盘/多数派）成功之后才发出；
+	// 变的只是"谁来等、何时回"，从而让同一连接可以有多条在途（组提交才有对象可合并）。
+	return ch.enqueueConfirm(confirmItem{seq: seq, durable: res.Durable, rejected: res.Rejected})
 }
 
 // enableConfirm 打开本通道的发布确认模式。
@@ -239,7 +251,80 @@ func (ch *channel) enableConfirm() error {
 	}
 	ch.confirm = true
 	ch.publishSeq = 0
+	// M0：建立每通道的异步确认器（重复 confirm.select 只启一个）。
+	if ch.confirmCh == nil {
+		ch.confirmCh = make(chan confirmItem, confirmQueueDepth)
+		ch.confirmStop = make(chan struct{})
+		go ch.confirmLoop()
+	}
 	return nil
+}
+
+// enqueueConfirm 登记一条待确认发布（读循环调用）。
+//
+// 队列满时阻塞 —— 这是**背压**：待确认项本身就是"已加入队列但客户端还没收到 ack"的消息，
+// 无上限会让内存被客户端支配。通道关闭时立刻返回（消息已投给内核，客户端也会收到 Channel.Close）。
+func (ch *channel) enqueueConfirm(it confirmItem) error {
+	ch.mu.Lock()
+	q, stop := ch.confirmCh, ch.confirmStop
+	ch.mu.Unlock()
+	if q == nil || stop == nil {
+		// 未开启确认器（理论不可达）：退化为同步确认，宁可慢也不把消息"发布了却没确认"。
+		return ch.confirmNow(it)
+	}
+	select {
+	case q <- it:
+		return nil
+	case <-stop:
+		return nil
+	}
+}
+
+// confirmLoop 是确认器：按发布序号**顺序**等待每条待确认项落盘，再回 ack/nack。
+//
+// 顺序等待不会削弱流水线：各条的在途工作（Raft 提案 / 组提交 fsync）在 Publish 时就已经启动，
+// 这里只是按序"收取结果"，因此通常不需要真正等待。
+func (ch *channel) confirmLoop() {
+	for {
+		select {
+		case <-ch.confirmStop:
+			return
+		case it := <-ch.confirmCh:
+			if err := ch.confirmNow(it); err != nil {
+				// 写确认帧失败（多半是连接已断）：继续处理后续项意义不大，退出。
+				return
+			}
+		}
+	}
+}
+
+// confirmNow 等落盘并按语义回 ack/nack。
+func (ch *channel) confirmNow(it confirmItem) error {
+	// 持久消息：必须等"落盘/多数派"完成再确认，否则客户端会把 confirm 当成"不会丢"的依据。
+	// 队列因长度限制拒绝发布时也经此返回错误（转发路径由 Owner 侧回填），同样按否定确认处理。
+	if it.durable != nil {
+		if err := it.durable(); err != nil {
+			ch.log.Error("发布未能完成，已对发布者否定确认", "err", err)
+			return ch.sendConfirmNack(it.seq, false)
+		}
+	}
+	if it.rejected {
+		// 被队列因长度限制拒绝：否定确认，让生产者知道这条没进队列
+		return ch.sendConfirmNack(it.seq, false)
+	}
+	return ch.sendConfirmAck(it.seq, false)
+}
+
+// stopConfirms 停止确认器（幂等）。不等待其退出：它最多再完成一次落盘等待即有界退出，
+// 与通知/心跳协程的收尾方式一致，不阻塞连接关闭。
+func (ch *channel) stopConfirms() {
+	ch.mu.Lock()
+	stop := ch.confirmStop
+	ch.mu.Unlock()
+	if stop == nil {
+		return
+	}
+	ch.stopOnce.Do(func() { close(stop) })
 }
 
 // ---------------------------------------------------------------------------

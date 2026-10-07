@@ -275,6 +275,9 @@ type Status struct {
 	// CommitIndex / LastApplied 是共识进度。
 	CommitIndex uint64
 	LastApplied uint64
+	// ProposeEntries / FsyncTotal 是元数据 Raft 组的写路径计数（M4 观测；单机模式恒为 0）。
+	ProposeEntries uint64
+	FsyncTotal     uint64
 	// Peers 是投票成员 ID（含自己，已排序）。
 	Peers []string
 	// Learners 是非投票成员 ID（已排序；没有成员变更时为 nil）。

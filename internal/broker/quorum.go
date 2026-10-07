@@ -48,6 +48,18 @@ const (
 	quorumLeaderWait = 3 * time.Second
 	// quorumLeaderPoll 是等 leader 的轮询间隔。
 	quorumLeaderPoll = 20 * time.Millisecond
+	// quorumAckBatchWindow 是 ack 合批的时间窗口（M2）：窗口内到达的确认合并为**一条**日志条目。
+	// <=0 关闭合批（每条确认立即单条提交）。窗口越大批越大，确认落盘延迟也越大。
+	quorumAckBatchWindow = 10 * time.Millisecond
+	// quorumAckBatchMax 是单条 ack_batch 携带的确认条数上限：高吞吐下不等窗口、积满即提交，
+	// 既避免单条日志条目过大，也避免确认延迟随累积量无限增长。
+	quorumAckBatchMax = 1024
+	// quorumPublishBatchWindow 是 publish 合批的时间窗口（M3）：窗口内到达的发布合并为**一条**日志条目。
+	// <=0 关闭合批（每条发布单独成批）。窗口越大批越大，发布确认延迟也越大。
+	quorumPublishBatchWindow = 5 * time.Millisecond
+	// quorumPublishBatchMax 是单条 publish_batch 携带的发布条数上限：积满即提交（不等窗口），
+	// 避免单条日志条目过大、确认延迟随累积量无限增长。
+	quorumPublishBatchMax = 256
 )
 
 // 仲裁队列的日志命令。
@@ -55,16 +67,38 @@ const (
 // 日志里只记"决定"，不记"过程"：长度限制怎么算、谁先谁后、是否过期，全部由 leader
 // 判定后写进日志，副本只按序应用。这样状态机不依赖时间与本地状态，副本之间不会分叉。
 const (
-	quorumOpPublish = "publish"
-	quorumOpAck     = "ack"
-	quorumOpPurge   = "purge"
+	quorumOpPublish      = "publish"
+	quorumOpPublishBatch = "publish_batch"
+	quorumOpAck          = "ack"
+	quorumOpAckBatch     = "ack_batch"
+	quorumOpPurge        = "purge"
 )
+
+// quorumPublishItem 是 publish_batch 里的一条发布。
+//
+// Seq 与 ExpireAt 由 leader 判定后**写死在日志里**（副本不重算，保证确定性）；
+// Dropped 是"应用本条之前"leader 判定要淘汰的队首序号（按判定顺序），副本按序把它们当确认应用。
+// 这样长度限制/淘汰完全由 leader 的单点判定决定，副本只复现结果，不会各算一遍而分叉。
+type quorumPublishItem struct {
+	// Seq 是**序号提示**：0 表示由应用侧按日志顺序分配（当前实现恒为 0）。
+	// 非 0 时若与既有序号冲突也会被应用侧纠正，避免"已确认却丢消息"（B5-follow-2）。
+	Seq      uint64   `json:"seq"`
+	Body     []byte   `json:"body,omitempty"`
+	ExpireAt int64    `json:"expire_at,omitempty"`
+	Dropped  []uint64 `json:"dropped,omitempty"`
+}
 
 // quorumCommand 是一条日志命令。
 type quorumCommand struct {
 	Op string `json:"op"`
 	// Seq 是消息在队列内的稳定序号（由 leader 分配）：发布时指定，确认时引用。
 	Seq uint64 `json:"seq,omitempty"`
+	// Seqs 是合批确认（ack_batch）里的多个序号，按到达顺序排列。
+	//
+	// 与 Seq 分开而不是复用：既有 ack 命令的线格式保持不变（兼容旧日志与单条路径）。
+	Seqs []uint64 `json:"seqs,omitempty"`
+	// Items 是合批发布（publish_batch）里的多条消息，按 leader 分配序号的顺序排列。
+	Items []quorumPublishItem `json:"items,omitempty"`
 	// Body 是 MessageCodec 编码后的消息（仅 publish）。
 	Body []byte `json:"body,omitempty"`
 	// ExpireAt 是该消息的到期时刻（Unix 毫秒，0 表示不过期）。
@@ -145,6 +179,37 @@ type quorumGroup struct {
 	node      *raft.Node
 	stopped   bool
 	wasLeader bool
+
+	// ack 合批（M2）：窗口内累积的确认序号，由一个一次性定时器在窗口结束时合并成
+	// 一条 ack_batch 日志条目（见 proposeAck / flushAcks）。ackMu 只保护这三个字段，
+	// 不与组主锁 mu 嵌套（两者各自独立获取）。
+	ackMu       sync.Mutex
+	pendingAcks []uint64
+	ackTimer    *time.Timer
+
+	// publish 合批（M3）：窗口内累积的发布，满批或窗口到期后合并成一条 publish_batch 日志条目。
+	// pubMu 只保护这两个字段；登记在持有队列锁 q.mu 时进行（见 publishQuorum），
+	// 以保证"批内顺序 == 序号顺序"（非优先级队列的就绪表是追加式的，顺序敏感）。
+	pubMu    sync.Mutex
+	pubBatch *pubBatch
+	pubTimer *time.Timer
+}
+
+// pubBatch 是一批待提交的发布。
+//
+// done 在提案完成（成功或失败）时关闭，err 在此之前写入；等待方先 <-done 再读 err。
+// dropped 记录本批在 leader 本地已移除的队首（提案失败时按序回插，避免 ready 与副本日志分叉）。
+type pubBatch struct {
+	items   []quorumPublishItem
+	dropped []*queuedMsg
+	done    chan struct{}
+	err     error
+}
+
+// finish 结束一批发布：写入结果并唤醒全部等待方。只应被调用一次。
+func (b *pubBatch) finish(err error) {
+	b.err = err
+	close(b.done)
 }
 
 // startQuorumGroup 启动一条仲裁队列的 Raft 组（每个节点都会为同一条队列启动自己的一份）。
@@ -276,6 +341,30 @@ func (g *quorumGroup) stop() {
 	node := g.node
 	g.mu.Unlock()
 
+	// 停掉 ack 合批定时器并丢弃窗口内未提交的确认：这些消息仍在日志里，重启后会重投
+	// （at-least-once 不变）；此刻不再向即将停止的 node 提案。
+	g.ackMu.Lock()
+	g.pendingAcks = nil
+	if g.ackTimer != nil {
+		g.ackTimer.Stop()
+		g.ackTimer = nil
+	}
+	g.ackMu.Unlock()
+
+	// 停掉发布合批定时器，并让窗口内未提交的发布**显式失败**：发布有等待方（confirm），
+	// 只丢弃会让它们永久挂起；这些消息尚未进入日志，调用方会收到错误并重试。
+	g.pubMu.Lock()
+	pub := g.pubBatch
+	g.pubBatch = nil
+	if g.pubTimer != nil {
+		g.pubTimer.Stop()
+		g.pubTimer = nil
+	}
+	g.pubMu.Unlock()
+	if pub != nil {
+		pub.finish(errors.New("仲裁队列已停止，发布未完成"))
+	}
+
 	if node != nil {
 		node.Stop()
 	}
@@ -316,22 +405,69 @@ func (g *quorumGroup) propose(cmd quorumCommand) error {
 	return err
 }
 
-// proposeAck 把"这条消息已确认"写进日志。
+// proposeAck 把"这条消息已确认"记入日志（M2：合批）。
 //
-// 异步执行：客户端 ack 没有可见应答，没必要让 ack 路径白等一次 Raft 往返。
-// 提案失败只记日志 —— 消息仍留在日志里，会被重新投递（at-least-once），不会丢。
+// 合批：确认先累积在一个短窗口内，由一次性定时器把窗口内的确认合并成**一条** ack_batch
+// 日志条目（见 flushAcks），从而把"每条确认一次 Raft 提案"降到"每批一次"。
+//
+// 为什么可以延迟：客户端 ack 没有可见应答；窗口内节点崩溃只会让该批确认未落盘，
+// 消息被重新投递（at-least-once 语义不变）。异步执行，提案失败只记日志。
 func (g *quorumGroup) proposeAck(seq uint64) {
-	data, err := encodeQuorumCommand(quorumCommand{Op: quorumOpAck, Seq: seq})
-	if err != nil {
-		g.log.Error("编码仲裁队列确认命令失败", "queue", g.q.name, "seq", seq, "err", err)
+	if quorumAckBatchWindow <= 0 {
+		// 关闭合批：立即单条提交（保留可配为 0 关闭的能力）。
+		g.proposeAckBatch([]uint64{seq})
 		return
 	}
+	g.ackMu.Lock()
+	g.pendingAcks = append(g.pendingAcks, seq)
+	if len(g.pendingAcks) >= quorumAckBatchMax {
+		// 积满上限：不等窗口，立即提交（避免单条日志过大、确认延迟无谓累积）。
+		g.ackMu.Unlock()
+		g.flushAcks()
+		return
+	}
+	if g.ackTimer == nil {
+		// 首个确认到达时启动一次性定时器；窗口内的后续确认只是追加，不再重复启动。
+		g.ackTimer = time.AfterFunc(quorumAckBatchWindow, g.flushAcks)
+	}
+	g.ackMu.Unlock()
+}
+
+// flushAcks 把当前累积的确认作为一条 ack_batch 命令提交并清空（定时器/满批/停止时调用）。
+func (g *quorumGroup) flushAcks() {
+	g.ackMu.Lock()
+	seqs := g.pendingAcks
+	g.pendingAcks = nil
+	if g.ackTimer != nil {
+		// 由定时器自身触发时 Stop 返回 false，无副作用；由满批/停止路径触发时取消待触发的定时器。
+		g.ackTimer.Stop()
+		g.ackTimer = nil
+	}
+	g.ackMu.Unlock()
+	if len(seqs) == 0 {
+		return
+	}
+	g.proposeAckBatch(seqs)
+}
+
+// proposeAckBatch 把一批确认作为**一条** ack_batch 命令异步写入日志。
+//
+// 提案失败只记日志 —— 消息仍留在日志里，会被重新投递（at-least-once），不会丢。
+func (g *quorumGroup) proposeAckBatch(seqs []uint64) {
+	data, err := encodeQuorumCommand(quorumCommand{Op: quorumOpAckBatch, Seqs: seqs})
+	if err != nil {
+		g.log.Error("编码仲裁队列合批确认命令失败", "queue", g.q.name, "count", len(seqs), "err", err)
+		return
+	}
+	// 观测：批次数与确认条数（二者之比即 ack 平均批大小，见 QuorumWriteStats）。
+	g.b.ackBatches.Add(1)
+	g.b.ackSeqs.Add(uint64(len(seqs)))
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), quorumProposeTimeout)
 		defer cancel()
 		if _, err := g.node.Propose(ctx, data); err != nil {
-			g.log.Warn("仲裁队列的确认写入日志失败（消息会被重新投递）",
-				"queue", g.q.name, "seq", seq, "err", err)
+			g.log.Warn("仲裁队列的合批确认写入日志失败（消息会被重新投递）",
+				"queue", g.q.name, "count", len(seqs), "err", err)
 		}
 	}()
 }
@@ -365,8 +501,27 @@ func (f *quorumFSM) Apply(index uint64, data []byte) (any, error) {
 			return nil, err
 		}
 		q.applyQuorumPublish(cmd.Seq, msg, cmd.ExpireAt)
+	case quorumOpPublishBatch:
+		// 按序应用批内每条：先按 leader 记录的顺序淘汰队首，再插入本条。
+		// 淘汰与序号都写死在日志里，副本只复现结果，因此不会各算一遍而分叉。
+		for _, it := range cmd.Items {
+			for _, dead := range it.Dropped {
+				q.applyQuorumAck(dead)
+			}
+			msg, err := f.g.b.decodeMessage(it.Body)
+			if err != nil {
+				return nil, err
+			}
+			q.applyQuorumPublish(it.Seq, msg, it.ExpireAt)
+		}
 	case quorumOpAck:
 		q.applyQuorumAck(cmd.Seq)
+	case quorumOpAckBatch:
+		// 按序应用批内每条确认。确认之间互不影响（各自从 ready 里移除一个不同序号），
+		// 因此即使顺序与到达顺序不同，结果也一致；仍按序应用以求与日志顺序严格对应。
+		for _, seq := range cmd.Seqs {
+			q.applyQuorumAck(seq)
+		}
 	case quorumOpPurge:
 		q.applyQuorumPurge()
 	default:
@@ -509,47 +664,127 @@ func (q *queue) publishQuorum(msg *plugin.Message) (accepted bool, wait func() e
 			dropped = append(dropped, head)
 		}
 	}
-	q.nextSeq++
-	seq := q.nextSeq
 	var expireAt int64
 	if ttl := a.effectiveTTL(parseExpiration(msg.Properties.Expiration)); ttl > 0 {
 		expireAt = time.Now().Add(ttl).UnixMilli()
 	}
-	q.mu.Unlock()
-
-	for i, head := range dropped {
-		if err := g.propose(quorumCommand{Op: quorumOpAck, Seq: head.seq}); err != nil {
-			// 提案失败：本地已移除的队首必须**回插**，否则 leader 的 ready 与副本日志分叉
-			// —— 副本仍认为这些消息在队列里，leader 却已把它们从就绪集里丢掉。
-			q.mu.Lock()
-			q.insertFrontLocked(dropped[i:])
-			q.mu.Unlock()
-			q.log.Warn("仲裁队列挤出队首失败，已回滚本地移除", "queue", q.name, "seq", head.seq, "err", err)
-			return false, nil, plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - %v", err)
+	// **不在 leader 侧分配序号**（Seq 留 0，由应用侧统一分配）：leader 的应用状态可能滞后于日志
+	// （选主后尤其明显），此时按本地 nextSeq 分配会与"已提交/已入日志但尚未应用"的条目撞号，
+	// 之后的确认就会删错条目 → 已确认却丢消息（B5-follow-2 根因）。序号在 apply 时按同一日志顺序
+	// 分配给所有副本，既确定又永不重复。
+	item := quorumPublishItem{Body: body, ExpireAt: expireAt}
+	if len(dropped) > 0 {
+		item.Dropped = make([]uint64, len(dropped))
+		for i, head := range dropped {
+			item.Dropped[i] = head.seq
 		}
 	}
+	// 登记进发布批：在持有 q.mu 时进行，保证"批内顺序 == 序号顺序"
+	// （非优先级队列的就绪表是追加式的，应用顺序必须与序号一致）。
+	batch := g.enqueuePublishLocked(item, dropped)
+	q.mu.Unlock()
+	g.b.quorumAcceptedPublish.Add(1)
 
-	data, err := encodeQuorumCommand(quorumCommand{
-		Op: quorumOpPublish, Seq: seq, Body: body, ExpireAt: expireAt,
-	})
-	if err != nil {
-		return false, nil, plugin.Errorf(plugin.KindInternal, "INTERNAL_ERROR - %v", err)
-	}
-	// 提案必须**立刻启动**（而不是等协议层调用 wait）：未开 confirm 的客户端没有等待者，
-	// 若把提案放在 wait 里，消息永远不会被复制。
-	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), quorumProposeTimeout)
-		defer cancel()
-		_, perr := g.node.Propose(ctx, data)
-		done <- perr
-	}()
+	// wait 在"整批已复制到多数派并应用"后返回 —— 协议层等它再回 confirm。
+	// 同批各项共享同一份结论：批次整体提交，不存在"批内部分落盘"。
 	return true, func() error {
-		if perr := <-done; perr != nil {
-			return fmt.Errorf("仲裁队列复制失败（未达到多数派）: %w", perr)
+		<-batch.done
+		if batch.err != nil {
+			return fmt.Errorf("仲裁队列复制失败（未达到多数派）: %w", batch.err)
 		}
 		return nil
 	}, nil
+}
+
+// enqueuePublishLocked 把一条发布登记进当前发布批，返回该批（其 done/err 供调用方等待）。
+//
+// **调用方必须持有 q.mu**：序号分配与登记在同一临界区完成，才能保证批内顺序与序号顺序一致。
+// 满批（或窗口关闭）时把整批封口并提交；否则由一次性定时器在窗口到期时提交。
+//
+// 合批只改变"何时 / 以多大粒度写日志"，不改发布语义：批次一经提交即整体落盘并应用。
+func (g *quorumGroup) enqueuePublishLocked(item quorumPublishItem, dropped []*queuedMsg) *pubBatch {
+	g.pubMu.Lock()
+	if g.pubBatch == nil {
+		g.pubBatch = &pubBatch{done: make(chan struct{})}
+	}
+	b := g.pubBatch
+	b.items = append(b.items, item)
+	b.dropped = append(b.dropped, dropped...)
+
+	flushNow := quorumPublishBatchWindow <= 0 || len(b.items) >= quorumPublishBatchMax
+	if flushNow {
+		// 封口：后续登记会新建批次，本批不再接受新条目（避免"已提交的批里又冒出条目"）。
+		g.pubBatch = nil
+		if g.pubTimer != nil {
+			g.pubTimer.Stop()
+			g.pubTimer = nil
+		}
+	} else if g.pubTimer == nil {
+		g.pubTimer = time.AfterFunc(quorumPublishBatchWindow, g.flushPubs)
+	}
+	g.pubMu.Unlock()
+
+	if flushNow {
+		g.proposeBatch(b)
+	}
+	return b
+}
+
+// flushPubs 提交并清空当前发布批（定时器到期时调用）。
+func (g *quorumGroup) flushPubs() {
+	g.pubMu.Lock()
+	b := g.pubBatch
+	g.pubBatch = nil
+	if g.pubTimer != nil {
+		g.pubTimer.Stop()
+		g.pubTimer = nil
+	}
+	g.pubMu.Unlock()
+	g.proposeBatch(b)
+}
+
+// proposeBatch 把一批发布作为**一条** publish_batch 命令提交（异步，不阻塞调用方）。
+//
+// 编码 / 提案一律在独立 goroutine 内完成：调用方可能在持有 q.mu 时调用（满批路径），
+// 而失败回滚需要再取 q.mu —— 若同步执行会自锁；异步执行也顺带避免把 Raft 往返放进队列锁。
+func (g *quorumGroup) proposeBatch(b *pubBatch) {
+	if b == nil || len(b.items) == 0 {
+		return
+	}
+	go func() {
+		data, err := encodeQuorumCommand(quorumCommand{Op: quorumOpPublishBatch, Items: b.items})
+		if err != nil {
+			g.rollbackDropped(b)
+			g.log.Error("编码仲裁队列合批发布命令失败", "queue", g.q.name, "count", len(b.items), "err", err)
+			b.finish(err)
+			return
+		}
+		// 观测：批次数与发布条数（二者之比即发布平均批大小）。
+		g.b.publishBatches.Add(1)
+		g.b.publishItems.Add(uint64(len(b.items)))
+
+		ctx, cancel := context.WithTimeout(context.Background(), quorumProposeTimeout)
+		defer cancel()
+		_, perr := g.node.Propose(ctx, data)
+		if perr != nil {
+			// 提案失败：本批在 leader 本地已移除的队首必须**回插**（副本仍认为它们在队列里），
+			// 否则 ready 与副本日志分叉；本批的发布都未应用，等待方会收到错误并重试。
+			g.rollbackDropped(b)
+			g.log.Warn("仲裁队列的合批发布写入日志失败（消息未被接受）",
+				"queue", g.q.name, "count", len(b.items), "err", perr)
+		}
+		b.finish(perr)
+	}()
+}
+
+// rollbackDropped 把某批在 leader 本地已移除的队首按序回插（提案失败时调用）。
+func (g *quorumGroup) rollbackDropped(b *pubBatch) {
+	if len(b.dropped) == 0 {
+		return
+	}
+	g.q.mu.Lock()
+	g.q.insertFrontLocked(b.dropped)
+	g.q.mu.Unlock()
 }
 
 // purgeQuorum 清空队列：把"清空"写进日志，副本据此清掉各自的 ready。
@@ -606,23 +841,40 @@ func (q *queue) sweepQuorum(now time.Time) {
 }
 
 // applyQuorumPublish 把一条已提交的发布落进队列（所有副本都执行）。
+//
+// seq 是日志里的**序号提示**：为 0 表示由应用侧分配（当前实现恒为 0）。无论哪种情况，应用后的序号
+// 都保证严格大于既有 nextSeq —— leader 分配序号时其应用状态可能滞后于日志，直接沿用就会与
+// "已提交/已入日志但尚未应用"的条目撞号，随后 applyQuorumAck 会删错条目（表现为"已确认却丢消息"，
+// B5-follow-2）。在应用侧统一分配/纠正即可根除，且所有副本按同一日志顺序应用，结果是确定的。
 func (q *queue) applyQuorumPublish(seq uint64, msg *plugin.Message, expireAtMs int64) {
-	item := &queuedMsg{msg: msg, seq: seq, priority: msg.Properties.Priority}
-	if expireAtMs > 0 {
-		item.expireAt = time.UnixMilli(expireAtMs)
-	}
 	q.mu.Lock()
 	if q.closed {
 		q.mu.Unlock()
 		return
 	}
-	if seq > q.nextSeq {
+	// 撞号（提示非 0 却不大于 nextSeq）会被重编；为 0 则按序分配。
+	collided := seq != 0 && seq <= q.nextSeq
+	if seq == 0 || collided {
+		q.nextSeq++
+		seq = q.nextSeq
+	} else {
 		q.nextSeq = seq
+	}
+	item := &queuedMsg{msg: msg, seq: seq, priority: msg.Properties.Priority}
+	if expireAtMs > 0 {
+		item.expireAt = time.UnixMilli(expireAtMs)
 	}
 	q.insertLocked(item)
 	q.published.Add(1)
 	needDispatch := len(q.consumers) > 0
 	q.mu.Unlock()
+	if g := q.quorum; g != nil {
+		g.b.quorumAppliedPublish.Add(1)
+		if collided {
+			// 告警计数：出现即说明有 leader 分配了会撞号的序号（修复前应恒为 0）。
+			g.b.quorumDupSeq.Add(1)
+		}
+	}
 	if needDispatch {
 		// 不能在这里同步投递：Apply 跑在该组的应用协程上，向慢消费者写 socket 会拖住整组的应用。
 		// dispatch 自身用 dispatching 标志防重入，并发触发是安全的。
@@ -631,15 +883,27 @@ func (q *queue) applyQuorumPublish(seq uint64, msg *plugin.Message, expireAtMs i
 }
 
 // applyQuorumAck 把一条已提交的确认落进队列：从 ready 里移除（幂等）。
+//
+// 同时做**移除原因**判定（B5-follow-2 插桩）：本节点作为 leader 时，ready 里只应存在"未投递"消息
+// （投递会把条目移出 ready 进 unacked）。因此"确认命中 ready"意味着**一条从未投递的消息被删掉了**
+// —— 这是数据丢失的直接证据。follower 上命中 ready 属正常（它不投递，全部消息都在 ready），不计数。
 func (q *queue) applyQuorumAck(seq uint64) {
+	var removedMsg *plugin.Message
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	for i, item := range q.ready {
 		if item.seq == seq {
 			q.ready = append(q.ready[:i], q.ready[i+1:]...)
 			q.readyBytes -= messageSize(item.msg)
-			return
+			removedMsg = item.msg
+			break
 		}
+	}
+	q.mu.Unlock()
+	// 判定放在队列锁之外：q.quorum.isLeader() 会取组锁，避免与 q.mu 形成嵌套锁序。
+	if removedMsg != nil && q.quorum != nil && q.quorum.isLeader() {
+		q.quorum.b.quorumAckRemovedUndelivered.Add(1)
+		// 按 id 记录被错删的消息样本，供与客户端 confirmed/consumed id 对账。
+		q.quorum.b.recordQuorumAckRemoved(seq, removedMsg)
 	}
 }
 
@@ -696,6 +960,12 @@ func (b *Broker) checkQuorumLeadership() {
 			}
 			if isLeader {
 				b.log.Info("仲裁队列已成为 leader，开始服务", "queue", q.name)
+				// 选主后重建消费者注册：本节点此前是 follower，客户端挂在本节点的消费者
+				// 是"代理到旧 leader"的；旧 leader 已无法通知取消，必须把它们改挂成本地消费者，
+				// 否则客户端会静默收不到消息（见 adoptLocalProxiesAsConsumers）。
+				if n := b.adoptLocalProxiesAsConsumers(v, q); n > 0 {
+					b.log.Info("选主后已重建本地消费者注册", "queue", q.name, "consumers", n)
+				}
 				q.dispatch()
 				continue
 			}

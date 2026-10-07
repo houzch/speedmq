@@ -26,7 +26,7 @@ Mga kakayahang mayroon na: persistence (segment log + fsync tiers + crash recove
 docker run -d --name swiftmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.02
+  houzch/swiftmq:1.1.03
 ```
 
 Nailalathala ang image sa dalawang lugar na pareho ang nilalaman (piliin ang mas mabilis para sa iyo): Docker Hub `houzch/swiftmq` at GitHub GHCR `ghcr.io/houzch/swiftmq`; parehong may `linux/amd64` at `linux/arm64`.

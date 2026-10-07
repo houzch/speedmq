@@ -60,6 +60,27 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 	writeMetric(&sb, "swiftmq_memory_high_watermark", "gauge", "内存水位比例", fmt.Sprintf("%g", wm))
 	writeMetric(&sb, "swiftmq_disk_free_limit_bytes", "gauge", "磁盘剩余空间下限", fmt.Sprint(diskLimit))
 
+	// Raft 写路径（M1 组提交 / M4 观测）：只统计本节点作为 leader 的提案与 fsync，
+	// 两者之比即"平均批大小"—— 越大说明 fsync 被摊得越薄，写路径越健康。
+	ws := b.QuorumWriteStats()
+	writeMetric(&sb, "swiftmq_quorum_propose_entries_total", "counter",
+		"本节点作为 leader 累计追加到 Raft 日志的条目数", fmt.Sprint(ws.ProposeEntries))
+	writeMetric(&sb, "swiftmq_quorum_fsync_total", "counter",
+		"本节点作为 leader 累计执行的 Raft 日志 fsync 次数", fmt.Sprint(ws.FsyncTotal))
+	// ack 合批（M2）：平均每次 ack_batch 日志条目携带的确认条数（越大说明消费侧合批越有效）。
+	writeMetric(&sb, "swiftmq_quorum_ack_batch_size", "gauge",
+		"ack 合批的平均批大小（确认条数 / ack_batch 日志条目数）", fmt.Sprintf("%.2f", ws.AckBatchSize()))
+	// publish 合批（M3）：平均每次 publish_batch 日志条目携带的消息条数。
+	writeMetric(&sb, "swiftmq_quorum_publish_batch_size", "gauge",
+		"publish 合批的平均批大小（消息条数 / publish_batch 日志条目数）", fmt.Sprintf("%.2f", ws.PublishBatchSize()))
+	// 正确性告警（B5-follow-2）：接受/应用条数与撞号计数。正常 applied == accepted 且 dup_seq == 0。
+	writeMetric(&sb, "swiftmq_quorum_accepted_publish_total", "counter",
+		"仲裁队列接受的发布条数（本节点作为 leader）", fmt.Sprintf("%d", ws.AcceptedPublish))
+	writeMetric(&sb, "swiftmq_quorum_applied_publish_total", "counter",
+		"仲裁队列应用的发布条数（本节点作为 leader）", fmt.Sprintf("%d", ws.AppliedPublish))
+	writeMetric(&sb, "swiftmq_quorum_dup_seq_total", "counter",
+		"应用时序号撞号的发布条数（正常恒为 0；非 0 表示可能丢消息）", fmt.Sprintf("%d", ws.DupSeq))
+
 	// 每队列指标：vhost / queue 标签是运维定位问题的主要维度。
 	sb.WriteString("# HELP swiftmq_queue_messages_ready 队列中的就绪消息数\n")
 	sb.WriteString("# TYPE swiftmq_queue_messages_ready gauge\n")

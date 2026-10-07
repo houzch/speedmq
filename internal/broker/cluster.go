@@ -120,6 +120,87 @@ func (b *Broker) ClusterEnabled() bool { return b.clusterOn }
 // ClusterPaused 表示节点是否因 pause_minority 暂停了服务。
 func (b *Broker) ClusterPaused() bool { return b.clusterPaused.Load() }
 
+// QuorumWriteStats 汇总本节点 Raft 写路径的观测计数（M4，见 /metrics 与 /api/cluster）。
+type QuorumWriteStats struct {
+	// ProposeEntries 是本节点作为 leader 累计追加的日志条目数（元数据组 + 全部仲裁队列组）。
+	ProposeEntries uint64
+	// FsyncTotal 是本节点作为 leader 累计执行的日志 fsync 次数。
+	FsyncTotal uint64
+	// AckBatches 是 ack 合批（M2）写入的日志条目数；AckSeqs 是其中包含的确认条数。
+	// 二者之比即 ack 的平均批大小。
+	AckBatches uint64
+	AckSeqs    uint64
+	// PublishBatches 是 publish 合批（M3）写入的日志条目数；PublishItems 是其中包含的消息条数。
+	// 二者之比即发布的平均批大小。
+	PublishBatches uint64
+	PublishItems   uint64
+	// AcceptedPublish / AppliedPublish 是仲裁队列发布的"被接受"与"被应用"条数（B5-follow-2 排查）。
+	// 正常 applied == accepted；applied < accepted 即"接受却未落进队列"。
+	AcceptedPublish uint64
+	AppliedPublish  uint64
+	// DupSeq 是应用时撞号的发布条数（正常恒为 0）。非 0 说明 leader 分配了与既有条目冲突的序号。
+	DupSeq uint64
+	// AckRemovedUndelivered 是"确认命中 ready（即删掉了一条从未投递的消息）"的次数（正常恒为 0）。
+	AckRemovedUndelivered uint64
+	// AckRemovedIDs / AckRemovedSeqs 是上面那些被错删消息的样本（id 与序号，各上限 128 条）。
+	// id 取消息体前 8 字节大端整数（check-loss 约定）；未命中客户端 confirmed 集合即排除本路径。
+	AckRemovedIDs  []uint64
+	AckRemovedSeqs []uint64
+}
+
+// BatchSize 返回组提交的平均批大小（ProposeEntries / FsyncTotal）；FsyncTotal 为 0 时返回 0。
+func (s QuorumWriteStats) BatchSize() float64 {
+	if s.FsyncTotal == 0 {
+		return 0
+	}
+	return float64(s.ProposeEntries) / float64(s.FsyncTotal)
+}
+
+// AckBatchSize 返回 ack 合批的平均批大小（AckSeqs / AckBatches）；无合批时返回 0。
+func (s QuorumWriteStats) AckBatchSize() float64 {
+	if s.AckBatches == 0 {
+		return 0
+	}
+	return float64(s.AckSeqs) / float64(s.AckBatches)
+}
+
+// PublishBatchSize 返回 publish 合批的平均批大小（PublishItems / PublishBatches）；无合批时返回 0。
+func (s QuorumWriteStats) PublishBatchSize() float64 {
+	if s.PublishBatches == 0 {
+		return 0
+	}
+	return float64(s.PublishItems) / float64(s.PublishBatches)
+}
+
+// QuorumWriteStats 汇总本节点全部 Raft 组（元数据组 + 各仲裁队列组）的写路径计数。
+//
+// 口径是"本节点作为 leader"的提案与 fsync（见 raft.Status）：本节点只是 follower 的组贡献 0，
+// 因此这个数反映的是本节点实际承担的写负载；批大小 = ProposeEntries / FsyncTotal。
+func (b *Broker) QuorumWriteStats() QuorumWriteStats {
+	var out QuorumWriteStats
+	if b.meta != nil {
+		ms := b.meta.Status()
+		out.ProposeEntries += ms.ProposeEntries
+		out.FsyncTotal += ms.FsyncTotal
+	}
+	for _, v := range b.vhostList() {
+		s := v.quorumWriteStats()
+		out.ProposeEntries += s.ProposeEntries
+		out.FsyncTotal += s.FsyncTotal
+	}
+	// ack / publish 合批是内核级计数（都只在队列 leader 上产生），不随 raft.Status 走。
+	out.AckBatches = b.ackBatches.Load()
+	out.AckSeqs = b.ackSeqs.Load()
+	out.PublishBatches = b.publishBatches.Load()
+	out.PublishItems = b.publishItems.Load()
+	out.AcceptedPublish = b.quorumAcceptedPublish.Load()
+	out.AppliedPublish = b.quorumAppliedPublish.Load()
+	out.DupSeq = b.quorumDupSeq.Load()
+	out.AckRemovedUndelivered = b.quorumAckRemovedUndelivered.Load()
+	out.AckRemovedIDs, out.AckRemovedSeqs = b.QuorumAckRemovedIDs()
+	return out
+}
+
 // NodeID 返回本节点标识。
 func (b *Broker) NodeID() string { return b.nodeID }
 

@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // 记录帧格式与内核既有约定保持一致（见 AGENTS.md §8.1 与 internal/store/logfile.go）：
@@ -246,10 +247,37 @@ type persistedSnapshot struct {
 // raftStorage 是 Raft 的持久化层，聚合任期/投票、日志条目与状态机快照。
 //
 // 所有方法都必须在 Node 主锁保护下调用（Raft 要求"状态变更与落盘"是可串行化的）。
+//
+// 例外是日志文件的 fsync：组提交要求 **fsync 在主锁之外**进行（否则 fsync 期间新提案会被主锁挡住，
+// 无法聚成一批）。为让锁外的 fsync 与"日志重写（压缩/安装快照）"互斥，日志文件另有 logMu：
+// append / sync 持读锁（可并发：append 改文件内容，sync 只调 fsync），重写持写锁独占。
 type raftStorage struct {
 	dir   string
 	state *recordFile
 	log   *recordFile
+	// logMu 保护 log 句柄的读取与"重写时替换"（见 raftStorage 注释）。
+	logMu sync.RWMutex
+}
+
+// appendLog 追加一条日志记录（内容写入，不含 fsync）。
+func (s *raftStorage) appendLog(payload []byte) (int64, error) {
+	s.logMu.RLock()
+	defer s.logMu.RUnlock()
+	return s.log.append(payload)
+}
+
+// syncLog 把日志 fsync 落盘（可在 Node 主锁之外调用）。
+func (s *raftStorage) syncLog() error {
+	s.logMu.RLock()
+	defer s.logMu.RUnlock()
+	return s.log.sync()
+}
+
+// truncateLog 截断日志到指定偏移并落盘。
+func (s *raftStorage) truncateLog(off int64) error {
+	s.logMu.RLock()
+	defer s.logMu.RUnlock()
+	return s.log.truncate(off)
 }
 
 // openStorage 打开（必要时创建）Raft 目录与其中的文件。
@@ -327,6 +355,9 @@ func (s *raftStorage) loadEntries() ([]Entry, []int64, error) {
 // 必须先关闭旧句柄：Windows 不允许 rename 覆盖一个仍被打开的文件。
 // 若重建失败，尽力恢复旧句柄，避免节点此后完全不可用。
 func (s *raftStorage) rewriteLog(payloads [][]byte) ([]int64, error) {
+	// 写锁独占：重写会关闭旧句柄并替换 s.log，必须与"锁外的 fsync / append"互斥。
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
 	if err := s.log.close(); err != nil {
 		return nil, err
 	}
@@ -418,6 +449,9 @@ type raftLog struct {
 	st   *raftStorage
 	ents []Entry
 	offs []int64
+	// durableIndex 是已 fsync 落盘的最大索引。组提交下 Node 用它（而非 lastIndex）判定
+	// "leader 自己是否已持有该条目"，从而保证 CommitIndex ≤ DurableIndex。
+	durableIndex uint64
 }
 
 // newRaftLog 由文件内容构造日志，并把哨兵置于快照位置。
@@ -438,7 +472,8 @@ func newRaftLog(st *raftStorage, snapIndex, snapTerm uint64) (*raftLog, error) {
 	loffs := make([]int64, 0, len(ents))
 	loffs = append(loffs, -1)
 	loffs = append(loffs, offs[start:]...)
-	return &raftLog{st: st, ents: ents, offs: loffs}, nil
+	// 从文件加载出来的条目本就已落盘：durableIndex 直接取最后一条。
+	return &raftLog{st: st, ents: ents, offs: loffs, durableIndex: ents[len(ents)-1].Index}, nil
 }
 
 // snapIndex 是快照覆盖到的最大索引（无快照时为 0）。
@@ -491,13 +526,13 @@ func (l *raftLog) entriesFrom(index uint64, max int) []Entry {
 // count 返回自快照以来（不含哨兵）的条目数。
 func (l *raftLog) count() int { return len(l.ents) - 1 }
 
-// append 追加一条日志（仅写入，不 fsync；是否需要落盘由调用方决定）。
+// append 追加一条日志（仅写入，不 fsync；落盘由组提交统一批量完成）。
 func (l *raftLog) append(e Entry) error {
 	b, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	off, err := l.st.log.append(b)
+	off, err := l.st.appendLog(b)
 	if err != nil {
 		return err
 	}
@@ -506,8 +541,15 @@ func (l *raftLog) append(e Entry) error {
 	return nil
 }
 
-// sync 把日志 fsync 到磁盘。
-func (l *raftLog) sync() error { return l.st.log.sync() }
+// sync 把日志 fsync 到磁盘（组提交：一次覆盖截至调用时的全部写入）。
+func (l *raftLog) sync() error { return l.st.syncLog() }
+
+// markDurable 把 durableIndex 推进到 index（要求 index 确已 fsync；只允许单调前进）。
+func (l *raftLog) markDurable(index uint64) {
+	if index > l.durableIndex {
+		l.durableIndex = index
+	}
+}
 
 // truncateFrom 丢弃 index 及其之后的全部条目（要求 index <= lastIndex+1）。
 //
@@ -522,11 +564,15 @@ func (l *raftLog) truncateFrom(index uint64) error {
 	if pos >= len(l.ents) {
 		return nil
 	}
-	if err := l.st.log.truncate(l.offs[pos]); err != nil {
+	if err := l.st.truncateLog(l.offs[pos]); err != nil {
 		return err
 	}
 	l.ents = l.ents[:pos]
 	l.offs = l.offs[:pos]
+	// 截断后日志变短：durableIndex 不能超过新的 lastIndex。
+	if l.durableIndex > l.lastIndex() {
+		l.durableIndex = l.lastIndex()
+	}
 	return nil
 }
 
@@ -557,6 +603,10 @@ func (l *raftLog) compact(throughIndex, throughTerm uint64) error {
 	}
 	l.ents = append([]Entry{{Index: throughIndex, Term: throughTerm}}, kept[1:]...)
 	l.offs = append([]int64{-1}, offs...)
+	// 重写后的文件整体已 fsync；durableIndex 至少覆盖到快照点（保持单调）。
+	if l.durableIndex < throughIndex {
+		l.durableIndex = throughIndex
+	}
 	return nil
 }
 
@@ -567,5 +617,7 @@ func (l *raftLog) reset(index, term uint64) error {
 	}
 	l.ents = []Entry{{Index: index, Term: term}}
 	l.offs = []int64{-1}
+	// 快照文件（或空日志）已落盘，durableIndex 对齐到快照点。
+	l.durableIndex = index
 	return nil
 }

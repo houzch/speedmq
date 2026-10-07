@@ -106,6 +106,7 @@ func (ch *channel) handleTx(m spec.Method) error {
 // release 释放本通道占用的资源：取消消费者、把未确认投递重新入队。
 // 通道关闭与连接关闭都必须调用，否则未确认消息会滞留在 unacked 集合里。
 func (ch *channel) release() {
+	ch.stopConfirms() // M0：停掉发布确认器（消息已投给内核，此处只是收尾协程）
 	if sess := ch.con.sessionOrNil(); sess != nil {
 		ch.cancelAllConsumers(sess)
 	}

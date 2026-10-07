@@ -41,6 +41,9 @@ func (s *Server) registerRoutes() {
 	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
 	s.handle(http.MethodGet, "/api/cluster", apiGroupCluster, s.getCluster)
 	s.handle(http.MethodGet, "/api/cluster/name", apiGroupCluster, s.getClusterName)
+	// 转发边界按 id 追踪的**全量样本**单独成端点：四组样本可达数十万条（JSON 数 MB 量级），
+	// 只用于"数据不丢"的离线对账，不应跟着 /api/cluster 这类高频轮询接口一起返回。
+	s.handle(http.MethodGet, "/api/cluster/forward-samples", apiGroupCluster, s.getForwardSamples)
 	// 成员变更（M6d）：把节点加入/移出集群的运行期操作。
 	// RabbitMQ 用 `rabbitmqctl join_cluster`（在被加入的节点上执行），这里反过来
 	// 由集群侧发起（`PUT /api/cluster/members/{node_id}`），因为新节点是以 learner
@@ -336,6 +339,32 @@ func (s *Server) getClusterName(w http.ResponseWriter, _ *http.Request, _ params
 	writeJSON(w, http.StatusOK, map[string]any{"name": s.deps.NodeName})
 }
 
+// getForwardSamples 返回转发边界按 id 追踪的**全量样本**（GET /api/cluster/forward-samples）。
+//
+// 为什么单独成端点：四组样本与 id 一一对应、可达数十万条，序列化成 JSON 有 MB 量级；
+// 它们只服务于"数据不丢"的离线对账，挂在 /api/cluster 上会让每次高频轮询都付出这份开销
+// （实测单次响应约 5 MB）。转发侧的**汇总计数**仍保留在 /api/cluster 的 forwarding 里。
+func (s *Server) getForwardSamples(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
+	if err := au.requireRead(); err != nil {
+		writeKernelError(w, err)
+		return
+	}
+	fwd := s.deps.Broker.ForwardStatus()
+	writeJSON(w, http.StatusOK, map[string]any{
+		// 转发边界按 id 追踪样本（B5-follow-2）：代理侧成功/失败、Owner 侧接受/失败的 id。
+		// 四组集合均为尾窗（成功 65536 / 失败 262144），`*_truncated` 为 true 表示发生过覆盖、
+		// 样本已不代表全量 —— 显式暴露截断，避免被当成完整样本做对账（P2/R1）。
+		"sent_ok_ids":        emptySliceIfNil(fwd.SentOKIDs),
+		"sent_bad_ids":       emptySliceIfNil(fwd.SentBadIDs),
+		"in_ok_ids":          emptySliceIfNil(fwd.InOKIDs),
+		"in_bad_ids":         emptySliceIfNil(fwd.InBadIDs),
+		"sent_ok_truncated":  fwd.SentOKTruncated,
+		"sent_bad_truncated": fwd.SentBadTruncated,
+		"in_ok_truncated":    fwd.InOKTruncated,
+		"in_bad_truncated":   fwd.InBadTruncated,
+	})
+}
+
 // clusterObject 组装集群状态视图（/api/cluster 与 /api/nodes 共用）。
 func (s *Server) clusterObject() map[string]any {
 	st := s.deps.Broker.ClusterStatus()
@@ -348,6 +377,7 @@ func (s *Server) clusterObject() map[string]any {
 		learners = []string{}
 	}
 	fwd := s.deps.Broker.ForwardStatus()
+	qs := s.deps.Broker.QuorumWriteStats()
 	return map[string]any{
 		"enabled":         s.deps.Broker.ClusterEnabled(),
 		"mode":            st.Mode,
@@ -373,7 +403,38 @@ func (s *Server) clusterObject() map[string]any {
 			"held_deliveries":  fwd.HeldDeliveries,
 			"forwarded_out":    fwd.ForwardedOut,
 			"forwarded_in":     fwd.ForwardedIn,
-			"deliveries":       fwd.Deliveries,
+			// forwarded_batches 是转发发布所用 RPC 次数：forwarded_out/forwarded_batches 即平均批大小。
+			"forwarded_batches": fwd.ForwardedBatches,
+			"deliveries":        fwd.Deliveries,
+			// Owner 侧转发发布的分支计数（B5-follow-2 排查）：静默丢弃候选 / 服务节点不符 / 入队失败 / 落盘失败 / 被拒。
+			"queue_missing":   fwd.QueueMissing,
+			"remote_mismatch": fwd.RemoteMismatch,
+			"publish_err":     fwd.PublishErr,
+			"durable_err":     fwd.DurableErr,
+			"rejected":        fwd.Rejected,
+			"no_wait":         fwd.NoWait,
+			"phantom_ok":      fwd.PhantomOK,
+		},
+		// Raft 写路径计数（M4）：propose_entries/fsync_total 即组提交的平均批大小。
+		"quorum_write": map[string]any{
+			"propose_entries":    qs.ProposeEntries,
+			"fsync_total":        qs.FsyncTotal,
+			"batch_size":         qs.BatchSize(),
+			"ack_batches":        qs.AckBatches,
+			"ack_seqs":           qs.AckSeqs,
+			"ack_batch_size":     qs.AckBatchSize(),
+			"publish_batches":    qs.PublishBatches,
+			"publish_items":      qs.PublishItems,
+			"publish_batch_size": qs.PublishBatchSize(),
+			// 接受/应用/撞号（B5-follow-2 排查）：applied 应等于 accepted，dup_seq 应恒为 0。
+			"accepted_publish": qs.AcceptedPublish,
+			"applied_publish":  qs.AppliedPublish,
+			"dup_seq":          qs.DupSeq,
+			// 移除原因追踪（B5-follow-2）：确认删掉"从未投递"条目的次数，正常恒为 0。
+			"ack_removed_undelivered": qs.AckRemovedUndelivered,
+			// 被错删消息的按 id 样本（上限 128 条），供与客户端 confirmed/consumed id 集合对账。
+			"ack_removed_ids":  emptySliceIfNil(qs.AckRemovedIDs),
+			"ack_removed_seqs": emptySliceIfNil(qs.AckRemovedSeqs),
 		},
 	}
 }
@@ -2678,6 +2739,14 @@ func emptyMapIfNil(m map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return m
+}
+
+// emptySliceIfNil 让 JSON 输出 `[]` 而不是 `null`，便于门禁用例与脚本稳定判空。
+func emptySliceIfNil(v []uint64) []uint64 {
+	if v == nil {
+		return []uint64{}
+	}
+	return v
 }
 
 func sortedCopy(in []string) []string {
