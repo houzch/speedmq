@@ -24,6 +24,12 @@ const (
 	maxPayload   = 64 << 20
 	// tcpRPCTimeout 是未设置 ctx 截止时间时的兜底超时，避免连接永久挂起。
 	tcpRPCTimeout = 10 * time.Second
+
+	// tcpPoolSize 是"每个对端"最多保留的可复用连接数：既复用连接、又保证连接数有界。
+	tcpPoolSize = 4
+	// tcpIdleTimeout 是复用连接的闲置上限：超过即弃用重拨，避免复用一条早已被对端
+	// 或中间设备回收的"陈旧/半开"连接。
+	tcpIdleTimeout = 30 * time.Second
 )
 
 const (
@@ -33,8 +39,10 @@ const (
 
 // tcpTransport 是生产环境的集群通道。
 //
-// 每次 Call 新建一条连接（不做连接池）：Raft 的 RPC 频率低（心跳级），
-// 复用连接带来的"陈旧连接、半开连接"处理成本远高于收益，短连接更简单也更稳。
+// 出站连接按对端复用：每个对端维护一个有界连接池（tcpPoolSize），Call 时取一条
+// 空闲连接，用完归还。这样既避免"每 RPC 一次 dial + 服务端一个接收协程"的连接/线程
+// churn（高 RPC 频率下曾把受限环境的 OS 线程耗尽），又用容量上限保证连接数有界。
+// 一条连接同一时刻只被一个 Call 独占，因此一问一答的线上格式不会交错。
 type tcpTransport struct {
 	selfID string
 	ln     net.Listener
@@ -44,6 +52,11 @@ type tcpTransport struct {
 	addrs    map[string]string
 	handlers map[string]handler
 	conns    map[net.Conn]struct{}
+	// pools 是"对端地址 → 可复用连接池"（缓冲通道，容量 tcpPoolSize）。由 mu 保护。
+	pools map[string]chan *pooledConn
+	// poolClosed 表示连接池已随 Close 关停：此后取用一律新建、归还一律关闭。
+	// 单独用一个 mu 保护的标志，避免依赖 closing 的既有锁口径（其写入在 lifeMu 下）。
+	poolClosed bool
 
 	// lifeMu 只用于"接连接"与"开始关停"之间的互斥，保证 wg.Add 不会与 wg.Wait 竞争。
 	lifeMu  sync.Mutex
@@ -52,6 +65,12 @@ type tcpTransport struct {
 
 	done     chan struct{}
 	closeOne sync.Once
+}
+
+// pooledConn 是一条可复用的出站连接，lastUsed 用于判定闲置是否超时。
+type pooledConn struct {
+	net.Conn
+	lastUsed time.Time
 }
 
 // NewTCPTransport 创建 TCP 传输：监听 listen，并通过 peers（id → 地址）定位其他节点。
@@ -81,6 +100,7 @@ func NewTCPTransport(listen, selfID string, peers map[string]string, log Logger)
 		addrs:    addrs,
 		handlers: make(map[string]handler),
 		conns:    make(map[net.Conn]struct{}),
+		pools:    make(map[string]chan *pooledConn),
 		done:     make(chan struct{}),
 	}
 	t.wg.Add(1)
@@ -220,31 +240,109 @@ func (t *tcpTransport) Call(ctx context.Context, to, method string, payload []by
 		return nil, fmt.Errorf("raft: 未知节点 %s", to)
 	}
 
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	pc, err := t.acquireConn(ctx, to, addr)
 	if err != nil {
-		return nil, fmt.Errorf("连接节点 %s(%s) 失败: %w", to, addr, err)
+		return nil, err
 	}
-	defer conn.Close()
 
 	deadline := time.Now().Add(tcpRPCTimeout)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
 	}
 	// 兜底超时是 best-effort：即便设置失败，调用方仍可用 ctx 取消。
-	_ = conn.SetDeadline(deadline)
+	_ = pc.SetDeadline(deadline)
 
-	if err := writeRequest(conn, t.selfID, method, payload); err != nil {
+	if err := writeRequest(pc, t.selfID, method, payload); err != nil {
+		// 连接可能已损坏，不再复用。
+		_ = pc.Close()
 		return nil, err
 	}
-	status, resp, err := readResponse(conn)
+	status, resp, err := readResponse(pc)
 	if err != nil {
+		_ = pc.Close()
 		return nil, err
 	}
 	if status != statusOK {
+		// 对端明确报错：连接本身是好的，归还复用。
+		t.putPooledConn(addr, pc)
 		return nil, fmt.Errorf("raft: 节点 %s 返回错误: %s", to, string(resp))
 	}
+	t.putPooledConn(addr, pc)
 	return resp, nil
+}
+
+// acquireConn 取一条到 addr 的可用连接：优先复用池中空闲连接（闲置超时的弃用重拨），
+// 池空时新建一条。
+func (t *tcpTransport) acquireConn(ctx context.Context, to, addr string) (*pooledConn, error) {
+	if pc := t.takePooledConn(addr); pc != nil {
+		return pc, nil
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("连接节点 %s(%s) 失败: %w", to, addr, err)
+	}
+	return &pooledConn{Conn: conn, lastUsed: time.Now()}, nil
+}
+
+// takePooledConn 取一条可复用连接；没有（或传输已关闭）时返回 nil。
+func (t *tcpTransport) takePooledConn(addr string) *pooledConn {
+	t.mu.Lock()
+	if t.poolClosed {
+		t.mu.Unlock()
+		return nil
+	}
+	pool := t.pools[addr]
+	var stale []*pooledConn
+	var out *pooledConn
+Loop:
+	for {
+		select {
+		case pc := <-pool:
+			if time.Since(pc.lastUsed) > tcpIdleTimeout {
+				// 闲置过久：可能已被对端回收，弃用后重拨。
+				stale = append(stale, pc)
+				continue
+			}
+			out = pc
+			break Loop
+		default:
+			break Loop
+		}
+	}
+	t.mu.Unlock()
+	// 连接关闭是系统调用，放在锁外做（避免持锁做 IO）。
+	for _, pc := range stale {
+		_ = pc.Close()
+	}
+	return out
+}
+
+// putPooledConn 归还一条连接。传输已关闭或池已满时直接关闭它，保证连接数有界；
+// 归还必须在 mu 内完成，避免与 Close 的清空竞态（否则会漏关一条连接）。
+func (t *tcpTransport) putPooledConn(addr string, pc *pooledConn) {
+	pc.lastUsed = time.Now()
+	t.mu.Lock()
+	if t.poolClosed {
+		t.mu.Unlock()
+		_ = pc.Close()
+		return
+	}
+	pool := t.pools[addr]
+	if pool == nil {
+		pool = make(chan *pooledConn, tcpPoolSize)
+		t.pools[addr] = pool
+	}
+	pooled := true
+	select {
+	case pool <- pc:
+	default:
+		pooled = false // 池已满：丢弃多余连接，保持连接数有界
+	}
+	t.mu.Unlock()
+	if !pooled {
+		_ = pc.Close()
+	}
 }
 
 // Serve 注册方法处理器；重复注册返回 ErrDuplicateMethod。
@@ -280,9 +378,24 @@ func (t *tcpTransport) Close() error {
 		for c := range t.conns {
 			conns = append(conns, c)
 		}
+		// 关停连接池：置位后归还的连接会直接被关闭；已归还的连接在此清空并关闭。
+		t.poolClosed = true
+		pools := t.pools
+		t.pools = make(map[string]chan *pooledConn)
 		t.mu.Unlock()
 		for _, c := range conns {
 			_ = c.Close()
+		}
+		for _, pool := range pools {
+			for {
+				select {
+				case pc := <-pool:
+					_ = pc.Close()
+					continue
+				default:
+				}
+				break
+			}
 		}
 		t.wg.Wait()
 	})

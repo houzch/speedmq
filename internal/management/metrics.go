@@ -27,7 +27,7 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 
 	writeMetric(&sb, "swiftmq_up", "gauge", "节点是否存活", "1")
 	writeMetric(&sb, "swiftmq_build_info", "gauge", "构建信息",
-		fmt.Sprintf("1{version=%q,node=%q}", escapeLabel(s.deps.Version), escapeLabel(s.deps.NodeName)))
+		`1{version="`+escapeLabel(s.deps.Version)+`",node="`+escapeLabel(s.deps.NodeName)+`"}`)
 
 	blocked := 0
 	if b.BlockedState() {

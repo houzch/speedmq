@@ -104,6 +104,9 @@ func printUsage() {
   list_bindings [vhost]                                      列出绑定
   add_user <name> <password> [tags]                          创建或更新用户（tags 默认 administrator）
   set_permissions <user> <vhost> <configure> <write> <read>  设置用户在 vhost 上的权限
+  list_policies [vhost]                                      列出策略
+  set_policy <vhost> <name> <pattern> <definition-json> [priority] [apply-to]  设置或更新策略（apply-to 默认 all）
+  clear_policy <vhost> <name>                                删除策略
   close_connection <name> [reason]                           关闭指定连接
   plugins list                                               列出插件
   plugins show <name>                                        查看插件详情

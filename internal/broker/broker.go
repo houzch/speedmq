@@ -100,6 +100,11 @@ type Broker struct {
 	// cluster 是集群端口：与 Raft、元数据转发**共用一根连接、按方法名分发**。
 	// 由本节点创建并持有（元数据层只是借用），因此关闭顺序也由这里负责。
 	cluster raft.Transport
+	// 仲裁队列写路径合批参数（来自 config.Quorum；窗口 <=0 表示关闭合批）。
+	quorumAckBatchWindow     time.Duration
+	quorumAckBatchMax        int
+	quorumPublishBatchWindow time.Duration
+	quorumPublishBatchMax    int
 
 	// codec 是消息编解码器，由进程入口注入（消息属性的类型体系属于协议，内核不解释它）。
 	codecMu sync.RWMutex
@@ -335,29 +340,33 @@ func New(log *slog.Logger, cfg *config.Config) (*Broker, error) {
 	names = append(names, cfg.DefaultVHost)
 
 	b := &Broker{
-		log:             log,
-		cfg:             cfg,
-		auth:            auth.NewStore(cfg.Users),
-		vhosts:          map[string]*vhost{},
-		stores:          store.NewManager(cfg.DataDir, storageOptions(cfg), log),
-		flow:            newFlowGate(),
-		subs:            map[int]chan plugin.Notification{},
-		conns:           map[string]*connEntry{},
-		dlxCh:           make(chan deadLetterEntry, deadLetterBuffer),
-		fwdPipe:         make(chan *fwdPending, fwdPipeDepth),
-		fwdSentOKRing:   newFwdIDRing(fwdTraceOKWindow),
-		fwdSentBadRing:  newFwdIDRing(fwdTraceBadWindow),
-		fwdInRing:       newFwdIDRing(fwdTraceOKWindow),
-		fwdInBadRing:    newFwdIDRing(fwdTraceBadWindow),
-		done:            make(chan struct{}),
-		nodeID:          cfg.Cluster.NodeID,
-		clusterOn:       cfg.Cluster.Enabled,
-		fwdLocal:        map[string]*localProxy{},
-		fwdRemote:       map[string]*remoteProxy{},
-		fwdHeld:         map[uint64]*heldDelivery{},
-		fwdGets:         map[uint64]string{},
-		fwdRepointUntil: map[string]time.Time{},
-		fwdQueueOwner:   map[string]string{},
+		log:                      log,
+		cfg:                      cfg,
+		auth:                     auth.NewStore(cfg.Users),
+		vhosts:                   map[string]*vhost{},
+		stores:                   store.NewManager(cfg.DataDir, storageOptions(cfg), log),
+		flow:                     newFlowGate(),
+		subs:                     map[int]chan plugin.Notification{},
+		conns:                    map[string]*connEntry{},
+		dlxCh:                    make(chan deadLetterEntry, deadLetterBuffer),
+		fwdPipe:                  make(chan *fwdPending, fwdPipeDepth),
+		fwdSentOKRing:            newFwdIDRing(fwdTraceOKWindow),
+		fwdSentBadRing:           newFwdIDRing(fwdTraceBadWindow),
+		fwdInRing:                newFwdIDRing(fwdTraceOKWindow),
+		fwdInBadRing:             newFwdIDRing(fwdTraceBadWindow),
+		done:                     make(chan struct{}),
+		nodeID:                   cfg.Cluster.NodeID,
+		clusterOn:                cfg.Cluster.Enabled,
+		fwdLocal:                 map[string]*localProxy{},
+		fwdRemote:                map[string]*remoteProxy{},
+		fwdHeld:                  map[uint64]*heldDelivery{},
+		fwdGets:                  map[uint64]string{},
+		fwdRepointUntil:          map[string]time.Time{},
+		fwdQueueOwner:            map[string]string{},
+		quorumAckBatchWindow:     time.Duration(cfg.Quorum.AckBatchWindowMS) * time.Millisecond,
+		quorumAckBatchMax:        cfg.Quorum.AckBatchMax,
+		quorumPublishBatchWindow: time.Duration(cfg.Quorum.PublishBatchWindowMS) * time.Millisecond,
+		quorumPublishBatchMax:    cfg.Quorum.PublishBatchMax,
 	}
 	b.memWatermark.Store(math.Float64bits(cfg.Storage.MemoryHighWatermark))
 	b.diskLimit.Store(cfg.Storage.DiskFreeLimit)

@@ -80,6 +80,21 @@ type Storage struct {
 	DiskFreeLimit uint64 `json:"disk_free_limit"`
 }
 
+// Quorum 是仲裁队列（quorum queue）写路径的合批参数（M2 ack 合批 / M3 publish 合批）。
+//
+// 两个"窗口"是合批的等待上界：窗口内到达的确认/发布合并为一条日志条目；置 0（或负数）即关闭合批
+// （每条立即单条提交）。默认值与此前的实现常量一致（ack 10ms / publish 5ms），故不配置即与旧行为相同。
+type Quorum struct {
+	// AckBatchWindowMS 是 ack 合批的时间窗口（毫秒），默认 10；<=0 关闭合批。
+	AckBatchWindowMS int `json:"ack_batch_window_ms"`
+	// AckBatchMax 是单条 ack_batch 携带的确认条数上限（积满即提交，不等窗口），默认 1024。
+	AckBatchMax int `json:"ack_batch_max"`
+	// PublishBatchWindowMS 是 publish 合批的时间窗口（毫秒），默认 5；<=0 关闭合批。
+	PublishBatchWindowMS int `json:"publish_batch_window_ms"`
+	// PublishBatchMax 是单条 publish_batch 携带的发布条数上限（积满即提交），默认 256。
+	PublishBatchMax int `json:"publish_batch_max"`
+}
+
 // Management 是管理面（Management HTTP API + 内嵌管理 UI）配置。
 type Management struct {
 	// Enabled 为 false 时完全不启用管理面（不监听端口、不注册路由）。
@@ -155,6 +170,8 @@ type Config struct {
 	Users map[string]User `json:"users"`
 	// Storage 存储与流控配置段。
 	Storage Storage `json:"storage"`
+	// Quorum 仲裁队列写路径合批参数段（M2/M3）。
+	Quorum Quorum `json:"quorum"`
 	// Management 管理面配置段（M5 起生效）。
 	Management Management `json:"management"`
 	// Cluster 集群配置段（M6 起生效）。
@@ -180,6 +197,7 @@ func Default() *Config {
 			},
 		},
 		Storage: DefaultStorage(),
+		Quorum:  DefaultQuorum(),
 		Management: Management{
 			Enabled: true,
 			Addr:    ":15672",
@@ -220,6 +238,28 @@ func DefaultStorage() Storage {
 		FlushIntervalMS:     DefaultFlushIntervalMS,
 		MemoryHighWatermark: DefaultMemoryHighWatermark,
 		DiskFreeLimit:       DefaultDiskFreeLimit,
+	}
+}
+
+// 默认仲裁队列合批参数（与实现里此前的常量一致，保证"不配置 = 旧行为"）。
+const (
+	// DefaultQuorumAckBatchWindowMS 是 ack 合批的默认时间窗口（毫秒）。
+	DefaultQuorumAckBatchWindowMS = 10
+	// DefaultQuorumAckBatchMax 是单条 ack_batch 的默认确认条数上限。
+	DefaultQuorumAckBatchMax = 1024
+	// DefaultQuorumPublishBatchWindowMS 是 publish 合批的默认时间窗口（毫秒）。
+	DefaultQuorumPublishBatchWindowMS = 5
+	// DefaultQuorumPublishBatchMax 是单条 publish_batch 的默认发布条数上限。
+	DefaultQuorumPublishBatchMax = 256
+)
+
+// DefaultQuorum 返回默认仲裁队列合批参数。
+func DefaultQuorum() Quorum {
+	return Quorum{
+		AckBatchWindowMS:     DefaultQuorumAckBatchWindowMS,
+		AckBatchMax:          DefaultQuorumAckBatchMax,
+		PublishBatchWindowMS: DefaultQuorumPublishBatchWindowMS,
+		PublishBatchMax:      DefaultQuorumPublishBatchMax,
 	}
 }
 
@@ -266,6 +306,7 @@ func Load(path string) (*Config, error) {
 	if err := normalizeStorage(&cfg.Storage); err != nil {
 		return nil, err
 	}
+	normalizeQuorum(&cfg.Quorum)
 	if err := normalizeManagement(&cfg.Management); err != nil {
 		return nil, err
 	}
@@ -480,6 +521,19 @@ func normalizeStorage(s *Storage) error {
 		return fmt.Errorf("storage.memory_high_watermark 不能为负数: %v", s.MemoryHighWatermark)
 	}
 	return nil
+}
+
+// normalizeQuorum 补齐仲裁队列的批大小上限：非法（<1）时退回默认。
+//
+// 两个"时间窗口"不在此处理 —— 窗口 <=0 是合法的"关闭合批"语义，不能被当成未配置而改回默认；
+// 未配置时靠 Default() 提供默认值（Load 从 Default 起再反序列化，缺省字段保留默认）。
+func normalizeQuorum(q *Quorum) {
+	if q.AckBatchMax < 1 {
+		q.AckBatchMax = DefaultQuorumAckBatchMax
+	}
+	if q.PublishBatchMax < 1 {
+		q.PublishBatchMax = DefaultQuorumPublishBatchMax
+	}
 }
 
 // backfillPermissions 为未显式声明权限的内置用户补上全部 vhost 的完全权限。

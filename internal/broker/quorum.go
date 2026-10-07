@@ -48,18 +48,8 @@ const (
 	quorumLeaderWait = 3 * time.Second
 	// quorumLeaderPoll 是等 leader 的轮询间隔。
 	quorumLeaderPoll = 20 * time.Millisecond
-	// quorumAckBatchWindow 是 ack 合批的时间窗口（M2）：窗口内到达的确认合并为**一条**日志条目。
-	// <=0 关闭合批（每条确认立即单条提交）。窗口越大批越大，确认落盘延迟也越大。
-	quorumAckBatchWindow = 10 * time.Millisecond
-	// quorumAckBatchMax 是单条 ack_batch 携带的确认条数上限：高吞吐下不等窗口、积满即提交，
-	// 既避免单条日志条目过大，也避免确认延迟随累积量无限增长。
-	quorumAckBatchMax = 1024
-	// quorumPublishBatchWindow 是 publish 合批的时间窗口（M3）：窗口内到达的发布合并为**一条**日志条目。
-	// <=0 关闭合批（每条发布单独成批）。窗口越大批越大，发布确认延迟也越大。
-	quorumPublishBatchWindow = 5 * time.Millisecond
-	// quorumPublishBatchMax 是单条 publish_batch 携带的发布条数上限：积满即提交（不等窗口），
-	// 避免单条日志条目过大、确认延迟随累积量无限增长。
-	quorumPublishBatchMax = 256
+	// 合批的时间窗口与批大小上限现由配置提供（config.Quorum；见 Broker 上的 quorumAckBatchWindow 等字段）。
+	// 窗口 <=0 表示关闭合批；默认值与旧常量一致（ack 10ms/1024、publish 5ms/256）。
 )
 
 // 仲裁队列的日志命令。
@@ -413,14 +403,14 @@ func (g *quorumGroup) propose(cmd quorumCommand) error {
 // 为什么可以延迟：客户端 ack 没有可见应答；窗口内节点崩溃只会让该批确认未落盘，
 // 消息被重新投递（at-least-once 语义不变）。异步执行，提案失败只记日志。
 func (g *quorumGroup) proposeAck(seq uint64) {
-	if quorumAckBatchWindow <= 0 {
+	if g.b.quorumAckBatchWindow <= 0 {
 		// 关闭合批：立即单条提交（保留可配为 0 关闭的能力）。
 		g.proposeAckBatch([]uint64{seq})
 		return
 	}
 	g.ackMu.Lock()
 	g.pendingAcks = append(g.pendingAcks, seq)
-	if len(g.pendingAcks) >= quorumAckBatchMax {
+	if len(g.pendingAcks) >= g.b.quorumAckBatchMax {
 		// 积满上限：不等窗口，立即提交（避免单条日志过大、确认延迟无谓累积）。
 		g.ackMu.Unlock()
 		g.flushAcks()
@@ -428,7 +418,7 @@ func (g *quorumGroup) proposeAck(seq uint64) {
 	}
 	if g.ackTimer == nil {
 		// 首个确认到达时启动一次性定时器；窗口内的后续确认只是追加，不再重复启动。
-		g.ackTimer = time.AfterFunc(quorumAckBatchWindow, g.flushAcks)
+		g.ackTimer = time.AfterFunc(g.b.quorumAckBatchWindow, g.flushAcks)
 	}
 	g.ackMu.Unlock()
 }
@@ -711,7 +701,7 @@ func (g *quorumGroup) enqueuePublishLocked(item quorumPublishItem, dropped []*qu
 	b.items = append(b.items, item)
 	b.dropped = append(b.dropped, dropped...)
 
-	flushNow := quorumPublishBatchWindow <= 0 || len(b.items) >= quorumPublishBatchMax
+	flushNow := g.b.quorumPublishBatchWindow <= 0 || len(b.items) >= g.b.quorumPublishBatchMax
 	if flushNow {
 		// 封口：后续登记会新建批次，本批不再接受新条目（避免"已提交的批里又冒出条目"）。
 		g.pubBatch = nil
@@ -720,7 +710,7 @@ func (g *quorumGroup) enqueuePublishLocked(item quorumPublishItem, dropped []*qu
 			g.pubTimer = nil
 		}
 	} else if g.pubTimer == nil {
-		g.pubTimer = time.AfterFunc(quorumPublishBatchWindow, g.flushPubs)
+		g.pubTimer = time.AfterFunc(g.b.quorumPublishBatchWindow, g.flushPubs)
 	}
 	g.pubMu.Unlock()
 

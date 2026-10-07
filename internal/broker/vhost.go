@@ -454,13 +454,7 @@ func (s *vhostSession) DeleteExchange(name string, ifUnused bool) error {
 		return nil
 	}
 
-	s.vh.mu.Lock()
-	delete(s.vh.exchanges, name)
-	// 清理其他交换机指向它的绑定，避免留下悬空绑定
-	for _, other := range s.vh.exchanges {
-		other.removeExchangeBindings(name)
-	}
-	s.vh.mu.Unlock()
+	s.vh.removeExchangeLocal(name)
 
 	s.log.Debug("交换机已删除", "exchange", name)
 	return nil
@@ -531,15 +525,20 @@ func (s *vhostSession) UnbindExchange(destination, source, routingKey string, ar
 		if err := s.vh.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
 			return err
 		}
-		return s.vh.broker.awaitMeta(func() bool {
+		if err := s.vh.broker.awaitMeta(func() bool {
 			return !src.hasExchangeBinding(routingKey, destination)
-		})
+		}); err != nil {
+			return err
+		}
+		s.vh.maybeAutoDeleteExchange(src)
+		return nil
 	}
 	if !src.removeExchangeBinding(routingKey, destination) {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no binding '%s' between exchange '%s' and exchange '%s'",
 			routingKey, source, destination)
 	}
+	s.vh.maybeAutoDeleteExchange(src)
 	return nil
 }
 
@@ -743,6 +742,9 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 			"PRECONDITION_FAILED - queue '%s' in vhost '%s' not empty", name, s.vh.name)
 	}
 
+	// 删除队列会移除指向它的绑定；先取候选交换机，删除后据此判定 auto-delete。
+	bound := s.vh.exchangesBoundToQueue(name)
+
 	// durable 非 exclusive 队列：删除必须经元数据层，本地移除由 ApplyMeta 完成。
 	if q.clusterManaged() {
 		if err := s.vh.broker.submitMeta(meta.OpDeleteQueue,
@@ -756,11 +758,17 @@ func (s *vhostSession) DeleteQueue(name string, ifUnused, ifEmpty bool) (plugin.
 			return plugin.QueueInfo{}, err
 		}
 		s.forgetQueueLocal(name)
+		for _, ex := range bound {
+			s.vh.maybeAutoDeleteExchange(ex)
+		}
 		s.log.Debug("队列已删除（集群元数据）", "queue", name)
 		return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
 	}
 
 	s.removeQueue(name, q)
+	for _, ex := range bound {
+		s.vh.maybeAutoDeleteExchange(ex)
+	}
 	s.log.Debug("队列已删除", "queue", name)
 	return plugin.QueueInfo{Name: name, MessageCount: ready, ConsumerCount: consumers}, nil
 }
@@ -826,15 +834,20 @@ func (s *vhostSession) UnbindQueue(queueName, exchangeName, routingKey string, a
 		if err := s.vh.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
 			return err
 		}
-		return s.vh.broker.awaitMeta(func() bool {
+		if err := s.vh.broker.awaitMeta(func() bool {
 			return !ex.hasQueueBinding(routingKey, queueName)
-		})
+		}); err != nil {
+			return err
+		}
+		s.vh.maybeAutoDeleteExchange(ex)
+		return nil
 	}
 	if !ex.removeBinding(routingKey, queueName) {
 		return plugin.Errorf(plugin.KindNotFound,
 			"NOT_FOUND - no binding '%s' between exchange '%s' and queue '%s'",
 			routingKey, exchangeName, queueName)
 	}
+	s.vh.maybeAutoDeleteExchange(ex)
 	return nil
 }
 
@@ -1323,6 +1336,61 @@ func (v *vhost) removeQueue(q *queue) {
 	q.close()
 }
 
+// removeExchangeLocal 从 vhost 中移除交换机对象（本地路径），并清理其他交换机指向它的绑定，
+// 避免留下悬空绑定。durable 交换机的删除必须走元数据层（见 maybeAutoDeleteExchange / DeleteExchange）。
+func (v *vhost) removeExchangeLocal(name string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.exchanges, name)
+	for _, other := range v.exchanges {
+		other.removeExchangeBindings(name)
+	}
+}
+
+// exchangesBoundToQueue 返回当前存在指向某队列绑定的交换机快照。
+// 删除队列会移除这些绑定，须在删除前取候选集，删除后再逐个判定 auto-delete。
+func (v *vhost) exchangesBoundToQueue(queue string) []*exchange {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	var out []*exchange
+	for _, ex := range v.exchanges {
+		if ex.hasQueueBindingTo(queue) {
+			out = append(out, ex)
+		}
+	}
+	return out
+}
+
+// maybeAutoDeleteExchange 按 auto-delete 语义删除交换机：仅当它声明 auto-delete、曾经被绑定、
+// 且当前已无任何绑定时触发（见 exchange.autoDeleteReady）。
+//
+// durable 交换机走元数据层并级联清理相关绑定元数据（与 DeleteExchange 一致），非 durable 本地删除。
+// 本方法只应由"发起绑定移除的会话路径"调用：元数据应用路径（applyBindingDelete / applyQueueDelete）
+// 在每个节点上都会执行，若在那里触发会导致重复提交。
+func (v *vhost) maybeAutoDeleteExchange(ex *exchange) {
+	if ex == nil || !ex.autoDeleteReady() {
+		return
+	}
+	if ex.durable {
+		related := v.broker.bindingsForExchange(v.name, ex.name)
+		if err := v.broker.submitMeta(meta.OpDeleteExchange,
+			meta.Exchange{VHost: v.name, Name: ex.name}); err != nil {
+			v.log.Warn("自动删除交换机的元数据删除失败", "exchange", ex.name, "err", err)
+			return
+		}
+		for _, rec := range related {
+			// 级联失败只告警：交换机删除本身已提交成功。
+			if err := v.broker.submitMeta(meta.OpDeleteBinding, rec); err != nil {
+				v.log.Warn("清理交换机绑定的元数据失败", "exchange", ex.name, "err", err)
+			}
+		}
+		v.log.Debug("自动删除交换机已删除（集群元数据）", "exchange", ex.name)
+		return
+	}
+	v.removeExchangeLocal(ex.name)
+	v.log.Debug("自动删除交换机已删除", "exchange", ex.name)
+}
+
 // routeInternal 按 exchange / routingKey 投递消息，不做权限检查。
 //
 // 用于内核自身的内部路由（死信）：死信不是"某个用户在发布"，
@@ -1613,6 +1681,8 @@ func (s *vhostSession) deleteQueueIfAuto(name string) {
 	if !ok {
 		return
 	}
+	// 删除队列会移除指向它的绑定；先取候选交换机，删除后据此判定 auto-delete。
+	bound := s.vh.exchangesBoundToQueue(name)
 	// 集群托管队列：删除经元数据层提交。
 	if q.clusterManaged() {
 		if err := s.vh.broker.submitMeta(meta.OpDeleteQueue,
@@ -1621,10 +1691,16 @@ func (s *vhostSession) deleteQueueIfAuto(name string) {
 			return
 		}
 		s.forgetQueueLocal(name)
+		for _, ex := range bound {
+			s.vh.maybeAutoDeleteExchange(ex)
+		}
 		s.log.Debug("自动删除队列已删除（集群元数据）", "queue", name)
 		return
 	}
 	s.removeQueue(name, q)
+	for _, ex := range bound {
+		s.vh.maybeAutoDeleteExchange(ex)
+	}
 	s.log.Debug("自动删除队列已删除", "queue", name)
 }
 

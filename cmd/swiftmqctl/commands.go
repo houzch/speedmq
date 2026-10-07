@@ -369,6 +369,29 @@ func dispatch(c *client, cmd string, args []string) error {
 		return cmdCloseConnection(c, args[0], reason, hasReason)
 	case "plugins":
 		return cmdPlugins(c, args)
+	case "list_policies":
+		vhost, has, err := optionalArg(args, "list_policies [vhost]")
+		if err != nil {
+			return err
+		}
+		return cmdListPolicies(c, vhost, has)
+	case "set_policy":
+		if len(args) < 4 || len(args) > 6 {
+			return usagef("用法: set_policy <vhost> <name> <pattern> <definition-json> [priority] [apply-to]")
+		}
+		priority, applyTo := "", "all"
+		if len(args) >= 5 {
+			priority = args[4]
+		}
+		if len(args) == 6 {
+			applyTo = args[5]
+		}
+		return cmdSetPolicy(c, args[0], args[1], args[2], args[3], priority, applyTo)
+	case "clear_policy":
+		if err := wantArgs(args, 2, "clear_policy <vhost> <name>"); err != nil {
+			return err
+		}
+		return cmdClearPolicy(c, args[0], args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n", cmd)
 		printUsage()
@@ -941,6 +964,120 @@ func cmdCloseConnection(c *client, name, reason string, hasReason bool) error {
 		return err
 	}
 	return c.confirm(raw, fmt.Sprintf("连接 %s 已关闭", name))
+}
+
+// ---------- 策略（policy） ----------
+
+// policy 对齐管理 API 的策略对象契约。
+type policy struct {
+	VHost      string         `json:"vhost"`
+	Name       string         `json:"name"`
+	Pattern    string         `json:"pattern"`
+	ApplyTo    string         `json:"apply-to"`
+	Definition map[string]any `json:"definition"`
+	Priority   int            `json:"priority"`
+}
+
+func cmdListPolicies(c *client, vhost string, hasVhost bool) error {
+	path := "/api/policies"
+	if hasVhost {
+		path += "/" + esc(vhost)
+	}
+	data, err := c.get(path, nil)
+	if err != nil {
+		if isNotFound(err) && hasVhost {
+			return fmt.Errorf("未找到 vhost %s", vhost)
+		}
+		return err
+	}
+	if c.jsonOut {
+		return c.emitJSON(data)
+	}
+
+	var policies []policy
+	if err := decodeJSON(data, &policies); err != nil {
+		return err
+	}
+	sort.Slice(policies, func(i, j int) bool {
+		if policies[i].VHost != policies[j].VHost {
+			return policies[i].VHost < policies[j].VHost
+		}
+		return policies[i].Name < policies[j].Name
+	})
+	if len(policies) == 0 {
+		fmt.Println("（无策略）")
+		return nil
+	}
+
+	rows := make([][]string, 0, len(policies))
+	for _, p := range policies {
+		rows = append(rows, []string{
+			p.VHost,
+			p.Name,
+			p.Pattern,
+			p.ApplyTo,
+			strconv.Itoa(p.Priority),
+			compactJSON(p.Definition),
+		})
+	}
+	writeTable([]string{"vhost", "名称", "pattern", "apply-to", "优先级", "定义"}, rows)
+	return nil
+}
+
+// cmdSetPolicy 设置或更新一条策略：definition 为 JSON 对象文本（如 '{"max-length":1000}'）。
+func cmdSetPolicy(c *client, vhost, name, pattern, definition, priorityArg, applyTo string) error {
+	priority := 0
+	if priorityArg != "" {
+		n, err := strconv.Atoi(priorityArg)
+		if err != nil {
+			return usagef("priority 必须是整数: %s", priorityArg)
+		}
+		priority = n
+	}
+	var def map[string]any
+	if err := json.Unmarshal([]byte(definition), &def); err != nil {
+		return fmt.Errorf("definition 必须是 JSON 对象: %w", err)
+	}
+	body := map[string]any{
+		"pattern":    pattern,
+		"definition": def,
+		"apply-to":   applyTo,
+		"priority":   priority,
+	}
+	path := "/api/policies/" + esc(vhost) + "/" + esc(name)
+	raw, err := c.put(path, nil, body)
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("未找到 vhost %s", vhost)
+		}
+		return err
+	}
+	return c.confirm(raw, fmt.Sprintf("策略 %s 已在 vhost %s 上设置（apply-to=%s priority=%d）",
+		name, vhost, applyTo, priority))
+}
+
+func cmdClearPolicy(c *client, vhost, name string) error {
+	path := "/api/policies/" + esc(vhost) + "/" + esc(name)
+	raw, err := c.delete(path, nil)
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("未找到策略 %s（vhost %s）", name, vhost)
+		}
+		return err
+	}
+	return c.confirm(raw, fmt.Sprintf("策略 %s 已从 vhost %s 删除", name, vhost))
+}
+
+// compactJSON 把策略定义压成紧凑的一行 JSON，供表格展示。
+func compactJSON(v map[string]any) string {
+	if len(v) == 0 {
+		return "{}"
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 // ---------- 9~12. plugins ----------

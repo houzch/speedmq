@@ -33,6 +33,9 @@ type exchange struct {
 	// exchBindings 是"交换机 → 交换机"的绑定，binding.queue 字段存放目标交换机名。
 	// 声明 exchange_exchange_bindings 能力就必须真的按它路由，否则是静默的语义缺失。
 	exchBindings []binding
+	// hadBinding 记录该交换机是否曾被绑定过：auto-delete 只在"曾经绑定、如今无绑定"时自删，
+	// 与队列的 hadConsumer 语义一致 —— 从未绑定过的 auto-delete 交换机不因"空"而消失。
+	hadBinding bool
 
 	// alternateExchange 是策略设置的备用交换机：消息在本交换机上未命中任何队列时改从它路由。
 	// 它可以在运行期被策略改，因此与绑定共用 e.mu（读侧在 routeAll 里一并取出）。
@@ -63,6 +66,7 @@ func (e *exchange) addBinding(routingKey, queue string, args map[string]any) {
 		}
 	}
 	e.bindings = append(e.bindings, binding{routingKey: routingKey, queue: queue, arguments: args})
+	e.hadBinding = true
 }
 
 // removeBinding 移除指定绑定，返回是否真的移除了。
@@ -102,6 +106,18 @@ func (e *exchange) bindingCount() int {
 	return len(e.bindings) + len(e.exchBindings)
 }
 
+// autoDeleteReady 报告该交换机是否已满足 auto-delete 的自删条件：
+// 声明了 auto-delete、曾经被绑定过，且当前已无任何（队列 / 交换机）绑定。
+//
+// 与队列的 `autoDelete && hadConsumer && len(consumers)==0` 是同一套语义：
+// "曾经绑定"这一条不可省 —— 否则一个刚声明、尚未绑定的 auto-delete 交换机会被立刻删掉，
+// 客户端根本来不及绑定（RabbitMQ 同样是"最后一条绑定移除后"才删）。
+func (e *exchange) autoDeleteReady() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.autoDelete && e.hadBinding && len(e.bindings) == 0 && len(e.exchBindings) == 0
+}
+
 // hasQueueBinding 判断 (routing key, 队列) 绑定是否存在。
 //
 // 集群模式下用于"提交后等待本地应用"：确认绑定真的落到本节点上了才向客户端返回成功。
@@ -110,6 +126,18 @@ func (e *exchange) hasQueueBinding(routingKey, queue string) bool {
 	defer e.mu.RUnlock()
 	for _, b := range e.bindings {
 		if b.queue == queue && b.routingKey == routingKey {
+			return true
+		}
+	}
+	return false
+}
+
+// hasQueueBindingTo 判断是否存在指向某队列的任意绑定（删除队列前筛选候选交换机用）。
+func (e *exchange) hasQueueBindingTo(queue string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, b := range e.bindings {
+		if b.queue == queue {
 			return true
 		}
 	}
@@ -248,6 +276,7 @@ func (e *exchange) addExchangeBinding(routingKey, destination string, args map[s
 		}
 	}
 	e.exchBindings = append(e.exchBindings, binding{routingKey: routingKey, queue: destination, arguments: args})
+	e.hadBinding = true
 }
 
 // removeExchangeBinding 移除一条交换机到交换机的绑定，返回是否真的移除了。

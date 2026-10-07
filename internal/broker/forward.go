@@ -224,6 +224,19 @@ type fwdKeepaliveReq struct {
 	GetIDs []uint64 `json:"get_ids,omitempty"`
 }
 
+// fwdKeepaliveResp 是 Owner 对续租的应答。
+//
+// 除了"收到"（fwdEnvelope.OK），它还回报**本 Owner 不认识的标签/拉取**，代理节点据此重新注册。
+// 这修掉一个静默饿死的缺口（U14）：代理节点与 Owner 之间分区超过租约期（fwdLeaseTTL）后，
+// Owner 会摘除该代理并尝试通知，可若分区把通知也挡住，代理节点既不会因 repointForwards
+// （owner 未变）重注册，也无从得知自己的注册已失效，消费者就永远收不到消息。
+// 有了这份"未知清单"，代理节点下一次续租即可自愈。
+type fwdKeepaliveResp struct {
+	fwdEnvelope
+	UnknownTags   []string `json:"unknown_tags,omitempty"`
+	UnknownGetIDs []uint64 `json:"unknown_get_ids,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // 本节点持有的状态
 // ---------------------------------------------------------------------------
@@ -1009,26 +1022,39 @@ func (b *Broker) handleForwardCanceled(_ context.Context, _ string, payload []by
 	return fwdAck()
 }
 
-// handleForwardKeepalive 由代理节点周期调用：续租它的代理消费者与未结算的跨节点拉取。
+// handleForwardKeepalive 由代理节点周期调用：续租它的代理消费者与未结算的跨节点拉取，
+// 并把**本 Owner 不认识的**标签/拉取回带（供代理节点重新注册，见 fwdKeepaliveResp）。
 func (b *Broker) handleForwardKeepalive(_ context.Context, from string, payload []byte) ([]byte, error) {
 	var req fwdKeepaliveReq
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("解析续租请求失败: %w", err)
 	}
 	now := time.Now()
+	var unknownTags []string
+	var unknownGets []uint64
 	b.fwdMu.Lock()
 	for _, tag := range req.Tags {
 		if p := b.fwdRemote[tag]; p != nil && p.proxyNode == from {
 			p.lastSeen = now
+			continue
 		}
+		// 本 Owner 不认这条注册（典型：分区超过租约期后被回收，且摘除通知没能送达）。
+		// 回带给代理节点让它重新注册，而不是让它静默饿死（U14）。
+		unknownTags = append(unknownTags, tag)
 	}
 	for _, id := range req.GetIDs {
 		if hd := b.fwdHeld[id]; hd != nil && hd.proxyNode == from {
 			hd.lastSeen = now
+			continue
 		}
+		unknownGets = append(unknownGets, id)
 	}
 	b.fwdMu.Unlock()
-	return fwdAck()
+	return fwdJSON(fwdKeepaliveResp{
+		fwdEnvelope:   fwdOK,
+		UnknownTags:   unknownTags,
+		UnknownGetIDs: unknownGets,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,11 +1457,57 @@ func (b *Broker) sendForwardKeepalive(now time.Time) {
 		go func(owner string, req *fwdKeepaliveReq) {
 			ctx, cancel := context.WithTimeout(context.Background(), fwdControlTimeout)
 			defer cancel()
-			var resp fwdEnvelopeOnly
+			var resp fwdKeepaliveResp
 			if err := b.fwdCall(ctx, owner, fwdMethodKeepalive, req, &resp); err != nil {
 				b.log.Debug("向 Owner 续租失败", "owner", owner, "err", err)
+				return
 			}
+			b.healUnknownForwardLeases(owner, resp)
 		}(owner, req)
+	}
+}
+
+// healUnknownForwardLeases 处理续租应答里的"未知标签 / 未知拉取"（见 fwdKeepaliveResp）。
+//
+// 未知标签 = 本节点仍持有的代理消费者在 Owner 上已不存在（多为分区超过租约期后 Owner 摘除了它、
+// 而摘除通知也被分区挡住）。这里对它**重新注册**（本节点已成为服务节点时就地转本地消费者），
+// 而不是让它静默饿死。未知拉取（跨节点 basic.get）直接丢弃本地登记，后续拉取会重新发起。
+func (b *Broker) healUnknownForwardLeases(owner string, resp fwdKeepaliveResp) {
+	if len(resp.UnknownGetIDs) > 0 {
+		b.fwdMu.Lock()
+		for _, id := range resp.UnknownGetIDs {
+			delete(b.fwdGets, id)
+		}
+		b.fwdMu.Unlock()
+	}
+	for _, tag := range resp.UnknownTags {
+		b.fwdMu.Lock()
+		p := b.fwdLocal[tag]
+		b.fwdMu.Unlock()
+		if p == nil {
+			continue // 已取消或已改挂
+		}
+		v, ok := b.vhostOf(p.vhost)
+		if !ok {
+			continue
+		}
+		q, ok := v.getQueue(p.queue)
+		if !ok {
+			continue
+		}
+		if v.queueOwnerBestEffort(q) == b.nodeID {
+			// 本节点已是服务节点：把本地代理就地转成本地消费者。
+			b.adoptLocalProxiesAsConsumers(v, q)
+			continue
+		}
+		// 注册已被 Owner 权威地判为失效，因此这里**无论 owner 是否变化都要重新注册**；
+		// 复用改挂路径（remoteConsume 会按当前 owner 重新解析并注册），并带退避防抖。
+		if !b.beginRepoint(p.wireTag, time.Now()) {
+			continue // 退避窗口内：下一轮续租再试
+		}
+		b.log.Info("Owner 续租应答回报未知消费者标签，正在重新注册",
+			"queue", p.queue, "wire_tag", p.wireTag, "owner", owner)
+		go b.repointProxy(p, q, owner)
 	}
 }
 
