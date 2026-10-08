@@ -26,7 +26,7 @@ Capacidades ya disponibles: persistencia (registro por segmentos + niveles de fs
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 La imagen se publica en dos sitios con el mismo contenido (usa el que te vaya más rápido): Docker Hub `houzch/speedmq` y GitHub GHCR `ghcr.io/houzch/speedmq`; ambos ofrecen `linux/amd64` y `linux/arm64`.

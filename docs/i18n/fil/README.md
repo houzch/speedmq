@@ -26,7 +26,7 @@ Mga kakayahang mayroon na: persistence (segment log + fsync tiers + crash recove
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 Nailalathala ang image sa dalawang lugar na pareho ang nilalaman (piliin ang mas mabilis para sa iyo): Docker Hub `houzch/speedmq` at GitHub GHCR `ghcr.io/houzch/speedmq`; parehong may `linux/amd64` at `linux/arm64`.

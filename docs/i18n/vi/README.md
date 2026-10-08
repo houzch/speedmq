@@ -26,7 +26,7 @@ Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn +
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 Image được phát hành ở hai nơi với nội dung giống nhau (chọn nơi nhanh hơn): Docker Hub `houzch/speedmq` và GitHub GHCR `ghcr.io/houzch/speedmq`; cả hai đều có `linux/amd64` và `linux/arm64`.

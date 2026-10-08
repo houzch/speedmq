@@ -26,7 +26,7 @@ Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 イメージは 2 か所に同一内容で公開しています（速い方をお使いください）：Docker Hub `houzch/speedmq`、GitHub GHCR `ghcr.io/houzch/speedmq`。どちらも `linux/amd64` と `linux/arm64` を提供します。

@@ -26,7 +26,7 @@
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 Образ публикуется в двух местах с одинаковым содержимым (выбирайте, где быстрее): Docker Hub `houzch/speedmq` и GitHub GHCR `ghcr.io/houzch/speedmq`; оба дают `linux/amd64` и `linux/arm64`.

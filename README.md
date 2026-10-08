@@ -26,7 +26,7 @@ Capabilities already available: persistence (segment log + fsync level + crash r
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 The image is published in two places with identical content (pick whichever is faster for you): Docker Hub `houzch/speedmq` and GitHub GHCR `ghcr.io/houzch/speedmq`; both provide `linux/amd64` and `linux/arm64`.

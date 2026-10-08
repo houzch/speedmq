@@ -26,7 +26,7 @@ Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap),
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 Imej diterbitkan di dua tempat dengan kandungan sama (pilih yang lebih laju): Docker Hub `houzch/speedmq` dan GitHub GHCR `ghcr.io/houzch/speedmq`; kedua-duanya menyediakan `linux/amd64` dan `linux/arm64`.

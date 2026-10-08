@@ -100,7 +100,7 @@ my-sidecar/
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/speedmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.05
 # 本地联调时可改用 replace 指向源码：
 #   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
@@ -607,7 +607,7 @@ wobei `address` denselben Wert hat. Beim Start des Kernels wird es gestartet.
 ```yaml
 services:
   speedmq:
-    image: houzch/speedmq:1.1.03
+    image: houzch/speedmq:1.1.05
     command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
       - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
@@ -634,7 +634,7 @@ Die Konfiguration verwendet einen unix socket (um keinen zusätzlichen Port zu b
 ```yaml
 services:
   speedmq:
-    image: houzch/speedmq:1.1.03
+    image: houzch/speedmq:1.1.05
     volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]

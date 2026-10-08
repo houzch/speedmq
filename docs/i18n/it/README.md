@@ -26,7 +26,7 @@ Funzionalità già disponibili: persistenza (log a segmenti + profili fsync + ri
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 L immagine è pubblicata in due posti con lo stesso contenuto (usa quello più veloce per te): Docker Hub `houzch/speedmq` e GitHub GHCR `ghcr.io/houzch/speedmq`; entrambi offrono `linux/amd64` e `linux/arm64`.

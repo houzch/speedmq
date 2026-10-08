@@ -26,7 +26,7 @@ Kemampuan yang sudah dimiliki: persistensi (log segmen + tingkat fsync + pemulih
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 Image dipublikasikan di dua tempat dengan isi yang sama (pilih yang lebih cepat): Docker Hub `houzch/speedmq` dan GitHub GHCR `ghcr.io/houzch/speedmq`; keduanya menyediakan `linux/amd64` dan `linux/arm64`.

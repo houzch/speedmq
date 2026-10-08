@@ -26,7 +26,7 @@
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 映像檔同時發佈在兩處（內容相同，挑網路較快的）：Docker Hub `houzch/speedmq`、GitHub GHCR `ghcr.io/houzch/speedmq`；兩個倉庫都提供 `linux/amd64` 與 `linux/arm64`。

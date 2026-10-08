@@ -26,7 +26,7 @@ Go로 작성된 **RabbitMQ 호환** 메시지 미들웨어입니다. 기존 Rabb
 docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
   -v speedmq-data:/var/lib/speedmq \
-  houzch/speedmq:1.1.03
+  houzch/speedmq:1.1.05
 ```
 
 이미지는 두 곳에 동일하게 배포됩니다(더 빠른 쪽을 사용하세요): Docker Hub `houzch/speedmq`, GitHub GHCR `ghcr.io/houzch/speedmq`. 두 곳 모두 `linux/amd64`와 `linux/arm64`를 제공합니다.

@@ -30,7 +30,7 @@ import (
 // 改版本号请用 `go run ./scripts/version <新版本号>`（它会连前端、compose、文档与镜像 tag 一起改齐）。
 // release 工作流里有一步 verify-version 会做这个校验，不一致直接让发布失败 ——
 // 曾经发生过 tag 打到 1.0.3、而这里仍是 1.0.0 导致镜像"标签写着 1.0.3、跑起来报 1.0.0"的事故。
-const Version = "1.1.03"
+const Version = "1.1.05"
 
 const (
 	// deadLetterBuffer 是死信派发队列的缓冲长度。
