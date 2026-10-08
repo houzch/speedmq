@@ -5,7 +5,7 @@
 //	go run ./scripts/version 1.2.0
 //
 // 它把新版本号写进所有引用处：内核 broker.Version、前端 web/package{,-lock}.json、
-// docker-compose.yml、README.md、docs/（含 i18n 各语言译文）与同级 speedmq-test 的镜像 tag。
+// docker-compose.yml、README.md / README-cn.md、docs/（含 i18n 各语言译文）与同级 speedmq-test 的镜像 tag。
 // 替换是“按模式认版本、不看旧值”，因此顺带修正历史遗漏（例如某些 i18n 译文还停在旧版本）。
 //
 // 为什么用同步命令而不是“单一来源文件 + 构建期注入”：版本号要同时出现在 Go 常量、npm 元数据、
@@ -90,6 +90,7 @@ func main() {
 	apply(filepath.Join(root, "web", "package-lock.json"), jsonVersion2)
 	apply(filepath.Join(root, "docker-compose.yml"), prefixedTag)
 	apply(filepath.Join(root, "README.md"), prefixedTag)
+	apply(filepath.Join(root, "README-cn.md"), prefixedTag)
 
 	if err := walk(filepath.Join(root, "docs"), func(p string) {
 		if strings.EqualFold(filepath.Ext(p), ".md") {

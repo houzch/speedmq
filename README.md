@@ -1,26 +1,26 @@
 <!-- i18n-switcher -->
-**简体中文** | [繁體中文](docs/i18n/zh-TW/README.md) | [English](docs/i18n/en/README.md) | [日本語](docs/i18n/ja/README.md) | [한국어](docs/i18n/ko/README.md) | [Español](docs/i18n/es/README.md) | [Deutsch](docs/i18n/de/README.md) | [Français](docs/i18n/fr/README.md) | [العربية](docs/i18n/ar/README.md) | [Русский](docs/i18n/ru/README.md) | [Italiano](docs/i18n/it/README.md) | [Nederlands](docs/i18n/nl/README.md) | [Português](docs/i18n/pt/README.md) | [Bahasa Indonesia](docs/i18n/id/README.md) | [ไทย](docs/i18n/th/README.md) | [Tiếng Việt](docs/i18n/vi/README.md) | [Bahasa Melayu](docs/i18n/ms/README.md) | [Filipino](docs/i18n/fil/README.md)
+[简体中文](README-cn.md) | [繁體中文](docs/i18n/zh-TW/README.md) | **English** | [日本語](docs/i18n/ja/README.md) | [한국어](docs/i18n/ko/README.md) | [Español](docs/i18n/es/README.md) | [Deutsch](docs/i18n/de/README.md) | [Français](docs/i18n/fr/README.md) | [العربية](docs/i18n/ar/README.md) | [Русский](docs/i18n/ru/README.md) | [Italiano](docs/i18n/it/README.md) | [Nederlands](docs/i18n/nl/README.md) | [Português](docs/i18n/pt/README.md) | [Bahasa Indonesia](docs/i18n/id/README.md) | [ไทย](docs/i18n/th/README.md) | [Tiếng Việt](docs/i18n/vi/README.md) | [Bahasa Melayu](docs/i18n/ms/README.md) | [Filipino](docs/i18n/fil/README.md)
 
 # SpeedMQ
 
-用 Go 编写的 **RabbitMQ 兼容**消息中间件。现有 RabbitMQ 客户端**不改代码、不换 SDK**，只改连接地址即可接入。
+A **RabbitMQ-compatible** messaging middleware written in Go. Existing RabbitMQ clients can connect by **changing only the connection address — no code changes, no SDK swap**.
 
-## 简介
+## Introduction
 
-- **协议兼容**：AMQP 0-9-1（含 RabbitMQ 扩展）与 MQTT 3.1.1；兼容基线为 **RabbitMQ 4.3 语义**。
-- **部署简单**：一个二进制 / 一个容器，管理 UI 已内嵌，不需要额外的 Nginx、数据库或 Node 运行时。
-- **运维够用**：管理 UI（队列 / 交换机 / 连接 / 账号权限 / 虚拟主机 / 策略 / 限制 / 集群）、Prometheus `/metrics`、命令行 `speedmqctl`。
-- **默认端口**：`5672`（AMQP）、`1883`（MQTT）、`15672`（管理 UI / HTTP API / 指标）。
+- **Protocol compatible**: AMQP 0-9-1 (including RabbitMQ extensions) and MQTT 3.1.1; the compatibility baseline is **RabbitMQ 4.3 semantics**.
+- **Simple to deploy**: one binary / one container, with the management UI already embedded; no extra Nginx, database, or Node runtime is needed.
+- **Enough for operations**: management UI (queues / exchanges / connections / account permissions / virtual hosts / policies / limits / cluster), Prometheus `/metrics`, and the `speedmqctl` command line.
+- **Default ports**: `5672` (AMQP), `1883` (MQTT), `15672` (management UI / HTTP API / metrics).
 
-已具备的能力：持久化（段日志 + fsync 档位 + 崩溃恢复）、发布确认、TTL / 死信 / 长度限制、消费者优先级、Direct Reply-To、集群（Raft 元数据 + 仲裁队列 + 跨节点转发）、插件热启停。
+Capabilities already available: persistence (segment log + fsync level + crash recovery), publisher confirms, TTL / dead-lettering / length limits, consumer priorities, Direct Reply-To, clustering (Raft metadata + quorum queues + cross-node forwarding), and hot start/stop of plugins.
 
 ***
 
-## 快速开始
+## Quick Start
 
-### 方式一：Docker（推荐）
+### Option 1: Docker (recommended)
 
-**不用克隆仓库，直接拉镜像跑起来：**
+**No need to clone the repo — just pull the image and run it:**
 
 ```bash
 docker run -d --name speedmq \
@@ -29,26 +29,26 @@ docker run -d --name speedmq \
   houzch/speedmq:1.1.03
 ```
 
-镜像同时发布在两处（内容相同，挑网络快的那个）：Docker Hub `houzch/speedmq`、GitHub GHCR `ghcr.io/houzch/speedmq`；两个仓库都提供 `linux/amd64` 与 `linux/arm64`。
+The image is published in two places with identical content (pick whichever is faster for you): Docker Hub `houzch/speedmq` and GitHub GHCR `ghcr.io/houzch/speedmq`; both provide `linux/amd64` and `linux/arm64`.
 
-- 数据落在命名卷 `speedmq-data`，容器重建不丢。
-- 停止 / 删除：`docker stop speedmq`、`docker rm speedmq`（数据卷保留）。
+- Data lands in the named volume `speedmq-data`, which survives container recreation.
+- Stop / remove: `docker stop speedmq`, `docker rm speedmq` (the data volume is kept).
 
-**要改配置或用 compose 编排，再克隆仓库：**
+**To change the configuration or use docker compose, clone the repo:**
 
 ```bash
 git clone https://github.com/houzch/speedmq.git
 cd speedmq
-docker compose pull && docker compose up -d   # 用已发布的镜像；改成 up -d --build 则本地构建
+docker compose pull && docker compose up -d   # Use the published image; switch to up -d --build to build locally
 
-docker compose ps        # 状态应为 Up (healthy)
-docker compose logs -f   # 跟随日志
+docker compose ps        # Status should be Up (healthy)
+docker compose logs -f   # Follow the logs
 ```
 
-- 配置以只读方式挂载 `configs/speedmqd.json`，改完 `docker compose restart` 生效。
-- 停止：`docker compose down`（保留数据）；`docker compose down -v`（连数据一起删）。
+- The configuration is mounted read-only from `configs/speedmqd.json`; changes take effect after `docker compose restart`.
+- Stop: `docker compose down` (keeps data); `docker compose down -v` (deletes data too).
 
-### 方式二：本地二进制（需要 Go 1.24+）
+### Option 2: Local binary (requires Go 1.24+)
 
 ```bash
 git clone https://github.com/houzch/speedmq.git
@@ -58,20 +58,20 @@ go build -o bin/speedmqctl ./cmd/speedmqctl
 ./bin/speedmqd -config configs/speedmqd.json
 ```
 
-> 管理 UI 的构建产物不入库。若要用 UI，先在 `web/` 执行 `npm ci && npm run build`；
-> 不构建也能正常启动收发消息，只是访问 `/` 会提示「管理 UI 未构建」。
+> The management UI build artifacts are not committed. If you want to use the UI, first run `npm ci && npm run build` in `web/`;
+> you can still start and send/receive messages without building it — visiting `/` will just show "management UI not built".
 
-### 首次登录（务必先改掉默认账号）
+### First login (be sure to change the default account first)
 
-| 入口 | 地址 / 凭证 |
+| Entry | Address / credentials |
 | --- | --- |
-| 管理 UI | <http://localhost:15672/>（用户名 `guest`，口令 `guest`） |
+| Management UI | <http://localhost:15672/> (username `guest`, password `guest`) |
 | AMQP | `amqp://guest:guest@localhost:5672/` |
-| MQTT | `localhost:1883`（账号同上） |
+| MQTT | `localhost:1883` (same credentials) |
 
-新装实例的总账号带「首次登录强制改密」标记：管理 UI 登录后会**强制要求同时修改账号名与口令**，改完才能进入后台。
+On a freshly installed instance, the root account carries a "force password change on first login" flag: after logging in to the management UI, you are **required to change both the account name and the password**; only then can you enter the admin console.
 
-也可以直接调 API 完成（适合自动化）：
+You can also do it directly via the API (suitable for automation):
 
 ```bash
 curl -u guest:guest -X POST -H 'Content-Type: application/json' \
@@ -79,120 +79,118 @@ curl -u guest:guest -X POST -H 'Content-Type: application/json' \
   http://127.0.0.1:15672/api/users/guest/credentials
 ```
 
-> ⚠️ 默认 `guest/guest` 与 RabbitMQ 行为一致：**只允许本机登录**。从容器外 / 远程连接需在配置里为该用户开启 `remote_access`（示例配置已为容器场景开启）。
-> **服务一旦对外可访问，请立即更换凭证。**
+> ⚠️ The default `guest/guest` behaves the same as RabbitMQ: **only local login is allowed**. To connect from outside the container / remotely, you must enable `remote_access` for that user in the configuration (the sample config already enables it for container scenarios).
+> **As soon as the service is reachable externally, change the credentials immediately.**
 
-### 接入你的应用（改连接地址即可）
+### Connect your application (just change the connection address)
 
 ```python
-# Python（pika）
+# Python (pika)
 import pika
 conn = pika.BlockingConnection(pika.ConnectionParameters("127.0.0.1"))
 ```
 
 ```go
-// Go（amqp091-go）
+// Go (amqp091-go)
 conn, _ := amqp.Dial("amqp://guest:guest@127.0.0.1:5672/")
 ```
 
 ```bash
-# MQTT（mosquitto 客户端）
+# MQTT (mosquitto client)
 mosquitto_sub -h 127.0.0.1 -p 1883 -u guest -P guest -t 'sensors/#' -q 1
 mosquitto_pub -h 127.0.0.1 -p 1883 -u guest -P guest -t 'sensors/room1/temp' -m 21.5 -q 1
 ```
 
-管理 HTTP API 与 `rabbitmqadmin` 兼容；管理 UI 的「新增队列 / 交换机」就是标准声明端点，脚本同样能做：
+The management HTTP API is compatible with `rabbitmqadmin`; the management UI's "add queue / exchange" actions are exactly the standard declaration endpoints, so scripts can do the same:
 
 ```bash
-# 声明队列（仲裁队列用 arguments: {"x-queue-type":"quorum"} 表达）
+# Declare a queue (for a quorum queue, express it via arguments: {"x-queue-type":"quorum"})
 curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
   -d '{"durable":true,"auto_delete":false,"arguments":{}}' \
   http://127.0.0.1:15672/api/queues/%2F/my.queue
 ```
 
-### 日常运维
+### Routine operations
 
-| 事项 | 入口 |
+| Item | Entry |
 | --- | --- |
-| 管理 UI | <http://localhost:15672/>：队列 / 交换机 / 连接 / 账号权限 / 虚拟主机 / 策略 / 限制 / 特性开关 / 集群，右上角可设置自动刷新与**界面语言** |
-| 监控指标 | <http://localhost:15672/metrics>（Prometheus 文本，需认证）；面板与告警见 [docs/ops/monitoring](docs/ops/monitoring/README.md) |
-| 命令行 | `./bin/speedmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（热停用，端口立即关闭） |
-| 健康检查 | `nc -z 127.0.0.1 15672`（compose 已内置 healthcheck） |
-| 备份与恢复 | [docs/ops/backup-restore.md](docs/ops/backup-restore.md) |
-| 升级 | [docs/ops/upgrade.md](docs/ops/upgrade.md) |
-| 安全基线 | [docs/ops/security-baseline.md](docs/ops/security-baseline.md) |
+| Management UI | <http://localhost:15672/>: queues / exchanges / connections / account permissions / virtual hosts / policies / limits / feature flags / cluster; auto-refresh and the **UI language** can be set in the top-right corner |
+| Monitoring metrics | <http://localhost:15672/metrics> (Prometheus text, authentication required); for dashboards and alerts see [docs/ops/monitoring](docs/ops/monitoring/README.md) |
+| Command line | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (hot-disable; the port closes immediately) |
+| Health check | `nc -z 127.0.0.1 15672` (the compose setup already includes a healthcheck) |
+| Backup and restore | [docs/ops/backup-restore.md](docs/ops/backup-restore.md) |
+| Upgrade | [docs/ops/upgrade.md](docs/ops/upgrade.md) |
+| Security baseline | [docs/ops/security-baseline.md](docs/ops/security-baseline.md) |
 
-常用配置（完整示例见 [configs/speedmqd.json](configs/speedmqd.json)，也可用 `SPEEDMQ_*` 环境变量覆盖）：
+Common configuration (for a complete example see [configs/speedmqd.json](configs/speedmqd.json), which can also be overridden with `SPEEDMQ_*` environment variables):
 
-| 配置项 | 说明 | 默认 |
+| Setting | Description | Default |
 | --- | --- | --- |
-| `data_dir` | 数据目录（消息 + 元数据），**务必持久化** | `data` |
-| `listeners` | 各协议监听地址，可配 TLS | AMQP `:5672` / MQTT `:1883` |
-| `management.addr` | 管理 UI / API 监听地址 | `:15672` |
-| `management.language` | 管理 UI 默认语言；留空则按部署地时区自动选择 | 自动 |
-| `storage.fsync` | 落盘档位 `none / os / batch / always`（同时决定 confirm 时机） | `os` |
-| `storage.memory_high_watermark`、`storage.disk_free_limit` | 资源水位：触发即阻塞生产者，**不丢消息** | `0.4` / 50 MiB |
-| `users` | 内置用户表（口令 + 标签 + `remote_access`） | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | 多节点集群（默认关闭），成员变更用 `speedmqctl add_member` | 关闭 |
+| `data_dir` | Data directory (messages + metadata), **be sure to persist it** | `data` |
+| `listeners` | Listen addresses for each protocol; TLS can be configured | AMQP `:5672` / MQTT `:1883` |
+| `management.addr` | Management UI / API listen address | `:15672` |
+| `management.language` | Default language of the management UI; if left empty, it is chosen automatically based on the deployment time zone | Auto |
+| `storage.fsync` | Flush level `none / os / batch / always` (also determines confirm timing) | `os` |
+| `storage.memory_high_watermark`, `storage.disk_free_limit` | Resource watermarks: when triggered, producers are blocked, **without dropping messages** | `0.4` / 50 MiB |
+| `users` | Built-in user table (password + tags + `remote_access`) | `guest/guest` |
+| `cluster.enabled` + `cluster.peers` | Multi-node cluster (disabled by default); use `speedmqctl add_member` to change members | Disabled |
 
-> 端口可能被占用：用 `listeners` / `management.addr` 换成其它端口即可。
+> Ports may already be in use: just switch to other ports via `listeners` / `management.addr`.
 
 ***
 
-## 项目结构
+## Project structure
 
 ```
 speedmq/
 ├── cmd/
-│   ├── speedmqd/        # broker 进程入口（要跑的就是它）
-│   └── speedmqctl/      # 运维 CLI（走管理 HTTP API，与内核版本解耦）
-├── internal/            # 内核实现
-│   ├── protocol/        # 协议插件：amqp091、mqtt（编解码 / 方法 / 会话）
-│   ├── broker/          # 内核：vhost、交换机、队列、死信、流控、管理面视图
-│   ├── store/           # 持久化：段日志、队列索引、崩溃恢复
-│   ├── raft/ meta/      # 集群：自研 Raft 与元数据复制
-│   ├── management/      # 管理 HTTP API + Prometheus 指标 + 内嵌 UI 静态服务
+│   ├── speedmqd/        # broker process entry point (this is the one to run)
+│   └── speedmqctl/      # operations CLI (goes through the management HTTP API, decoupled from the kernel version)
+├── internal/            # kernel implementation
+│   ├── protocol/        # protocol plugins: amqp091, mqtt (encode/decode / methods / sessions)
+│   ├── broker/          # kernel: vhost, exchanges, queues, dead-lettering, flow control, management-plane views
+│   ├── store/           # persistence: segment log, queue index, crash recovery
+│   ├── raft/ meta/      # clustering: in-house Raft and metadata replication
+│   ├── management/      # management HTTP API + Prometheus metrics + embedded UI static serving
 │   ├── transport/ auth/ config/ plugin/
-├── pkg/                 # 对外稳定契约：插件 API（plugin）与外部进程插件线协议（sidecar）
-├── web/                 # 管理 UI 前端工程（Vue 3 + Vite），产物构建时经 go:embed 打进二进制
-├── configs/             # 示例配置
-├── docs/ops/            # 运维文档：备份恢复 / 升级 / 安全基线 / 监控
-├── docs/plugin-development.md  # 外部进程插件（sidecar）开发与接入指南
-├── Dockerfile、docker-compose.yml
-└── speedmq-logo.PNG、1280X1280.PNG（交流群二维码）
+├── pkg/                 # stable external contract: plugin API (plugin) and out-of-process plugin wire protocol (sidecar)
+├── web/                 # management UI frontend project (Vue 3 + Vite); artifacts are embedded into the binary via go:embed at build time
+├── configs/             # sample configuration
+├── docs/ops/            # operations docs: backup-restore / upgrade / security baseline / monitoring
+├── Dockerfile, docker-compose.yml
+└── speedmq-logo.PNG, 1280X1280.PNG (community group QR code)
 ```
 
 ***
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 与 Pull Request。本项目的立身之本是**协议兼容**，因此：
+Issues and Pull Requests are welcome. Since **protocol compatibility** is the foundation of this project:
 
-- 扩展 SpeedMQ（外部进程插件 sidecar：新增协议 / 二次定制，不改内核）请先读 [外部进程插件开发指南](docs/plugin-development.md)；
-- 修 bug 请说明对应的 RabbitMQ 行为（版本、客户端、复现步骤）；
-- 涉及协议细节的改动，请附上与 RabbitMQ 的对照结果；
-- 提交前确保 `gofmt -l .`、`go build ./...`、`go vet ./...` 通过（本仓库不含测试代码）；测试代码与 `go test ./...` 在独立的测试项目 `speedmq-test/` 中进行。
-
-***
-
-## 许可证
-
-本项目采用 [Apache License 2.0](LICENSE)。
-
-允许使用、修改、分发（含商业使用），需保留版权与许可声明，且不提供任何担保。
-
-Copyright 2026 houzch（见 [NOTICE](NOTICE)）
+- When fixing a bug, please describe the corresponding RabbitMQ behavior (version, client, reproduction steps);
+- For changes involving protocol details, please include the comparison results against RabbitMQ;
+- Before submitting, make sure `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .` all pass.
 
 ***
 
-## 致谢
+## License
 
-AMQP 0-9-1 协议规范与 [RabbitMQ](https://www.rabbitmq.com/) 的行为语义是本项目兼容性工作的对照基准。本项目为独立实现，与 RabbitMQ 官方无隶属关系，未使用其代码。
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+Use, modification, and distribution (including commercial use) are permitted, provided that the copyright and license notices are retained, and no warranty of any kind is provided.
+
+Copyright 2026 houzch (see [NOTICE](NOTICE))
 
 ***
 
-## 加入交流群
+## Acknowledgements
 
-扫码加入 SpeedMQ 交流群，有问题可以在群里直接问：
+The AMQP 0-9-1 protocol specification and the behavioral semantics of [RabbitMQ](https://www.rabbitmq.com/) are the reference baseline for this project's compatibility work. This project is an independent implementation, is not affiliated with the official RabbitMQ project, and does not use its code.
 
-![SpeedMQ 交流群](1280X1280.PNG)
+***
+
+## Join the community group
+
+Scan the QR code to join the SpeedMQ community group; you can ask questions directly there:
+
+![SpeedMQ community group](1280X1280.PNG)

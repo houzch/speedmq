@@ -1,16 +1,16 @@
 # SpeedMQ 文档多语言索引 / Documentation Index
 
-本目录存放 `README`、**插件开发文档**（`docs/plugin-development*.md`）与运维文档（`docs/ops/`）的**多语言版本**。
+本目录存放各语言 `README` 译文、**插件开发文档**（`docs/plugin-development*.md`）与运维文档（`docs/ops/`）的**多语言版本**。
 
-**简体中文是源语言，原文即唯一事实来源**：根 [README](../../README.md)、[docs/plugin-development.md](../plugin-development.md)（插件开发总览，另有 4 份同目录语言文档）与 [docs/ops/](../ops/)，因此不在本目录重复存放 zh-CN 副本。译文如与原文不一致，一律以中文原文为准。
+**简体中文是源语言，原文即唯一事实来源**：简体中文原文见仓库根 [README-cn.md](../../README-cn.md)（英文版为仓库根 [README.md](../../README.md)），以及 [docs/plugin-development.md](../plugin-development.md)（插件开发总览，另有 4 份同目录语言文档）与 [docs/ops/](../ops/)；因此不在本目录重复存放 zh-CN 副本。译文如与原文不一致，一律以中文原文为准。
 
 ## 语言版本
 
 | 语言 | README | 插件开发文档 | 运维文档 |
 | --- | --- | --- | --- |
-| 简体中文（源语言） | [README](../../README.md) | [docs/plugin-development.md](../plugin-development.md) | [docs/ops/](../ops/) |
+| 简体中文（源语言） | [README-cn.md](../../README-cn.md) | [docs/plugin-development.md](../plugin-development.md) | [docs/ops/](../ops/) |
 | 繁體中文 | [README](zh-TW/README.md) | [plugin-development.md](zh-TW/plugin-development.md) | [ops/](zh-TW/ops/) |
-| English | [README](en/README.md) | [plugin-development.md](en/plugin-development.md) | [ops/](en/ops/) |
+| English | [README.md](../../README.md) | [plugin-development.md](en/plugin-development.md) | [ops/](en/ops/) |
 | 日本語 | [README](ja/README.md) | [plugin-development.md](ja/plugin-development.md) | [ops/](ja/ops/) |
 | 한국어 | [README](ko/README.md) | [plugin-development.md](ko/plugin-development.md) | [ops/](ko/ops/) |
 | Español | [README](es/README.md) | [plugin-development.md](es/plugin-development.md) | [ops/](es/ops/) |
@@ -35,7 +35,7 @@
 
 ```
 docs/i18n/<lang>/
-├── README.md                       # 根 README 的译文
+├── README.md                       # 根 README 的译文（English 例外：英文版即仓库根 README.md）
 ├── plugin-development.md           # 插件开发：总览（心智模型 / 线协议 / 配置 / 打包）
 ├── plugin-development-python.md    # 插件开发：Python
 ├── plugin-development-nodejs.md    # 插件开发：Node.js
