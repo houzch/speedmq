@@ -1,6 +1,6 @@
 // Package store 实现队列消息的持久化：分段追加日志 + 队列索引 + 组提交刷盘与崩溃恢复。
 //
-// 设计对齐 docs/SwiftMQ-design.md 的 5.3 节：
+// 设计对齐 docs/SpeedMQ-design.md 的 5.3 节：
 //   - 消息体写"每队列 segment"，队列索引只记 seq-id → 位置 / 长度 / 状态；
 //   - 每条记录带长度前缀与 CRC32，恢复时丢弃尾部半写记录；
 //   - fsync 分档（none / os / batch / always），且**确认时机与档位强绑定**。

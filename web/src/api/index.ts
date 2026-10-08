@@ -1,4 +1,4 @@
-// SwiftMQ 管理 HTTP API 封装（全部路径以 /api 开头，vhost 与名称均需 percent-encode）
+// SpeedMQ 管理 HTTP API 封装（全部路径以 /api 开头，vhost 与名称均需 percent-encode）
 import { request } from './client'
 import type {
   Binding,

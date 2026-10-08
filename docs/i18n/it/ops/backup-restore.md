@@ -1,4 +1,4 @@
-# Backup e ripristino di SwiftMQ
+# Backup e ripristino di SpeedMQ
 
 > Le conclusioni "misurate" di questo documento provengono tutte da una prova reale su **Windows + PowerShell 5.1** (con `data_dir` e porte temporanei).
 > I comandi della prova e gli output principali sono riportati così come sono al §6. Le parti **【non verificate】** sono contrassegnate esplicitamente (backup/ripristino del cluster, backup dei volumi Docker, ecc.).
@@ -54,15 +54,15 @@ Lo storage dei messaggi è composto da **due file** (il file a segmenti `*.seg` 
 
 ```powershell
 # 1) Arresta il processo (in primo piano: Ctrl+C; in background: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Copia l'intero data_dir (con timestamp)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (opzionale) Verifica che lo snapshot dei metadati nel backup sia analizzabile
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 Cluster
@@ -77,8 +77,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # Dopo aver arrestato il container, usa un container usa-e-getta per impacchettare e copiare il contenuto del volume
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【non verificato】** (Docker non è stato eseguito sulla macchina locale).
 
@@ -90,16 +90,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) Verifica che il processo sia arrestato
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) Sposta (o elimina) l'attuale data_dir, per evitare che vecchi e nuovi file si mescolino
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) Ripristina dal backup
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) Avvia
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 Punti chiave:
@@ -151,7 +151,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > Ambiente: `data_dir` in una directory temporanea, AMQP `127.0.0.1:5676`, piano di gestione `127.0.0.1:15677`, MQTT `127.0.0.1:1884`,
 > account predefinito `guest/guest`. Log di avvio:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

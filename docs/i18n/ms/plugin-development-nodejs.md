@@ -1,8 +1,8 @@
-# Panduan Pembangunan Pemalam Proses Luaran SwiftMQ —— Node.js
+# Panduan Pembangunan Pemalam Proses Luaran SpeedMQ —— Node.js
 
-> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SwiftMQ dengan Node.js.
+> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SpeedMQ dengan Node.js.
 > **Baca dahulu**: [Panduan Pembangunan Pemalam Proses Luaran (sidecar)](plugin-development.md) (model mental / medan konfigurasi / jadual penuh protokol wayar).
-> **Projek contoh**: ruang kerja `swiftmq-plugin/nodejs/index.js` (pustaka piawai Node sahaja, **tanpa kebergantungan npm**).
+> **Projek contoh**: ruang kerja `speedmq-plugin/nodejs/index.js` (pustaka piawai Node sahaja, **tanpa kebergantungan npm**).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
 
 ### Langkah pertama: konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
+`speedmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 4. Walkthrough kod (projek contoh)
 
-`swiftmq-plugin/nodejs/index.js` kira-kira 330 baris:
+`speedmq-plugin/nodejs/index.js` kira-kira 330 baris:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -152,7 +152,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 5. Ujian sebenar (reproduksi setempat)
 
-Windows + Node v24; kernel dalam Docker (`swiftmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19011`).
+Windows + Node v24; kernel dalam Docker (`speedmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

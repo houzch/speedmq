@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/speedmq/internal/config"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // ListenerController 由接入层实现：按插件热启动/停止其监听端口。

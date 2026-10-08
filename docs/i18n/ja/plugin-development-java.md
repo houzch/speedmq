@@ -1,8 +1,8 @@
-# SwiftMQ 外部プロセスプラグイン開発ガイド —— Java
+# SpeedMQ 外部プロセスプラグイン開発ガイド —— Java
 
-> **対象読者**：Java で SwiftMQ の外部プロセスプラグイン（sidecar）を書く開発者。
+> **対象読者**：Java で SpeedMQ の外部プロセスプラグイン（sidecar）を書く開発者。
 > **先に読む**：[外部プロセスプラグイン（sidecar）開発ガイド](plugin-development.md)（メンタルモデル / 設定フィールド / ワイヤプロトコル総表）。
-> **サンプルプロジェクト**：ワークスペース `swiftmq-plugin/java/SidecarPlugin.java`（単一ファイル、JDK 標準ライブラリのみ、Maven/Gradle 不要）。
+> **サンプルプロジェクト**：ワークスペース `speedmq-plugin/java/SidecarPlugin.java`（単一ファイル、JDK 標準ライブラリのみ、Maven/Gradle 不要）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第 1 ステップ：設定
 
-`swiftmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
+`speedmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. コードウォークスルー（サンプルプロジェクト）
 
-`swiftmq-plugin/java/SidecarPlugin.java` 約 470 行（超簡易 JSON 含む）：
+`speedmq-plugin/java/SidecarPlugin.java` 約 470 行（超簡易 JSON 含む）：
 
 | 位置 | 役割 |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. 実測（本機で再現）
 
-Windows + JDK 25；カーネルは Docker（`swiftmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19031`）。
+Windows + JDK 25；カーネルは Docker（`speedmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19031`）。
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. 応用
 
 - 実行可能 jar（`Main-Class: SidecarPlugin`）や `jlink` でランタイムを削減してパッケージし、
-  `spawn` を `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]` に変える。
+  `spawn` を `["java", "-jar", "/opt/speedmq/sidecar.jar", …]` に変える。
 - プラグイン独自の管理画面：設定に `console_url`（メインドキュメント §5.8）を追加すると、管理 UI の「プラグイン管理」ページに直通入口が表示される。
 - 独立デプロイ：`spawn: []` + `address: "tcp://<サービス名>:19031"`、コンテナ内で `0.0.0.0` をリッスン。

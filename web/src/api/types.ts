@@ -1,4 +1,4 @@
-// SwiftMQ 管理 HTTP API 的数据结构定义
+// SpeedMQ 管理 HTTP API 的数据结构定义
 // 字段名严格对齐 RabbitMQ Management API 子集（见任务契约）
 
 import type { QueryValue } from './client'
@@ -187,7 +187,7 @@ export interface ClusterMembers {
   learners: string[]
 }
 
-/** 仲裁队列副本集视图（队列对象的 swiftmq_quorum 字段） */
+/** 仲裁队列副本集视图（队列对象的 speedmq_quorum 字段） */
 export interface QuorumView {
   vhost: string
   queue: string
@@ -248,8 +248,8 @@ export interface Queue {
   members?: string[]
   /** RabbitMQ 字段：仲裁队列当前的服务节点 */
   leader?: string
-  /** SwiftMQ 扩展：仲裁队列的副本集细节 */
-  swiftmq_quorum?: QuorumView
+  /** SpeedMQ 扩展：仲裁队列的副本集细节 */
+  speedmq_quorum?: QuorumView
 }
 
 /** 交换机对象 */

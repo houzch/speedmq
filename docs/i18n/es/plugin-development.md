@@ -1,6 +1,6 @@
-# Guía de desarrollo de plugins de proceso externo (sidecar) para SwiftMQ
+# Guía de desarrollo de plugins de proceso externo (sidecar) para SpeedMQ
 
-> **Dirigido a**: desarrolladores que no quieren hacer fork / recompilar el kernel y desean ampliar SwiftMQ con **cualquier lenguaje**.
+> **Dirigido a**: desarrolladores que no quieren hacer fork / recompilar el kernel y desean ampliar SpeedMQ con **cualquier lenguaje**.
 > **Alcance**: este documento solo trata una forma de plugin —— el **plugin de proceso externo** (término del kernel `sidecar`). Los plugins de protocolo integrados en el kernel (AMQP 0-9-1 / MQTT) quedan fuera del alcance.
 > **Cómo leerlo**: las secciones 1–2 construyen el modelo mental, la sección 3 trata de escribir código y **la sección 5 explica "cómo integrarlo y ejecutarlo junto con el kernel para servir a los clientes una vez terminado el desarrollo"**;
 > **para otros lenguajes (Python / Node.js / PHP / Java), consulta las guías por lenguaje de §4** (cada una incluye un proyecto de ejemplo completo y verificado).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**Semántica de estados** (visible mediante `swiftmqctl plugins show`):
+**Semántica de estados** (visible mediante `speedmqctl plugins show`):
 
 | Estado | Significado | Acción del operador |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 El plugin es un **módulo Go independiente** que solo depende de dos paquetes de contrato públicos:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— el protocolo de cable y la implementación del lado del plugin (**obligatorio**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— solo cuando necesites tipos como `plugin.Message` / `plugin.Error` (opcional)
+- `github.com/houzch/speedmq/pkg/sidecar` —— el protocolo de cable y la implementación del lado del plugin (**obligatorio**)
+- `github.com/houzch/speedmq/pkg/plugin` —— solo cuando necesites tipos como `plugin.Message` / `plugin.Error` (opcional)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > Al usar `replace` para la depuración conjunta, el plugin y el kernel deben usar **la misma copia del código fuente**; de lo contrario, aunque la versión de API (`v1`) coincida, los tipos pueden diferir.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ En un stream, úsalas en el orden `session.open` → otros `session.*` → (`ses
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ Para integrarte, necesitas implementar las siguientes convenciones "a nivel de b
 
 > **Se proporcionan guías por lenguaje con proyectos de ejemplo completos** (los ejemplos pasaron todos la verificación: handshake → autenticación → puente semántico → entrega/liquidación → flujo de bytes):
 >
-> | Lenguaje | Guía | Proyecto de ejemplo (en el espacio de trabajo `swiftmq-plugin/`) |
+> | Lenguaje | Guía | Proyecto de ejemplo (en el espacio de trabajo `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (solo biblioteca estándar) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (solo biblioteca estándar) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (solo biblioteca estándar) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (un solo archivo, solo JDK) |
 >
-> Para la implementación de referencia completa en Go, consulta el proyecto de prueba independiente `swiftmq-test/test/integration/echosidecar/` (usa `pkg/sidecar.Server` directamente,
+> Para la implementación de referencia completa en Go, consulta el proyecto de prueba independiente `speedmq-test/test/integration/echosidecar/` (usa `pkg/sidecar.Server` directamente,
 > por lo que no necesitas preocuparte por los detalles a nivel de byte que siguen).
 
 **Formato de trama** (uniforme para todas las tramas):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **Estructuras JSON del plano de control** (los nombres de campo coinciden con `proto.go`).
 
 > Este apartado es un **ejemplo de mensajes del protocolo de cable** (en un mismo bloque se dan varios mensajes en orden, de ahí los separadores `//` a modo de explicación),
-> y **no es configuración que pueda escribirse directamente en `swiftmqd.json`**.
+> y **no es configuración que pueda escribirse directamente en `speedmqd.json`**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. Ejecutarlo junto con el kernel: integración, servicio a clientes, empaquetado ★
 
-Esta sección responde a "cómo integrarlo en SwiftMQ y cómo servir a los clientes una vez terminado el desarrollo".
+Esta sección responde a "cómo integrarlo en SpeedMQ y cómo servir a los clientes una vez terminado el desarrollo".
 
 ### 5.1 Declarar el plugin en la configuración
 
-Un plugin externo está **totalmente gestionado por la configuración**, y no se necesita cambiar ningún código del kernel para él. Añade una entrada a la sección `plugins` de `swiftmqd.json`
+Un plugin externo está **totalmente gestionado por la configuración**, y no se necesita cambiar ningún código del kernel para él. Añade una entrada a la sección `plugins` de `speedmqd.json`
 (**la configuración real es JSON estándar y no puede contener comentarios**):
 
 ```json
@@ -554,7 +554,7 @@ Lista de campos:
 Elección de dirección:
 
 - **En la misma máquina se recomienda un unix socket** (`unix:///tmp/my-sidecar.sock`): no ocupa un puerto TCP y no se ve afectado por la ocupación de puertos del host.
-  Ten en cuenta que la ruta del socket debe ser escribible por el proceso del kernel (en un contenedor, el usuario `swiftmq`, que no es root).
+  Ten en cuenta que la ruta del socket debe ser escribible por el proceso del kernel (en un contenedor, el usuario `speedmq`, que no es root).
 - **Entre contenedores se requiere TCP**, y el proceso del plugin debe escuchar en `0.0.0.0`, con `address` usando **el nombre del servicio en la red del contenedor**.
 
 > No confundas la dirección: **la dirección en la que el plugin escucha** = `address`; **el puerto expuesto a los clientes** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ y el que coincide se hace cargo de la conexión. Por lo tanto:
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ y el que coincide se hace cargo de la conexión. Por lo tanto:
 
 ### 5.5 Empaquetado: hacer que el plugin se ejecute junto con el kernel
 
-**Opción A —— Integrarlo en la misma imagen** (recomendado para plugins "publicados junto con el kernel"): añade una línea a la etapa de ejecución de `swiftmq/Dockerfile`:
+**Opción A —— Integrarlo en la misma imagen** (recomendado para plugins "publicados junto con el kernel"): añade una línea a la etapa de ejecución de `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ con `address` igual al mismo valor. El kernel lo lanzará al arrancar.
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ La configuración usa un unix socket (para evitar ocupar un puerto extra). A con
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ En la configuración, `spawn: []` (el kernel solo se conecta, no lanza) y `addre
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ En `plugins show`, presta especial atención a `state` y `RuntimeNote`:
 
 | Operación | Comando / API | Efecto |
 | --- | --- | --- |
-| Deshabilitar en caliente | `swiftmqctl plugins disable my-sidecar` o `PUT /api/plugins/my-sidecar/disable` | **Cierra los listeners externos de ese plugin** (deshabilitación a nivel de capacidad); el kernel y los demás plugins no se ven afectados |
-| Habilitar en caliente | `swiftmqctl plugins enable my-sidecar` | Reabre sus listeners; si un arranque anterior falló, reintenta una vez |
-| Ver estado | `swiftmqctl plugins list/show` | Estado + motivo de fallo/desconexión |
+| Deshabilitar en caliente | `speedmqctl plugins disable my-sidecar` o `PUT /api/plugins/my-sidecar/disable` | **Cierra los listeners externos de ese plugin** (deshabilitación a nivel de capacidad); el kernel y los demás plugins no se ven afectados |
+| Habilitar en caliente | `speedmqctl plugins enable my-sidecar` | Reabre sus listeners; si un arranque anterior falló, reintenta una vez |
+| Ver estado | `speedmqctl plugins list/show` | Estado + motivo de fallo/desconexión |
 | Salida del kernel | — | Desconecta del plugin, recupera las sesiones puenteadas, **termina los procesos hijos lanzados por el kernel mediante `spawn`** |
 
 > La deshabilitación en caliente solo cierra la "capacidad" (los puertos de escucha) y **no** mata el proceso del plugin lanzado mediante `spawn`; la recuperación del proceso ocurre cuando el kernel sale.
@@ -751,7 +751,7 @@ A continuación solo se muestra la entrada `plugins.my-sidecar` (**JSON estánda
 | Estado `failed`, el motivo contiene "el nombre del plugin no coincide" | El nombre del plugin configurado ≠ `HelloAck.name`; hazlos coincidir |
 | Estado `failed`, el motivo contiene "la versión de API no coincide" | `HelloAck.api_version` ≠ la `APIVersion` del kernel; hazlos coincidir |
 | Estado `failed`, el motivo contiene "handshake rechazado" | El `Hello` del plugin devolvió un error (`deny`); revisa la salida del plugin reenviada en el log del kernel |
-| Estado `failed`, el motivo contiene "fallo al conectar con el plugin externo" | El proceso no arrancó / `address` está mal escrito / la ruta del socket no es escribible (en contenedores, cuida los permisos del usuario `swiftmq`) |
+| Estado `failed`, el motivo contiene "fallo al conectar con el plugin externo" | El proceso no arrancó / `address` está mal escrito / la ruta del socket no es escribible (en contenedores, cuida los permisos del usuario `speedmq`) |
 | Estado `down` | El proceso del plugin se cayó o la conexión se perdió; `restart=always` reconecta automáticamente, mientras que `never` requiere un relanzamiento manual |
 | El puerto no está abierto / el cliente no puede conectarse | `protocols[].listeners` no está configurado o su dirección ha sido sobrescrita por `listeners.<nombre del protocolo>`; comprueba ambos lugares |
 | El cliente se conecta a otro puerto y se desconecta de inmediato | Ese puerto no coincide con tu protocolo (`prefix` vacío o el prefijo no coincide); configura un `prefix` no vacío para el protocolo (ver §5.3) |
@@ -772,7 +772,7 @@ A continuación solo se muestra la entrada `plugins.my-sidecar` (**JSON estánda
 | Tipos de la superficie de operación de sesión del kernel (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | Escucha, sniffing, arranque-parada en caliente por plugin | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | Ciclo de vida y gobernanza del plugin (aislamiento/estado/auditoría) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| Elementos de configuración y ejemplos (incluida la sección sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| Ensamblado de procesos (cómo se integra el sidecar en el kernel) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Implementación de referencia en Go (usa `pkg/sidecar.Server`, con el puente `session.*` y `core.authenticate`) | Proyecto de prueba independiente `swiftmq-test/test/integration/echosidecar/` |
-| **Guías por lenguaje + proyectos de ejemplo** | En este directorio `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; los ejemplos están en el **espacio de trabajo** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| Elementos de configuración y ejemplos (incluida la sección sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| Ensamblado de procesos (cómo se integra el sidecar en el kernel) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Implementación de referencia en Go (usa `pkg/sidecar.Server`, con el puente `session.*` y `core.authenticate`) | Proyecto de prueba independiente `speedmq-test/test/integration/echosidecar/` |
+| **Guías por lenguaje + proyectos de ejemplo** | En este directorio `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; los ejemplos están en el **espacio de trabajo** `speedmq-plugin/{python,nodejs,php,java}/` |

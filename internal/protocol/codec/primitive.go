@@ -45,7 +45,7 @@ const (
 	// 规范允许 4096，但 RabbitMQ 4.1 起把协商下限提到了 8192：客户端请求更小的值时，
 	// 服务端在收到 Tune-Ok 后以 530 关闭连接（实测 4.3 的日志：
 	// "negotiated frame_max = 4096 is lower than the minimum allowed value (8192)"）。
-	// 不设这条下限，客户端在 Python/Go 库上都察觉不到差异，但从 SwiftMQ 迁回 RabbitMQ 就会连不上 ——
+	// 不设这条下限，客户端在 Python/Go 库上都察觉不到差异，但从 SpeedMQ 迁回 RabbitMQ 就会连不上 ——
 	// 这是双跑对照（M8-5）抓到的差异，按"对齐 RabbitMQ 4.x 语义"处理。
 	FrameMaxNegotiatedMin uint32 = 8192
 	// ChannelMaxDefault 是协商默认的 channel 上限。

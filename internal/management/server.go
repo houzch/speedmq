@@ -23,9 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/broker"
-	"github.com/houzch/swiftmq/internal/transport"
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/broker"
+	"github.com/houzch/speedmq/internal/transport"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // PluginController 是管理面对插件治理的能力需求（由 internal/plugin.Manager 实现）。
@@ -66,7 +66,7 @@ type Deps struct {
 	// DefaultLanguage 是管理 UI 的默认语言（安装时按系统时区推断，见 config.Management.Language）。
 	// 前端在用户尚未手动选择语言时用它作为初始语言。
 	DefaultLanguage string
-	// NodeName 是节点名，如 "swiftmq@host"。
+	// NodeName 是节点名，如 "speedmq@host"。
 	NodeName string
 	// StartedAt 是进程启动时刻（uptime 计算用）。
 	StartedAt time.Time
@@ -279,7 +279,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.authenticate(r)
 	if err != nil {
-		w.Header().Set("WWW-Authenticate", `Basic realm="SwiftMQ Management"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="SpeedMQ Management"`)
 		writeError(w, http.StatusUnauthorized, "Unauthorized", err.Error())
 		return
 	}

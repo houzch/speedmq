@@ -1,4 +1,4 @@
-# SwiftMQ Security Hardening Baseline (checklist)
+# SpeedMQ Security Hardening Baseline (checklist)
 
 > Principle: **document only capabilities this repository actually has**. Each item gives "why do it + how to verify it was done", and every verification command can be run.
 > Items marked **【Verified】** mean they were **actually executed** on this machine (Windows + PowerShell 5.1, `1.0.0`);
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Why**: aligned with RabbitMQ, the built-in `guest` allows only local login by default; when deploying externally, ensure that privileged accounts' sources are restricted.
 - **How / semantics (important limitation)**:
   - `remote_access` can only be written in the **config file** under `users.<name>.remote_access`, and it **takes effect only on first bootstrap**;
-  - **Accounts created via the management API / `swiftmqctl` always have `remote_access=true`** (allowing login from any source) —
+  - **Accounts created via the management API / `speedmqctl` always have `remote_access=true`** (allowing login from any source) —
     based on the `UpsertUser` comment in `internal/broker/observe.go` and the measured `"remote_access":true` in
     `meta/state.json`. That is, **the API currently cannot restrict a given account to local-only**.
 - **How to verify**: connect from **another host** (not `127.0.0.1`) with that account; it should get 403, while a local connection should succeed.
@@ -96,9 +96,9 @@ TLS configuration options (the access layer and management plane **share** the s
   **【Verified】** Three misconfigurations were measured on this machine, all with `exit=1`, refusing to start:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **How to verify (positive/negative)**: a TLS client can connect, and a plaintext client connecting to the TLS port is refused.
   **【Verified】** A TLS instance was started on this machine (`amqp091` over TLS) and probed with a real client:
@@ -137,7 +137,7 @@ TLS configuration options (the access layer and management plane **share** the s
 
 - **Why**: the management plane defaults to `:15672` (all network interfaces). For external deployment, bind it to an internal/loopback address, or restrict sources with a firewall.
 - **How**: set `management.addr` to `127.0.0.1:15672` or an internal address; or shut it down entirely with `management.enabled=false`
-  (after shutdown there is no management port, but `swiftmqctl` becomes unusable as well).
+  (after shutdown there is no management port, but `speedmqctl` becomes unusable as well).
 - **How to verify**:
   **【Verified】** On this machine the management plane was set to `127.0.0.1:15677`, and the measured listen address was indeed loopback:
 
@@ -160,8 +160,8 @@ TLS configuration options (the access layer and management plane **share** the s
 
 ## D. Container runtime hardening
 
-Repository image facts (`Dockerfile`): statically linked binary + alpine, **running as non-root (uid 10001, user `swiftmq`)**,
-with the data directory `/var/lib/swiftmq` as a volume. `docker-compose.yml` uses a **named volume** for persistence, a **read-only mount** for the configuration, and log rotation.
+Repository image facts (`Dockerfile`): statically linked binary + alpine, **running as non-root (uid 10001, user `speedmq`)**,
+with the data directory `/var/lib/speedmq` as a volume. `docker-compose.yml` uses a **named volume** for persistence, a **read-only mount** for the configuration, and log rotation.
 
 ### D-1. Non-root execution 【Not verified (Docker was not run on this machine)】
 

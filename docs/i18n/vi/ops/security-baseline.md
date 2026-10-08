@@ -1,4 +1,4 @@
-# Đường cơ sở tăng cường bảo mật SwiftMQ (danh sách có thể tick chọn)
+# Đường cơ sở tăng cường bảo mật SpeedMQ (danh sách có thể tick chọn)
 
 > Nguyên tắc: **chỉ viết những khả năng kho này thực sự có**. Mỗi mục đưa ra "tại sao cần làm + làm sao kiểm tra đã làm", lệnh kiểm tra đều chạy được.
 > Mục được đánh dấu **【đã kiểm chứng】** nghĩa là **đã thực sự thực thi** trên máy cục bộ (Windows + PowerShell 5.1, `1.0.0`);
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Tại sao**: căn chỉnh theo RabbitMQ, `guest` tích hợp mặc định chỉ cho phép đăng nhập từ máy cục bộ; khi triển khai ra ngoài nên đảm bảo nguồn của tài khoản đặc quyền bị giới hạn.
 - **Làm thế nào / cách hiểu (giới hạn quan trọng)**:
   - `remote_access` chỉ có thể viết trong `users.<name>.remote_access` của **tệp cấu hình**, **chỉ có hiệu lực khi khởi tạo lần đầu**;
-  - **Tài khoản tạo qua API quản trị / `swiftmqctl` nhất loạt `remote_access=true`** (cho phép đăng nhập từ mọi nguồn) ——
+  - **Tài khoản tạo qua API quản trị / `speedmqctl` nhất loạt `remote_access=true`** (cho phép đăng nhập từ mọi nguồn) ——
     căn cứ theo chú thích `UpsertUser` của `internal/broker/observe.go` và `"remote_access":true` đo thực tế trong `meta/state.json`. Nói cách khác **API hiện tại không thể giới hạn một tài khoản chỉ đăng nhập từ máy cục bộ**.
 - **Cách kiểm tra**: dùng tài khoản đó kết nối từ **một máy chủ khác** (không phải `127.0.0.1`), phải bị 403; kết nối từ máy cục bộ phải thành công.
   **【chưa kiểm chứng】**: môi trường máy cục bộ không thể tạo nguồn từ xa thực, chưa đo thực tế.
@@ -95,9 +95,9 @@ Các mục cấu hình TLS (lớp truy cập và mặt quản trị **dùng chun
   **【đã kiểm chứng】** Ba cấu hình sai đo thực tế trên máy cục bộ, tất cả `exit=1`, từ chối khởi động:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Cách kiểm tra (xuôi/ngược)**: client TLS kết nối được, client văn bản thuần kết nối cổng TLS sẽ bị từ chối.
   **【đã kiểm chứng】** Máy cục bộ dựng instance TLS (`amqp091` đi qua TLS), dùng probe client thực tế:
@@ -136,7 +136,7 @@ Các mục cấu hình TLS (lớp truy cập và mặt quản trị **dùng chun
 
 - **Tại sao**: mặt quản trị mặc định `:15672` (mọi card mạng). Triển khai ra ngoài nên buộc vào địa chỉ mạng nội bộ/loopback, hoặc dùng firewall giới hạn nguồn.
 - **Làm thế nào**: cấu hình `management.addr` thành `127.0.0.1:15672` hoặc địa chỉ mạng nội bộ; hoặc `management.enabled=false` để tắt hẳn
-  (sau khi tắt không có cổng quản trị, nhưng `swiftmqctl` cũng theo đó không dùng được).
+  (sau khi tắt không có cổng quản trị, nhưng `speedmqctl` cũng theo đó không dùng được).
 - **Cách kiểm tra**:
   **【đã kiểm chứng】** Máy cục bộ cấu hình mặt quản trị thành `127.0.0.1:15677`, đo thực tế địa chỉ lắng nghe đúng là loopback:
 
@@ -159,8 +159,8 @@ Các mục cấu hình TLS (lớp truy cập và mặt quản trị **dùng chun
 
 ## D. Tăng cường vận hành container
 
-Sự thật về image của kho (`Dockerfile`): binary liên kết tĩnh + alpine, **chạy với quyền non-root (uid 10001, người dùng `swiftmq`)**,
-thư mục dữ liệu `/var/lib/swiftmq` là volume. `docker-compose.yml` dùng **volume có tên** để lưu trữ bền vững, cấu hình **mount chỉ đọc**, luân chuyển log.
+Sự thật về image của kho (`Dockerfile`): binary liên kết tĩnh + alpine, **chạy với quyền non-root (uid 10001, người dùng `speedmq`)**,
+thư mục dữ liệu `/var/lib/speedmq` là volume. `docker-compose.yml` dùng **volume có tên** để lưu trữ bền vững, cấu hình **mount chỉ đọc**, luân chuyển log.
 
 ### D-1. Chạy non-root 【chưa kiểm chứng (máy cục bộ chưa chạy Docker)】
 

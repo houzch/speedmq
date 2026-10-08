@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    为 SwiftMQ 的 Windows 二进制做 Authenticode 代码签名（signtool）。
+    为 SpeedMQ 的 Windows 二进制做 Authenticode 代码签名（signtool）。
 
 .DESCRIPTION
     支持两种证书形态：
@@ -16,14 +16,14 @@
     要"没证书就报错"时加 -RequireSigning。
 
 .PARAMETER Files
-    要签名的文件（必填），例如 .\dist\swiftmqd.exe, .\dist\swiftmqctl.exe
+    要签名的文件（必填），例如 .\dist\speedmqd.exe, .\dist\speedmqctl.exe
 
 .PARAMETER TimestampUrl
     RFC3161 时间戳服务，默认 http://timestamp.digicert.com
 
 .EXAMPLE
     # 本地：用 PFX 签名
-    .\scripts\sign-windows.ps1 -Files .\dist\swiftmqd.exe,.\dist\swiftmqctl.exe `
+    .\scripts\sign-windows.ps1 -Files .\dist\speedmqd.exe,.\dist\speedmqctl.exe `
         -PfxPath .\certs\codesign.pfx -PfxPassword '***'
 
 .EXAMPLE
@@ -112,7 +112,7 @@ if ($AzureTrustedSigning) {
 else {
     # CI 场景：把 base64 证书落到临时文件，签完立即删除
     if (-not $PfxPath -and $PfxBase64) {
-        $tempPfx = Join-Path ([System.IO.Path]::GetTempPath()) ("swiftmq-sign-" + [guid]::NewGuid().ToString('N') + ".pfx")
+        $tempPfx = Join-Path ([System.IO.Path]::GetTempPath()) ("speedmq-sign-" + [guid]::NewGuid().ToString('N') + ".pfx")
         [System.IO.File]::WriteAllBytes($tempPfx, [Convert]::FromBase64String($PfxBase64))
         $PfxPath = $tempPfx
     }

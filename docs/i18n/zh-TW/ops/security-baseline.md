@@ -1,4 +1,4 @@
-# SwiftMQ 安全強化基準（可勾選清單）
+# SpeedMQ 安全強化基準（可勾選清單）
 
 > 原則：**只寫本儲存庫真實具備的能力**。每條給出「為什麼要做 + 如何驗證已做」，驗證命令均可執行。
 > 標註 **【已驗證】** 的表示在本機（Windows + PowerShell 5.1，`1.0.0`）**真的執行過**；
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **為什麼**：對齊 RabbitMQ，內建 `guest` 預設僅允許本機登入；對外部署時應確保特權帳號的來源受限。
 - **怎麼做 / 定義（重要限制）**：
   - `remote_access` 只能寫在**設定檔**的 `users.<name>.remote_access` 裡，**僅首次引導生效**；
-  - **透過管理 API / `swiftmqctl` 建立的帳號一律 `remote_access=true`**（允許任意來源登入）——
+  - **透過管理 API / `speedmqctl` 建立的帳號一律 `remote_access=true`**（允許任意來源登入）——
     依據 `internal/broker/observe.go` 的 `UpsertUser` 註解與實測 `meta/state.json` 中
     `"remote_access":true`。也就是說 **API 目前無法把某個帳號限制為僅本機**。
 - **如何驗證**：從**另一台主機**（非 `127.0.0.1`）用該帳號連線，應被 403；本機連線應成功。
@@ -96,9 +96,9 @@ TLS 設定項（接入層與管理面**共用**同一組欄位）：`cert_file` 
   **【已驗證】** 本機三種錯誤設定實測，全部 `exit=1`、拒絕啟動：
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **如何驗證（正向/反向）**：TLS 用戶端能連線、明文用戶端連 TLS 連接埠會被拒。
   **【已驗證】** 本機啟動 TLS 執行個體（`amqp091` 走 TLS），用真實用戶端探針：
@@ -137,7 +137,7 @@ TLS 設定項（接入層與管理面**共用**同一組欄位）：`cert_file` 
 
 - **為什麼**：管理面預設 `:15672`（所有網路卡）。對外部署應綁到內網/迴環位址，或用防火牆限制來源。
 - **怎麼做**：`management.addr` 設定成 `127.0.0.1:15672` 或內網位址；或將 `management.enabled=false` 徹底關閉
-  （關閉後無管理連接埠，但 `swiftmqctl` 也隨之不可用）。
+  （關閉後無管理連接埠，但 `speedmqctl` 也隨之不可用）。
 - **如何驗證**：
   **【已驗證】** 本機把管理面設定成 `127.0.0.1:15677`，實測監聽位址確為迴環：
 
@@ -160,8 +160,8 @@ TLS 設定項（接入層與管理面**共用**同一組欄位）：`cert_file` 
 
 ## D. 容器執行強化
 
-儲存庫映像檔事實（`Dockerfile`）：靜態連結二進位檔 + alpine，**以非 root（uid 10001，使用者 `swiftmq`）執行**，
-資料目錄 `/var/lib/swiftmq` 為磁碟區。`docker-compose.yml` 使用**具名磁碟區**持久化、設定**唯讀掛載**、日誌輪替。
+儲存庫映像檔事實（`Dockerfile`）：靜態連結二進位檔 + alpine，**以非 root（uid 10001，使用者 `speedmq`）執行**，
+資料目錄 `/var/lib/speedmq` 為磁碟區。`docker-compose.yml` 使用**具名磁碟區**持久化、設定**唯讀掛載**、日誌輪替。
 
 ### D-1. 非 root 執行 【未驗證（本機未執行 Docker）】
 

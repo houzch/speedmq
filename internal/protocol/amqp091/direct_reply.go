@@ -1,8 +1,8 @@
 package amqp091
 
 import (
-	"github.com/houzch/swiftmq/internal/protocol/spec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/spec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件实现 AMQP 0-9-1 的 direct reply-to 伪队列 `amq.rabbitmq.reply-to`。

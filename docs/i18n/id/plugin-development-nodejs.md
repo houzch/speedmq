@@ -1,8 +1,8 @@
-# Panduan Pengembangan Plugin Proses Eksternal SwiftMQ — Node.js
+# Panduan Pengembangan Plugin Proses Eksternal SpeedMQ — Node.js
 
-> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SwiftMQ dengan Node.js.
+> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SpeedMQ dengan Node.js.
 > **Baca dulu**: [Panduan Pengembangan Plugin Proses Eksternal (sidecar)](plugin-development.md) (model mental / field konfigurasi / tabel lengkap protokol kabel).
-> **Proyek contoh**: workspace `swiftmq-plugin/nodejs/index.js` (hanya pustaka standar Node, **tanpa dependensi npm**).
+> **Proyek contoh**: workspace `speedmq-plugin/nodejs/index.js` (hanya pustaka standar Node, **tanpa dependensi npm**).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
 
 ### Langkah 1: Konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
+`speedmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 4. Penelusuran Kode (Proyek Contoh)
 
-`swiftmq-plugin/nodejs/index.js` sekitar 330 baris:
+`speedmq-plugin/nodejs/index.js` sekitar 330 baris:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -152,7 +152,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 5. Uji Empiris (Direproduksi Lokal)
 
-Windows + Node v24; kernel di Docker (`swiftmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; kernel di Docker (`speedmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

@@ -1,8 +1,8 @@
-# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SwiftMQ —— Node.js
+# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SpeedMQ —— Node.js
 
-> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SwiftMQ ด้วย Node.js
+> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SpeedMQ ด้วย Node.js
 > **อ่านก่อน**: [คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar)](plugin-development.md) (แบบจำลองทางความคิด / ฟิลด์คอนฟิก / ตารางสรุปโปรโตคอลสาย)
-> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `swiftmq-plugin/nodejs/index.js` (เฉพาะไลบรารีมาตรฐานของ Node **ไม่ต้องมี dependency ของ npm**)
+> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `speedmq-plugin/nodejs/index.js` (เฉพาะไลบรารีมาตรฐานของ Node **ไม่ต้องมี dependency ของ npm**)
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### ขั้นที่หนึ่ง: คอนฟิก
 
-`swiftmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
+`speedmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. อ่านโค้ด (โปรเจกต์ตัวอย่าง)
 
-`swiftmq-plugin/nodejs/index.js` ประมาณ 330 บรรทัด:
+`speedmq-plugin/nodejs/index.js` ประมาณ 330 บรรทัด:
 
 | ตำแหน่ง | หน้าที่ |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. การทดสอบจริง (จำลองบนเครื่องนี้)
 
-Windows + Node v24; เคอร์เนลบน Docker (`swiftmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19011`)
+Windows + Node v24; เคอร์เนลบน Docker (`speedmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19011`)
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

@@ -1,6 +1,6 @@
-# Panduan Pengembangan Plugin Proses Eksternal (sidecar) SwiftMQ
+# Panduan Pengembangan Plugin Proses Eksternal (sidecar) SpeedMQ
 
-> **Untuk**: pengembang yang tidak ingin mem-fork / mengompilasi ulang kernel, tetapi ingin memperluas kemampuan SwiftMQ dengan **bahasa apa pun**.
+> **Untuk**: pengembang yang tidak ingin mem-fork / mengompilasi ulang kernel, tetapi ingin memperluas kemampuan SpeedMQ dengan **bahasa apa pun**.
 > **Cakupan**: dokumen ini hanya membahas satu bentuk plugin —— **plugin proses eksternal** (istilah kernel `sidecar`). Plugin protokol bawaan kernel (AMQP 0-9-1 / MQTT) tidak termasuk cakupan dokumen ini.
 > **Cara membaca**: Bagian 1–2 membangun model mental, Bagian 3 tentang menulis kode, dan **Bagian 5 membahas "setelah selesai dikembangkan, bagaimana menyambungkannya agar ikut berjalan dan melayani klien"**;
 > **untuk bahasa lain (Python / Node.js / PHP / Java), lihat panduan per bahasa di §4** (masing-masing disertai proyek contoh lengkap yang sudah diuji).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**Semantik status** (terlihat via `swiftmqctl plugins show`):
+**Semantik status** (terlihat via `speedmqctl plugins show`):
 
 | Status | Arti | Tindakan operator |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 Plugin adalah **Go module mandiri** yang hanya bergantung pada dua paket kontrak publik:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— protokol kabel dan implementasi sisi plugin (**wajib**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— hanya jika Anda membutuhkan tipe seperti `plugin.Message` / `plugin.Error` (opsional)
+- `github.com/houzch/speedmq/pkg/sidecar` —— protokol kabel dan implementasi sisi plugin (**wajib**)
+- `github.com/houzch/speedmq/pkg/plugin` —— hanya jika Anda membutuhkan tipe seperti `plugin.Message` / `plugin.Error` (opsional)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > Saat memakai `replace` untuk debugging bersama, plugin dan kernel harus memakai **sumber yang sama**; jika tidak, versi API (`v1`) memang sama tetapi tipenya bisa berbeda.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ Pada sebuah stream, gunakan dengan urutan `session.open` → `session.*` lainnya
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ Untuk berintegrasi, Anda perlu mengimplementasikan konvensi "tingkat byte" berik
 
 > **Tersedia panduan per bahasa dengan proyek contoh lengkap** (semua contoh telah diuji: handshake → autentikasi → jembatan semantik → pengiriman/penyelesaian → aliran byte):
 >
-> | Bahasa | Panduan | Proyek contoh (workspace `swiftmq-plugin/`) |
+> | Bahasa | Panduan | Proyek contoh (workspace `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (hanya pustaka standar) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (hanya pustaka standar) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (hanya pustaka standar) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (satu file, hanya JDK) |
 >
-> Untuk implementasi referensi Go yang lengkap, lihat proyek uji mandiri `swiftmq-test/test/integration/echosidecar/` (proyek ini langsung memakai `pkg/sidecar.Server`,
+> Untuk implementasi referensi Go yang lengkap, lihat proyek uji mandiri `speedmq-test/test/integration/echosidecar/` (proyek ini langsung memakai `pkg/sidecar.Server`,
 > sehingga Anda tidak perlu memikirkan detail tingkat byte di bawah).
 
 **Format frame** (seragam untuk semua frame):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **Struktur JSON control plane** (nama field sesuai `proto.go`).
 
 > Bagian ini adalah **contoh pesan protokol kabel** (beberapa pesan diberikan berurutan dalam satu blok, karena itu dipisahkan dengan `//` sebagai penjelas),
-> dan **bukan konfigurasi yang dapat langsung ditulis ke `swiftmqd.json`**.
+> dan **bukan konfigurasi yang dapat langsung ditulis ke `speedmqd.json`**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. Menjalankannya Bersama: Integrasi, Melayani Klien, Pengemasan ★
 
-Bagian ini menjawab "bagaimana mengintegrasikan ke SwiftMQ dan bagaimana melayani klien setelah selesai dikembangkan".
+Bagian ini menjawab "bagaimana mengintegrasikan ke SpeedMQ dan bagaimana melayani klien setelah selesai dikembangkan".
 
 ### 5.1 Mendeklarasikan Plugin di Konfigurasi
 
-Plugin eksternal **sepenuhnya dikelola oleh konfigurasi**, dan kernel tidak perlu mengubah kode apa pun untuk itu. Tambahkan satu entri pada bagian `plugins` di `swiftmqd.json`
+Plugin eksternal **sepenuhnya dikelola oleh konfigurasi**, dan kernel tidak perlu mengubah kode apa pun untuk itu. Tambahkan satu entri pada bagian `plugins` di `speedmqd.json`
 (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
 
 ```json
@@ -554,7 +554,7 @@ Daftar field:
 Pemilihan alamat:
 
 - **Pada mesin yang sama, unix socket direkomendasikan** (`unix:///tmp/my-sidecar.sock`): tidak memakai port TCP dan tidak terpengaruh oleh port host yang terpakai.
-  Perhatikan bahwa path socket harus dapat ditulis oleh proses kernel (di dalam kontainer, pengguna non-root `swiftmq`).
+  Perhatikan bahwa path socket harus dapat ditulis oleh proses kernel (di dalam kontainer, pengguna non-root `speedmq`).
 - **Lintas kontainer wajib TCP**, dan proses plugin harus mendengarkan `0.0.0.0`, sedangkan `address` memakai **nama layanan di jaringan kontainer**.
 
 > Jangan terbalik arahnya: **alamat yang didengarkan plugin** = `address`; **port yang dibuka untuk klien** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ dan yang cocok akan mengambil alih koneksi tersebut. Karena itu:
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ dan yang cocok akan mengambil alih koneksi tersebut. Karena itu:
 
 ### 5.5 Pengemasan: Membuat Plugin Berjalan Bersama Kernel
 
-**Cara A —— Bak ke dalam image yang sama** (direkomendasikan untuk plugin yang "dirilis bersama kernel"): tambahkan satu baris ke tahap runtime `swiftmq/Dockerfile`:
+**Cara A —— Bak ke dalam image yang sama** (direkomendasikan untuk plugin yang "dirilis bersama kernel"): tambahkan satu baris ke tahap runtime `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ dengan `address` bernilai sama. Kernel akan menjalankannya saat start.
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ Konfigurasi memakai unix socket (agar tidak memakai port tambahan). Berikut cupl
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ Di konfigurasi, `spawn: []` (kernel hanya menyambung, tidak menjalankan), `addre
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ Pada `plugins show`, perhatikan terutama `state` dan `RuntimeNote`:
 
 | Operasi | Perintah / API | Efek |
 | --- | --- | --- |
-| Nonaktifkan runtime | `swiftmqctl plugins disable my-sidecar` atau `PUT /api/plugins/my-sidecar/disable` | **Menutup listener eksternal plugin tersebut** (penonaktifan tingkat kemampuan); kernel dan plugin lain tidak terpengaruh |
-| Aktifkan runtime | `swiftmqctl plugins enable my-sidecar` | Membuka kembali listener-nya; jika sebelumnya gagal start akan dicoba sekali lagi |
-| Lihat status | `swiftmqctl plugins list/show` | Status + alasan gagal/terputus |
+| Nonaktifkan runtime | `speedmqctl plugins disable my-sidecar` atau `PUT /api/plugins/my-sidecar/disable` | **Menutup listener eksternal plugin tersebut** (penonaktifan tingkat kemampuan); kernel dan plugin lain tidak terpengaruh |
+| Aktifkan runtime | `speedmqctl plugins enable my-sidecar` | Membuka kembali listener-nya; jika sebelumnya gagal start akan dicoba sekali lagi |
+| Lihat status | `speedmqctl plugins list/show` | Status + alasan gagal/terputus |
 | Kernel keluar | — | Memutus koneksi dengan plugin, mereklamasi sesi jembatan, **menghentikan proses anak yang dijalankan kernel via `spawn`** |
 
 > Penonaktifan runtime hanya menutup "kemampuan" (port listener) dan **tidak** membunuh proses plugin yang dijalankan via `spawn`; reklamasi proses terjadi saat kernel keluar.
@@ -751,7 +751,7 @@ Berikut hanya menampilkan entri `plugins.my-sidecar` (**JSON standar, tidak bole
 | Status `failed`, alasan memuat "nama plugin tidak cocok" | Nama plugin di konfigurasi ≠ `HelloAck.name`; samakan keduanya |
 | Status `failed`, alasan memuat "versi API tidak cocok" | `HelloAck.api_version` ≠ `APIVersion` kernel; samakan keduanya |
 | Status `failed`, alasan memuat "handshake ditolak" | `Hello` plugin mengembalikan error (`deny`); periksa keluaran plugin yang diteruskan di log kernel |
-| Status `failed`, alasan memuat "gagal menyambung ke plugin eksternal" | Proses tidak berjalan / `address` salah / path socket tidak dapat ditulis (di dalam kontainer perhatikan izin pengguna `swiftmq`) |
+| Status `failed`, alasan memuat "gagal menyambung ke plugin eksternal" | Proses tidak berjalan / `address` salah / path socket tidak dapat ditulis (di dalam kontainer perhatikan izin pengguna `speedmq`) |
 | Status `down` | Proses plugin crash atau koneksi terputus; `restart=always` akan menyambung ulang otomatis, `never` memerlukan penjalanan manual |
 | Port tidak terbuka / klien tidak dapat tersambung | `protocols[].listeners` tidak dikonfigurasi atau alamatnya ditimpa oleh `listeners.<nama protokol>`; periksa kedua tempat |
 | Klien tersambung ke port lain lalu langsung terputus | Port tersebut tidak cocok dengan protokol Anda (`prefix` kosong atau prefiks tidak sesuai); berikan `prefix` yang tidak kosong untuk protokol tersebut (lihat §5.3) |
@@ -772,7 +772,7 @@ Berikut hanya menampilkan entri `plugins.my-sidecar` (**JSON standar, tidak bole
 | Tipe permukaan operasi sesi kernel (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | Listener, sniffing, start-stop runtime per plugin | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | Siklus hidup dan tata kelola plugin (isolasi/status/audit) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| Item konfigurasi dan contoh (termasuk bagian sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| Perakitan proses (bagaimana sidecar dirakit ke dalam kernel) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Implementasi referensi Go (memakai `pkg/sidecar.Server`, termasuk jembatan `session.*` dan `core.authenticate`) | Proyek uji mandiri `swiftmq-test/test/integration/echosidecar/` |
-| **Panduan per bahasa + proyek contoh** | Direktori ini `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; contoh ada di **workspace** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| Item konfigurasi dan contoh (termasuk bagian sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| Perakitan proses (bagaimana sidecar dirakit ke dalam kernel) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Implementasi referensi Go (memakai `pkg/sidecar.Server`, termasuk jembatan `session.*` dan `core.authenticate`) | Proyek uji mandiri `speedmq-test/test/integration/echosidecar/` |
+| **Panduan per bahasa + proyek contoh** | Direktori ini `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; contoh ada di **workspace** `speedmq-plugin/{python,nodejs,php,java}/` |

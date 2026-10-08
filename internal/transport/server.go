@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 const (

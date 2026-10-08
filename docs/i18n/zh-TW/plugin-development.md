@@ -1,6 +1,6 @@
-# SwiftMQ 外部行程外掛（sidecar）開發指南
+# SpeedMQ 外部行程外掛（sidecar）開發指南
 
-> **適用對象**：不想 fork / 重編核心，希望用**任意語言**為 SwiftMQ 擴充能力的開發者。
+> **適用對象**：不想 fork / 重編核心，希望用**任意語言**為 SpeedMQ 擴充能力的開發者。
 > **範圍**：本文只講一種外掛形態 —— **外部行程外掛**（核心術語 `sidecar`）。核心內建協定外掛（AMQP 0-9-1 / MQTT）不在本文範圍。
 > **讀法**：第 1–2 節建立心智模型，第 3 節寫程式碼，**第 5 節是「開發完怎麼接進來一起跑、對外提供服務」**；
 > **用其他語言（Python / Node.js / PHP / Java）請看 §4 的分語言指南**（各帶一個實測跑通的完整範例專案）。
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**狀態語意**（`swiftmqctl plugins show` 可見）：
+**狀態語意**（`speedmqctl plugins show` 可見）：
 
 | 狀態 | 含義 | 維運動作 |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 外掛是**獨立的 Go module**，只相依兩個對外契約套件：
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— 線路協定與外掛側實作（**必需**）
-- `github.com/houzch/swiftmq/pkg/plugin` —— 僅當你要用 `plugin.Message` / `plugin.Error` 等型別時（選用）
+- `github.com/houzch/speedmq/pkg/sidecar` —— 線路協定與外掛側實作（**必需**）
+- `github.com/houzch/speedmq/pkg/plugin` —— 僅當你要用 `plugin.Message` / `plugin.Error` 等型別時（選用）
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > 用 `replace` 聯調時，外掛與核心必須**同一份原始碼**，否則 API 版本（`v1`）雖一致、型別卻可能不同。
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ func (h *handler) serve(stream *sidecar.Stream) error {
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 > **已提供帶完整範例專案的分語言指南**（範例都實測跑通過握手 → 認證 → 語意橋 → 投遞/結算 → 位元組流）：
 >
-> | 語言 | 指南 | 範例專案（工作區 `swiftmq-plugin/`） |
+> | 語言 | 指南 | 範例專案（工作區 `speedmq-plugin/`） |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py`（僅標準函式庫） |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js`（僅標準函式庫） |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php`（僅標準函式庫） |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java`（單一檔案，僅 JDK） |
 >
-> Go 的完整參考實作見獨立測試專案 `swiftmq-test/test/integration/echosidecar/`（它直接用 `pkg/sidecar.Server`，
+> Go 的完整參考實作見獨立測試專案 `speedmq-test/test/integration/echosidecar/`（它直接用 `pkg/sidecar.Server`，
 > 無需關心下面的位元組層細節）。
 
 **幀格式**（所有幀統一）：
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **控制面 JSON 結構**（欄位名稱與 `proto.go` 一致）。
 
 > 這一段是**線路協定報文範例**（同一區塊裡依序給出多個報文，故用 `//` 分隔說明），
-> **不是能直接寫進 `swiftmqd.json` 的設定**。
+> **不是能直接寫進 `speedmqd.json` 的設定**。
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. 放進來一起運行：接入、對外服務、打包 ★
 
-這一節回答「開發完怎麼接進 SwiftMQ、怎麼對外提供服務」。
+這一節回答「開發完怎麼接進 SpeedMQ、怎麼對外提供服務」。
 
 ### 5.1 在設定裡宣告外掛
 
-外部外掛**完全由設定託管**，核心不需要為它改任何程式碼。在 `swiftmqd.json` 的 `plugins` 段加一項
+外部外掛**完全由設定託管**，核心不需要為它改任何程式碼。在 `speedmqd.json` 的 `plugins` 段加一項
 （**實際設定是標準 JSON，不能帶註解**）：
 
 ```json
@@ -554,7 +554,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 位址選擇：
 
 - **同機建議 unix socket**（`unix:///tmp/my-sidecar.sock`）：不佔 TCP 連接埠、不受宿主連接埠佔用影響。
-  注意 socket 路徑要對核心行程（容器裡是非 root 的 `swiftmq` 使用者）可寫。
+  注意 socket 路徑要對核心行程（容器裡是非 root 的 `speedmq` 使用者）可寫。
 - **跨容器必須 TCP**，且外掛行程要監聽 `0.0.0.0`，`address` 用**容器網路裡的服務名稱**。
 
 > 方向別搞反：**外掛監聽的位址** = `address`；**對外開放給客戶端的連接埠** = `protocols[].listeners`。
@@ -584,8 +584,8 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.5 打包：讓外掛與核心一起跑
 
-**做法 A —— 打進同一個映像**（建議給「隨核心發佈」的外掛）：在 `swiftmq/Dockerfile` 的執行階段加一行：
+**做法 A —— 打進同一個映像**（建議給「隨核心發佈」的外掛）：在 `speedmq/Dockerfile` 的執行階段加一行：
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-side
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ services:
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ services:
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 | 操作 | 指令 / 介面 | 效果 |
 | --- | --- | --- |
-| 熱停用 | `swiftmqctl plugins disable my-sidecar` 或 `PUT /api/plugins/my-sidecar/disable` | **關閉該外掛的對外監聽**（能力級停用）；核心與其他外掛不受影響 |
-| 熱啟用 | `swiftmqctl plugins enable my-sidecar` | 重新打開它的監聽；若之前啟動失敗會重試一次 |
-| 看狀態 | `swiftmqctl plugins list/show` | 狀態 + 失敗/中斷原因 |
+| 熱停用 | `speedmqctl plugins disable my-sidecar` 或 `PUT /api/plugins/my-sidecar/disable` | **關閉該外掛的對外監聽**（能力級停用）；核心與其他外掛不受影響 |
+| 熱啟用 | `speedmqctl plugins enable my-sidecar` | 重新打開它的監聽；若之前啟動失敗會重試一次 |
+| 看狀態 | `speedmqctl plugins list/show` | 狀態 + 失敗/中斷原因 |
 | 核心退出 | — | 斷開與外掛的連線、回收橋上會話、**終止由核心 `spawn` 的子行程** |
 
 > 熱停用只關「能力」（監聽連接埠），**不會**殺掉用 `spawn` 拉起的外掛行程；行程的回收發生在核心退出時。
@@ -751,7 +751,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 狀態 `failed`，原因含「外掛名稱不一致」 | 設定的外掛名稱 ≠ `HelloAck.name`；改齊 |
 | 狀態 `failed`，原因含「API 版本不匹配」 | `HelloAck.api_version` ≠ 核心 `APIVersion`；改齊 |
 | 狀態 `failed`，原因含「拒絕握手」 | 外掛 `Hello` 回傳了 error（`deny`）；看核心日誌裡轉發的外掛輸出 |
-| 狀態 `failed`，原因含「連接外部外掛失敗」 | 行程沒起來 / `address` 寫錯 / socket 路徑不可寫（容器裡注意 `swiftmq` 使用者權限） |
+| 狀態 `failed`，原因含「連接外部外掛失敗」 | 行程沒起來 / `address` 寫錯 / socket 路徑不可寫（容器裡注意 `speedmq` 使用者權限） |
 | 狀態 `down` | 外掛行程崩了或連線斷了；`restart=always` 會自動重連，`never` 需人工拉起 |
 | 連接埠沒開 / 客戶端連不上 | `protocols[].listeners` 沒配或位址被 `listeners.<協定名稱>` 覆寫掉了；核對兩處 |
 | 客戶端連上別的連接埠後立刻中斷 | 該連接埠不匹配你的協定（`prefix` 為空或前綴不符）；給協定配一個非空 `prefix`（見 §5.3） |
@@ -772,7 +772,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 核心會話操作面型別（`Message` / `Delivery` / `ErrorKind`） | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | 監聽、嗅探、依外掛熱啟停 | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | 外掛生命週期與治理（隔離/狀態/稽核） | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go)、[`registry.go`](../../../internal/plugin/registry.go) |
-| 設定項與範例（含 sidecar 段） | [`internal/config/config.go`](../../../internal/config/config.go)、[`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| 行程組裝（sidecar 如何被組裝進核心） | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Go 參考實作（用 `pkg/sidecar.Server`，含 `session.*` 橋與 `core.authenticate`） | 獨立測試專案 `swiftmq-test/test/integration/echosidecar/` |
-| **分語言指南 + 範例專案** | 本目錄 `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`；範例在**工作區** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| 設定項與範例（含 sidecar 段） | [`internal/config/config.go`](../../../internal/config/config.go)、[`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| 行程組裝（sidecar 如何被組裝進核心） | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Go 參考實作（用 `pkg/sidecar.Server`，含 `session.*` 橋與 `core.authenticate`） | 獨立測試專案 `speedmq-test/test/integration/echosidecar/` |
+| **分語言指南 + 範例專案** | 本目錄 `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`；範例在**工作區** `speedmq-plugin/{python,nodejs,php,java}/` |

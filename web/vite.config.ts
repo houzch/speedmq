@@ -5,7 +5,7 @@ import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 
-// 构建产物由 SwiftMQ 内核通过 :15672 以静态文件方式托管，
+// 构建产物由 SpeedMQ 内核通过 :15672 以静态文件方式托管，
 // 因此必须使用相对 base，避免部署在子路径时资源 404。
 export default defineConfig({
   base: './',

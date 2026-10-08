@@ -1,8 +1,8 @@
-# دليل تطوير المكوّن الإضافي كعملية خارجية في SwiftMQ —— Java
+# دليل تطوير المكوّن الإضافي كعملية خارجية في SpeedMQ —— Java
 
-> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSwiftMQ بلغة Java.
+> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSpeedMQ بلغة Java.
 > **اقرأ أولًا**: [دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar)](plugin-development.md) (النموذج الذهني / حقول الإعداد / الجدول الكامل لبروتوكول السلك).
-> **المشروع النموذجي**: في مساحة العمل `swiftmq-plugin/java/SidecarPlugin.java` (ملف واحد، مكتبة JDK القياسية فقط، بلا حاجة إلى Maven/Gradle).
+> **المشروع النموذجي**: في مساحة العمل `speedmq-plugin/java/SidecarPlugin.java` (ملف واحد، مكتبة JDK القياسية فقط، بلا حاجة إلى Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### الخطوة الأولى: الإعداد
 
-`swiftmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
+`speedmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. قراءة الشيفرة (المشروع النموذجي)
 
-يبلغ `swiftmq-plugin/java/SidecarPlugin.java` نحو 470 سطرًا (مع JSON مبسّط جدًا):
+يبلغ `speedmq-plugin/java/SidecarPlugin.java` نحو 470 سطرًا (مع JSON مبسّط جدًا):
 
 | الموضع | الوظيفة |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. اختبار فعلي (إعادة الإنتاج محليًا)
 
-Windows + JDK 25؛ والنواة في Docker (`swiftmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19031`).
+Windows + JDK 25؛ والنواة في Docker (`speedmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. متقدّم
 
 - التغليف في jar قابل للتنفيذ (`Main-Class: SidecarPlugin`) أو تقليص بيئة التشغيل بـ`jlink`،
-  ثم تغيير `spawn` إلى `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  ثم تغيير `spawn` إلى `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - للمكوّن الإضافي واجهة إدارة خاصة به: أضف `console_url` في الإعداد (المستند الرئيسي §5.8)، وستظهر مدخل مباشر في صفحة «إدارة المكوّنات الإضافية» بلوحة الإدارة.
 - النشر المستقل: `spawn: []` + `address: "tcp://<اسم الخدمة>:19031"`، مع الاستماع داخل الحاوية إلى `0.0.0.0`.

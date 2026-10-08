@@ -1,4 +1,4 @@
-# SwiftMQ 보안 강화 기준선(체크 가능한 체크리스트)
+# SpeedMQ 보안 강화 기준선(체크 가능한 체크리스트)
 
 > 원칙: **이 저장소가 실제로 갖춘 능력만 기술합니다**. 각 항목은 "왜 해야 하는가 + 했다는 것을 어떻게 검증하는가"를 제시하며, 검증 명령은 모두 실행 가능합니다.
 > **【검증됨】** 표시는 로컬(Windows + PowerShell 5.1, `1.0.0`)에서 **실제로 실행했음**을 의미하고,
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **이유**: RabbitMQ에 맞춰 내장 `guest`는 기본적으로 로컬 로그인만 허용하며, 외부 배포 시에는 특권 계정의 출처가 제한되도록 해야 합니다.
 - **방법 / 규칙(중요한 제한)**:
   - `remote_access`는 **설정 파일**의 `users.<name>.remote_access`에만 쓸 수 있고, **최초 부트스트랩 시에만 적용**됩니다.
-  - **관리 API / `swiftmqctl`로 생성한 계정은 모두 `remote_access=true`**입니다(모든 출처의 로그인 허용) —
+  - **관리 API / `speedmqctl`로 생성한 계정은 모두 `remote_access=true`**입니다(모든 출처의 로그인 허용) —
     근거는 `internal/broker/observe.go`의 `UpsertUser` 주석과 `meta/state.json`에서 실측한
     `"remote_access":true`입니다. 즉 **API로는 현재 특정 계정을 로컬 전용으로 제한할 수 없습니다**.
 - **검증 방법**: **다른 호스트**(`127.0.0.1`이 아님)에서 해당 계정으로 연결하면 403이어야 하고, 로컬 연결은 성공해야 합니다.
@@ -96,9 +96,9 @@ TLS 설정 항목(접속 계층과 관리면이 **동일한** 필드 세트를 *
   **【검증됨】** 로컬에서 세 가지 잘못된 설정을 실측했으며, 모두 `exit=1`로 기동을 거부:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **검증 방법(정방향/역방향)**: TLS 클라이언트는 연결되고, 평문 클라이언트가 TLS 포트에 연결하면 거부됩니다.
   **【검증됨】** 로컬에서 TLS 인스턴스(`amqp091`이 TLS 사용)를 띄우고 실제 클라이언트 프로브 사용:
@@ -137,7 +137,7 @@ TLS 설정 항목(접속 계층과 관리면이 **동일한** 필드 세트를 *
 
 - **이유**: 관리면은 기본적으로 `:15672`(모든 네트워크 카드)입니다. 외부 배포 시에는 내부망/루프백 주소에 바인딩하거나 방화벽으로 출처를 제한해야 합니다.
 - **방법**: `management.addr`을 `127.0.0.1:15672` 또는 내부망 주소로 설정하거나, `management.enabled=false`로 완전히 끕니다
-  (끄면 관리 포트가 없어지지만 `swiftmqctl`도 함께 사용할 수 없게 됩니다).
+  (끄면 관리 포트가 없어지지만 `speedmqctl`도 함께 사용할 수 없게 됩니다).
 - **검증 방법**:
   **【검증됨】** 로컬에서 관리면을 `127.0.0.1:15677`로 설정했고, 실측 수신 주소가 루프백임을 확인:
 
@@ -160,8 +160,8 @@ TLS 설정 항목(접속 계층과 관리면이 **동일한** 필드 세트를 *
 
 ## D. 컨테이너 실행 강화
 
-저장소 이미지 사실(`Dockerfile`): 정적 링크 바이너리 + alpine, **비 root(uid 10001, 사용자 `swiftmq`)로 실행**,
-데이터 디렉터리 `/var/lib/swiftmq`는 볼륨입니다. `docker-compose.yml`은 **명명 볼륨** 영속화, 설정 **읽기 전용 마운트**, 로그 로테이션을 사용합니다.
+저장소 이미지 사실(`Dockerfile`): 정적 링크 바이너리 + alpine, **비 root(uid 10001, 사용자 `speedmq`)로 실행**,
+데이터 디렉터리 `/var/lib/speedmq`는 볼륨입니다. `docker-compose.yml`은 **명명 볼륨** 영속화, 설정 **읽기 전용 마운트**, 로그 로테이션을 사용합니다.
 
 ### D-1. 비 root 실행 【미검증(로컬에서 Docker를 실행하지 않음)】
 

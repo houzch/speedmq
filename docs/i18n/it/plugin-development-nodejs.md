@@ -1,8 +1,8 @@
-# SwiftMQ Guida allo sviluppo dei plugin in processo esterno —— Node.js
+# SpeedMQ Guida allo sviluppo dei plugin in processo esterno —— Node.js
 
-> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SwiftMQ in Node.js.
+> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SpeedMQ in Node.js.
 > **Leggi prima**: [Guida allo sviluppo dei plugin in processo esterno (sidecar)](plugin-development.md) (modello mentale / campi di configurazione / tabella completa del protocollo di rete).
-> **Progetto di esempio**: workspace `swiftmq-plugin/nodejs/index.js` (sola libreria standard di Node, **nessuna dipendenza npm**).
+> **Progetto di esempio**: workspace `speedmq-plugin/nodejs/index.js` (sola libreria standard di Node, **nessuna dipendenza npm**).
 
 ---
 
@@ -26,7 +26,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
 
 ### Primo passo: configurazione
 
-`swiftmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
+`speedmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 4. Lettura guidata del codice (progetto di esempio)
 
-`swiftmq-plugin/nodejs/index.js` è di circa 330 righe:
+`speedmq-plugin/nodejs/index.js` è di circa 330 righe:
 
 | Posizione | Scopo |
 | --- | --- |
@@ -152,7 +152,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 5. Verifica pratica (riprodotta in locale)
 
-Windows + Node v24; il kernel in Docker (`swiftmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; il kernel in Docker (`speedmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

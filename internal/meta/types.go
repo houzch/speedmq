@@ -20,7 +20,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/raft"
+	"github.com/houzch/speedmq/internal/raft"
 )
 
 // Mode 是元数据存储的后端模式。

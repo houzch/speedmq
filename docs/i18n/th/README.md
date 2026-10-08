@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | **ไทย** | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 มิดเดิลแวร์รับส่งข้อความที่**เข้ากันได้กับ RabbitMQ** เขียนด้วยภาษา Go ไคลเอนต์ RabbitMQ ที่มีอยู่**ไม่ต้องแก้โค้ด ไม่ต้องเปลี่ยน SDK** เพียงเปลี่ยนที่อยู่ที่เชื่อมต่อก็เข้าใช้งานได้
 
@@ -9,7 +9,7 @@
 
 - **เข้ากันได้กับโปรโตคอล**: AMQP 0-9-1 (รวมส่วนขยายของ RabbitMQ) และ MQTT 3.1.1; เกณฑ์อ้างอิงความเข้ากันได้คือ**ความหมายเชิงความหมายของ RabbitMQ 4.3**
 - **ติดตั้งง่าย**: ไฟล์ไบนารีเดียว / คอนเทนเนอร์เดียว มี UI จัดการฝังอยู่แล้ว ไม่ต้องมี Nginx ฐานข้อมูล หรือรันไทม์ Node เพิ่มเติม
-- **เพียงพอต่อการปฏิบัติการ**: UI จัดการ (คิว / เอ็กซ์เชนจ์ / การเชื่อมต่อ / สิทธิ์บัญชี / virtual host / นโยบาย / ลิมิต / คลัสเตอร์)、Prometheus `/metrics`、บรรทัดคำสั่ง `swiftmqctl`
+- **เพียงพอต่อการปฏิบัติการ**: UI จัดการ (คิว / เอ็กซ์เชนจ์ / การเชื่อมต่อ / สิทธิ์บัญชี / virtual host / นโยบาย / ลิมิต / คลัสเตอร์)、Prometheus `/metrics`、บรรทัดคำสั่ง `speedmqctl`
 - **พอร์ตเริ่มต้น**: `5672` (AMQP)、`1883` (MQTT)、`15672` (UI จัดการ / HTTP API / เมตริก)
 
 ความสามารถที่มีอยู่แล้ว: การทำให้ข้อมูลคงทน (segment log + ระดับ fsync + การกู้คืนหลังล่ม)、publisher confirm、TTL / dead letter / การจำกัดความยาว、ลำดับความสำคัญของผู้บริโภค、Direct Reply-To、คลัสเตอร์ (Raft metadata + quorum queue + การส่งต่อข้ามโหนด)、การเปิด-ปิดปลั๊กอินแบบ hot
@@ -23,39 +23,39 @@
 **ไม่ต้อง clone repo ก็ใช้ได้: ดึงอิมเมจแล้วรันเลย**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-อิมเมจเผยแพร่ไว้สองที่ด้วยเนื้อหาเดียวกัน (เลือกที่เร็วกว่า): Docker Hub `houzch/swiftmq` และ GitHub GHCR `ghcr.io/houzch/swiftmq` ทั้งสองที่มี `linux/amd64` และ `linux/arm64`
+อิมเมจเผยแพร่ไว้สองที่ด้วยเนื้อหาเดียวกัน (เลือกที่เร็วกว่า): Docker Hub `houzch/speedmq` และ GitHub GHCR `ghcr.io/houzch/speedmq` ทั้งสองที่มี `linux/amd64` และ `linux/arm64`
 
-- ข้อมูลอยู่บน named volume `swiftmq-data` สร้างคอนเทนเนอร์ใหม่ก็ไม่หาย
-- หยุด / ลบ: `docker stop swiftmq`, `docker rm swiftmq` (volume ข้อมูลยังอยู่)
+- ข้อมูลอยู่บน named volume `speedmq-data` สร้างคอนเทนเนอร์ใหม่ก็ไม่หาย
+- หยุด / ลบ: `docker stop speedmq`, `docker rm speedmq` (volume ข้อมูลยังอยู่)
 
 **ถ้าต้องแก้คอนฟิกหรือใช้ compose ให้ clone repo:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # ใช้ภาพที่เผยแพร่แล้ว; เปลี่ยนเป็น up -d --build ถ้าต้องการบิลด์เองในเครื่อง
 
 docker compose ps        # สถานะควรเป็น Up (healthy)
 docker compose logs -f   # ดู log แบบต่อเนื่อง
 ```
 
-- คอนฟิกถูก mount แบบอ่านอย่างเดียวจาก `configs/swiftmqd.json` แก้แล้วใช้ `docker compose restart` ให้มีผล
+- คอนฟิกถูก mount แบบอ่านอย่างเดียวจาก `configs/speedmqd.json` แก้แล้วใช้ `docker compose restart` ให้มีผล
 - หยุด: `docker compose down` (ข้อมูลยังอยู่); `docker compose down -v` (ลบข้อมูลด้วย)
 
 ### วิธีที่สอง: ไบนารีในเครื่อง（ต้องมี Go 1.24+）
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > ผลลัพธ์การ build ของ UI จัดการไม่ได้ถูกเก็บเข้า repository ถ้าต้องการใช้ UI ให้รัน `npm ci && npm run build` ใน `web/` ก่อน;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | UI จัดการ | <http://localhost:15672/>: คิว / เอ็กซ์เชนจ์ / การเชื่อมต่อ / สิทธิ์บัญชี / virtual host / นโยบาย / ลิมิต / feature flag / คลัสเตอร์ มุมขวาบนตั้งค่าการรีเฟรชอัตโนมัติและ**ภาษาของอินเทอร์เฟซ**ได้ |
 | เมตริกการมอนิเตอร์ | <http://localhost:15672/metrics>（ข้อความรูปแบบ Prometheus ต้องยืนยันตัวตน）; แดชบอร์ดและการแจ้งเตือนดูที่ [docs/ops/monitoring](ops/monitoring/README.md) |
-| บรรทัดคำสั่ง | `./bin/swiftmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（ปิดแบบ hot พอร์ตปิดทันที） |
+| บรรทัดคำสั่ง | `./bin/speedmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（ปิดแบบ hot พอร์ตปิดทันที） |
 | การตรวจสอบสุขภาพ | `nc -z 127.0.0.1 15672`（compose มี healthcheck ในตัวแล้ว） |
 | สำรองและกู้คืน | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | การอัปเกรด | [docs/ops/upgrade.md](ops/upgrade.md) |
 | เกณฑ์ความปลอดภัย | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-คอนฟิกที่ใช้บ่อย（ตัวอย่างเต็มดูที่ [configs/swiftmqd.json](../../../configs/swiftmqd.json) หรือใช้ตัวแปรสภาพแวดล้อม `SWIFTMQ_*` เขียนทับได้）:
+คอนฟิกที่ใช้บ่อย（ตัวอย่างเต็มดูที่ [configs/speedmqd.json](../../../configs/speedmqd.json) หรือใช้ตัวแปรสภาพแวดล้อม `SPEEDMQ_*` เขียนทับได้）:
 
 | รายการคอนฟิก | คำอธิบาย | ค่าเริ่มต้น |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | `storage.fsync` | ระดับการเขียนลงดิสก์ `none / os / batch / always`（กำหนดจังหวะของ confirm ไปพร้อมกัน） | `os` |
 | `storage.memory_high_watermark`、`storage.disk_free_limit` | ระดับทรัพยากร: เมื่อถึงเกณฑ์จะบล็อกผู้ผลิต **ไม่ทำข้อความหาย** | `0.4` / 50 MiB |
 | `users` | ตารางผู้ใช้ในตัว（รหัสผ่าน + แท็ก + `remote_access`） | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | คลัสเตอร์หลายโหนด（ปิดเป็นค่าเริ่มต้น）การเปลี่ยนสมาชิกใช้ `swiftmqctl add_member` | ปิด |
+| `cluster.enabled` + `cluster.peers` | คลัสเตอร์หลายโหนด（ปิดเป็นค่าเริ่มต้น）การเปลี่ยนสมาชิกใช้ `speedmqctl add_member` | ปิด |
 
 > พอร์ตอาจถูกใช้งานอยู่: ใช้ `listeners` / `management.addr` เปลี่ยนเป็นพอร์ตอื่นก็ได้
 
@@ -142,10 +142,10 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 ## โครงสร้างโปรเจกต์
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # จุดเข้าโปรเซส broker（ตัวที่ต้องรันก็คืออันนี้）
-│   └── swiftmqctl/      # CLI สำหรับปฏิบัติการ（ผ่าน HTTP API ของฝ่ายจัดการ แยกจากเวอร์ชันของ kernel）
+│   ├── speedmqd/        # จุดเข้าโปรเซส broker（ตัวที่ต้องรันก็คืออันนี้）
+│   └── speedmqctl/      # CLI สำหรับปฏิบัติการ（ผ่าน HTTP API ของฝ่ายจัดการ แยกจากเวอร์ชันของ kernel）
 ├── internal/            # การทำงานของ kernel
 │   ├── protocol/        # ปลั๊กอินโปรโตคอล: amqp091、mqtt（เข้ารหัส-ถอดรหัส / method / session）
 │   ├── broker/          # kernel: vhost、เอ็กซ์เชนจ์、คิว、dead letter、การควบคุมการไหล、มุมมองฝ่ายจัดการ
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # คอนฟิกตัวอย่าง
 ├── docs/ops/            # เอกสารปฏิบัติการ: สำรองกู้คืน / อัปเกรด / เกณฑ์ความปลอดภัย / มอนิเตอร์
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（QR code กลุ่มพูดคุย）
+└── speedmq-logo.PNG、1280X1280.PNG（QR code กลุ่มพูดคุย）
 ```
 
 ***
@@ -191,6 +191,6 @@ Copyright 2026 houzch（ดู [NOTICE](../../../NOTICE)）
 
 ## เข้าร่วมกลุ่มพูดคุย
 
-สแกน QR code เพื่อเข้ากลุ่มพูดคุย SwiftMQ มีปัญหาสามารถถามในกลุ่มได้เลย:
+สแกน QR code เพื่อเข้ากลุ่มพูดคุย SpeedMQ มีปัญหาสามารถถามในกลุ่มได้เลย:
 
-![กลุ่มพูดคุย SwiftMQ](../../../1280X1280.PNG)
+![กลุ่มพูดคุย SpeedMQ](../../../1280X1280.PNG)

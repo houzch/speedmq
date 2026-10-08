@@ -1,9 +1,9 @@
-# Ontwikkelgids voor SwiftMQ externe-procesplugins —— Python
+# Ontwikkelgids voor SpeedMQ externe-procesplugins —— Python
 
-> **Doelgroep**: ontwikkelaars die met Python externe-procesplugins (sidecar) voor SwiftMQ schrijven.
+> **Doelgroep**: ontwikkelaars die met Python externe-procesplugins (sidecar) voor SpeedMQ schrijven.
 > **Eerst lezen**: [Ontwikkelgids voor externe-procesplugins (sidecar)](plugin-development.md) — daar worden het mentale model, de configuratievelden en de wire-protocoltabel behandeld;
 > dit document behandelt alleen **hoe je het in Python realiseert**, plus de op deze machine empirisch geteste stappen en resultaten.
-> **Voorbeeldproject**: workspace `swiftmq-plugin/python/sidecar_plugin.py` (alleen standaardbibliotheek, geen externe afhankelijkheden).
+> **Voorbeeldproject**: workspace `speedmq-plugin/python/sidecar_plugin.py` (alleen standaardbibliotheek, geen externe afhankelijkheden).
 
 ---
 
@@ -31,7 +31,7 @@ Drie kernpunten (gemakkelijk fout te doen, onthoud ze goed):
 
 ### Stap één: de plugin in de configuratie declareren
 
-`swiftmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
+`speedmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
 
 ```json
 {
@@ -41,7 +41,7 @@ Drie kernpunten (gemakkelijk fout te doen, onthoud ze goed):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ moet naar een aparte thread worden gestuurd, omdat deze tijdens de verwerking mo
 
 ## 4. Codewandeling (voorbeeldproject)
 
-`swiftmq-plugin/python/sidecar_plugin.py` is ongeveer 320 regels; belangrijkste functies:
+`speedmq-plugin/python/sidecar_plugin.py` is ongeveer 320 regels; belangrijkste functies:
 
 | Locatie | Functie |
 | --- | --- |
@@ -169,7 +169,7 @@ moet naar een aparte thread worden gestuurd, omdat deze tijdens de verwerking mo
 
 ## 5. Meting (lokaal gereproduceerd)
 
-Omgeving: Windows + Python 3.12; de kernel draait in Docker (`swiftmq:1.1.01`), de plugin draait op de host,
+Omgeving: Windows + Python 3.12; de kernel draait in Docker (`speedmq:1.1.01`), de plugin draait op de host,
 en de kernel maakt verbinding via `tcp://host.docker.internal:19001`.
 
 ```

@@ -1,12 +1,12 @@
-# Pelan Naik Taraf dan Migrasi SwiftMQ
+# Pelan Naik Taraf dan Migrasi SpeedMQ
 
-> Versi berkenaan: `1.0.0`（`broker.Version`，lihat `swiftmq_build_info` dalam `/metrics`）。
+> Versi berkenaan: `1.0.0`（`broker.Version`，lihat `speedmq_build_info` dalam `/metrics`）。
 > Semua kesimpulan "ujian sebenar" dalam dokumen ini berasal daripada operasi sebenar pada mesin ini; yang tidak diuji akan ditandakan secara eksplisit **【Belum diverifikasi】**。
 > Persekitaran mesin ini: Windows + PowerShell 5.1，Go 1.27.1 windows/386，`data_dir` sementara + port bukan lalai.
 
 ---
 
-## 1. Migrasi (beralih daripada RabbitMQ kepada SwiftMQ)
+## 1. Migrasi (beralih daripada RabbitMQ kepada SpeedMQ)
 
 Kedudukan projek ini ialah **keserasian pada peringkat protokol AMQP 0-9-1**, oleh itu "migrasi" terutamanya melibatkan **menukar alamat sambungan**:
 
@@ -16,7 +16,7 @@ Kedudukan projek ini ialah **keserasian pada peringkat protokol AMQP 0-9-1**, ol
 
 **Perbezaan semantik yang perlu disemak sendiri sebelum migrasi**（semuanya sengaja dilakukan oleh repositori ini, berdasarkan README / dokumen reka bentuk）:
 
-| Item | Tingkah laku SwiftMQ | Kesan migrasi |
+| Item | Tingkah laku SpeedMQ | Kesan migrasi |
 | --- | --- | --- |
 | Baris gilir sementara (bukan gigih dan bukan eksklusif) | **Menolak pengisytiharan**（541），`auto_delete` tidak dikecualikan | Klien lama yang bergantung pada baris gilir jenis ini akan gagal, perlu tukar kepada durable atau exclusive |
 | vhost lalai `/` | **Tidak boleh dipadam**（400），RabbitMQ membenarkan | Skrip automasi yang memadam vhost lalai akan gagal（ini satu-satunya kekangan keselamatan proaktif） |
@@ -24,8 +24,8 @@ Kedudukan projek ini ialah **keserasian pada peringkat protokol AMQP 0-9-1**, ol
 | Baris gilir kuorum | Menyokong penambahan replika，**tidak menyokong pengurangan** | Rancang sekali gus |
 | Pemalam | Tiada ekosistem pemalam Erlang，AMQP 1.0 / STOMP belum dilaksanakan | Senario yang menggunakan protokol ini belum boleh dimigrasi |
 
-**Migrasi data**: format penyimpanan SwiftMQ dan RabbitMQ tidak serasi，**tiada alat pemindahan data dalam talian/luar talian disediakan**。
-Cara migrasi ialah "bina SwiftMQ kosong → jalankan serentak untuk pengesahan → potong aliran secara berperingkat"。**【Belum diverifikasi】** Dokumen ini tidak mengandungi sebarang latihan pemindahan data RabbitMQ sebenar.
+**Migrasi data**: format penyimpanan SpeedMQ dan RabbitMQ tidak serasi，**tiada alat pemindahan data dalam talian/luar talian disediakan**。
+Cara migrasi ialah "bina SpeedMQ kosong → jalankan serentak untuk pengesahan → potong aliran secara berperingkat"。**【Belum diverifikasi】** Dokumen ini tidak mengandungi sebarang latihan pemindahan data RabbitMQ sebenar.
 
 ---
 
@@ -84,7 +84,7 @@ data/
 - Kedua-duanya **hanya berkesan semasa but pertama kalinya**: permulaan pertama akan menulis vhosts/users dalam konfigurasi ke metadata dan meninggalkan fail penanda
   `meta/vhosts.seeded` / `meta/users.seeded`; **selepas itu metadata dijadikan rujukan**。
 - Oleh itu **semasa naik taraf/menukar konfigurasi, jangan harap dapat menambah/memadam akaun atau vhost dengan mengubah fail konfigurasi**—— ubah pun tidak berkesan;
-  sila gunakan API pengurusan atau `swiftmqctl`。
+  sila gunakan API pengurusan atau `speedmqctl`。
 - Sebaliknya, naik taraf **tidak akan** menimpa akaun sedia ada dengan konfigurasi: kata laluan yang diubah semasa operasi tidak akan dikembalikan kepada nilai lama dalam konfigurasi selepas mula semula,
   akaun yang dipadam semasa operasi juga tidak akan hidup semula。Asas: logik penanda semaian `cluster.go`; README M8-4 / M8-7。
 
@@ -102,22 +102,22 @@ data/
 ### 5.1 Langkah
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) Hentikan proses (keluar dengan sopan akan melakukan flush akhir; lihat §4 "konsistensi")
 #    Jika berjalan di latar depan: Ctrl+C; jika sebagai perkhidmatan: Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Sandarkan direktori data (pastikan selepas proses berhenti)
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) Gantikan binari (letakkan swiftmqd.exe / swiftmqctl.exe versi baharu ke laluan asal)
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) Gantikan binari (letakkan speedmqd.exe / speedmqctl.exe versi baharu ke laluan asal)
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) Mula
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) Sahkan: proses masih hidup + API pengurusan boleh dibaca
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -127,22 +127,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 Senarai semak pengesahan selepas naik taraf
 
-- Log permulaan memaparkan `SwiftMQ 启动中 ... version=<新版本>` dan `管理面已启动`;
+- Log permulaan memaparkan `SpeedMQ 启动中 ... version=<新版本>` dan `管理面已启动`;
 - `object_totals` / `queue_totals` dalam `/api/overview` sama seperti sebelum sandaran（banding `backup-restore.md` §5）;
 - `messages` / `messages_ready` setiap baris gilir durable dalam `/api/queues` sama seperti sebelum sandaran;
-- `/metrics` boleh diambil dan `swiftmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
+- `/metrics` boleh diambil dan `speedmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
 
 ---
 
 ## 6. Naik taraf imej (kontena)
 
-Imej berukuran kira-kira 13 MB（binari pautan statik + alpine），**berjalan sebagai bukan root（uid 10001）**，direktori data dipasang pada `/var/lib/swiftmq`。
+Imej berukuran kira-kira 13 MB（binari pautan statik + alpine），**berjalan sebagai bukan root（uid 10001）**，direktori data dipasang pada `/var/lib/speedmq`。
 
 ```powershell
 # 1) Tarik/bina imej baharu (tag guna nombor versi baharu, elakkan kekeliruan old/new)
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) Hentikan kontena lama (compose akan mengekalkan volum bernama swiftmq-data)
+# 2) Hentikan kontena lama (compose akan mengekalkan volum bernama speedmq-data)
 docker compose down
 
 # 3) Mulakan versi baharu (tukar image dalam fail compose kepada tag baharu)
@@ -153,14 +153,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **Tugasan sekali guna dalam kontena**（contohnya menjalankan `swiftmqctl` dalam kontena）: `run` bagi `docker compose ...` mesti menambah `-T` dalam persekitaran bukan interaktif,
+> **Tugasan sekali guna dalam kontena**（contohnya menjalankan `speedmqctl` dalam kontena）: `run` bagi `docker compose ...` mesti menambah `-T` dalam persekitaran bukan interaktif,
 > jika tidak akan gagal kerana permohonan TTY:
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-Kegigihan data bergantung pada **volum bernama** `swiftmq-data` compose, data tidak hilang apabila kontena dibina semula（sejak M4 benar-benar ditulis ke cakera）。
-Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan menyandarkan `/var/lib/swiftmq`（lihat `backup-restore.md` §3.2）。**【Naik taraf imej belum diuji】**（mesin ini tidak menjalankan Docker）。
+Kegigihan data bergantung pada **volum bernama** `speedmq-data` compose, data tidak hilang apabila kontena dibina semula（sejak M4 benar-benar ditulis ke cakera）。
+Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan menyandarkan `/var/lib/speedmq`（lihat `backup-restore.md` §3.2）。**【Naik taraf imej belum diuji】**（mesin ini tidak menjalankan Docker）。
 
 ---
 
@@ -168,7 +168,7 @@ Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan 
 
 ### 7.1 Mesin tunggal
 
-- **Pengeluaran berperingkat**: SwiftMQ mesin tunggal tiada keupayaan terbina dalam "dua versi lama/baharu dalam proses sama"。Pengeluaran berperingkat yang boleh dilakukan ialah **bayangan sisi**:
+- **Pengeluaran berperingkat**: SpeedMQ mesin tunggal tiada keupayaan terbina dalam "dua versi lama/baharu dalam proses sama"。Pengeluaran berperingkat yang boleh dilakukan ialah **bayangan sisi**:
   instans versi baharu mula-mula dipasang pada aliran huluan yang sama menggunakan **penggunaan baca sahaja/baris gilir bayangan** untuk pemerhatian, selepas disahkan betul barulah tukar pihak penulis。
 - **Rollback**:
   1. Hentikan proses versi baharu;
@@ -181,7 +181,7 @@ Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan 
 Platform tidak menyediakan "naik taraf bergilir satu klik", perlu mengendalikan nod satu demi satu secara manual mengikut urutan di bawah:
 
 1. **Naik taraf satu nod sahaja pada satu masa**: hentikan nod tersebut → sandarkan `data_dir`nya → tukar binari → mula → tunggu ia menyertai semula dan menyusul
-   （`swiftmqctl cluster_status` / `GET /api/cluster` lihat `role`、`commit_index`/`last_applied`）。
+   （`speedmqctl cluster_status` / `GET /api/cluster` lihat `role`、`commit_index`/`last_applied`）。
 2. **Cadangan urutan**: naik taraf **learner / ahli bukan pengundi** dahulu（tiada kesan pada majoriti），kemudian **follower**，akhir sekali **leader**
    （naik taraf leader akan mencetuskan satu pemilihan ketua, semasa itu tidak boleh menulis untuk seketika）。
 3. **Kesan pemberhentian terhadap majoriti**（penting）:
@@ -201,10 +201,10 @@ Platform tidak menyediakan "naik taraf bergilir satu klik", perlu mengendalikan 
 
 - **Penurunan merentas versi utama: tidak disokong, belum diverifikasi**。Jika versi baharu sudah menulis data dengan format/semantik baharu，**tiada** jaminan "kembali kepada binari lama dan baca seadanya";
   rollback hanya boleh bergantung pada sandaran sebelum naik taraf。
-- **Format konfigurasi tidak berubah**: masih JSON + pembolehubah persekitaran `SWIFTMQ_*`。**Konfigurasi YAML belum disokong**（perlu memperkenalkan kebergantungan penghurai, M8-17 menunggu penilaian），
+- **Format konfigurasi tidak berubah**: masih JSON + pembolehubah persekitaran `SPEEDMQ_*`。**Konfigurasi YAML belum disokong**（perlu memperkenalkan kebergantungan penghurai, M8-17 menunggu penilaian），
   naik taraf tidak akan membawa YAML。
 - **Naik taraf panas pemalam/protokol dalam talian**: pemalam dikompil bersama kernel（bentuk A）atau dilancarkan mengikut konfigurasi `spawn`（bentuk B），
   naik taraf kernel = mula semula proses; **tiada** mekanisme menggantikan binari panas di tempat。
 - **Migrasi di tempat enjin penyimpanan**: putaran segmen/pemadatan indeks ialah tingkah laku latar belakang masa operasi，**tiada** arahan "migrasi data/pemadatan" berasingan。
 - **Naik taraf kluster dalam rangkaian sebenar**: repositori ini hanya melakukan kekacauan berskala kecil（kill pada peringkat proses），**tidak melakukan** latihan naik taraf di bawah pemisahan rangkaian dan cakera penuh。
-- Dokumen ini **tidak mengandungi** sebarang pengesahan pemindahan data antara SwiftMQ dan broker lain（RabbitMQ）。
+- Dokumen ini **tidak mengandungi** sebarang pengesahan pemindahan data antara SpeedMQ dan broker lain（RabbitMQ）。

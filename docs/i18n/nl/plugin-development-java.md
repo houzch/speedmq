@@ -1,8 +1,8 @@
-# Ontwikkelgids voor SwiftMQ externe-procesplugins —— Java
+# Ontwikkelgids voor SpeedMQ externe-procesplugins —— Java
 
-> **Doelgroep**: ontwikkelaars die met Java externe-procesplugins (sidecar) voor SwiftMQ schrijven.
+> **Doelgroep**: ontwikkelaars die met Java externe-procesplugins (sidecar) voor SpeedMQ schrijven.
 > **Eerst lezen**: [Ontwikkelgids voor externe-procesplugins (sidecar)](plugin-development.md) (mentaal model / configuratievelden / wire-protocoltabel).
-> **Voorbeeldproject**: workspace `swiftmq-plugin/java/SidecarPlugin.java` (één bestand, alleen de JDK-standaardbibliotheek, geen Maven/Gradle nodig).
+> **Voorbeeldproject**: workspace `speedmq-plugin/java/SidecarPlugin.java` (één bestand, alleen de JDK-standaardbibliotheek, geen Maven/Gradle nodig).
 
 ---
 
@@ -26,7 +26,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
 
 ### Stap één: configuratie
 
-`swiftmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
+`speedmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 4. Codewandeling (voorbeeldproject)
 
-`swiftmq-plugin/java/SidecarPlugin.java` is ongeveer 470 regels (inclusief minimale JSON):
+`speedmq-plugin/java/SidecarPlugin.java` is ongeveer 470 regels (inclusief minimale JSON):
 
 | Locatie | Functie |
 | --- | --- |
@@ -167,7 +167,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 5. Meting (lokaal gereproduceerd)
 
-Windows + JDK 25; de kernel draait in Docker (`swiftmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; de kernel draait in Docker (`speedmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Bestreken: **handshake → auth → semantiekbrug → bezorging terugduwen → s
 ## 7. Gevorderd
 
 - Verpak het als een uitvoerbare jar (`Main-Class: SidecarPlugin`) of een `jlink`-gekrompen runtime,
-  en wijzig `spawn` dan in `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  en wijzig `spawn` dan in `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Plugin met eigen beheer-UI: voeg `console_url` toe in de configuratie (hoofddocument §5.8), dan verschijnt op de pagina "Pluginbeheer" van de beheerconsole een directe ingang.
 - Losstaande uitrol: `spawn: []` + `address: "tcp://<servicenaam>:19031"`, in de container luisteren op `0.0.0.0`.

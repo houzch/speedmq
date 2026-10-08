@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | **Nederlands** | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Een **RabbitMQ-compatibele** message broker geschreven in Go. Bestaande RabbitMQ-clients hebben **geen codewijziging en geen andere SDK** nodig; alleen het aanpassen van het verbindingsadres is voldoende.
 
@@ -9,7 +9,7 @@ Een **RabbitMQ-compatibele** message broker geschreven in Go. Bestaande RabbitMQ
 
 - **Protocolcompatibel**: AMQP 0-9-1 (inclusief RabbitMQ-extensies) en MQTT 3.1.1; de compatibiliteitsbasis is **de semantiek van RabbitMQ 4.3**.
 - **Eenvoudige uitrol**: één binary / één container, de beheer-UI is al ingebouwd; er is geen extra Nginx, database of Node-runtime nodig.
-- **Voldoende voor beheer**: beheer-UI (queues / exchanges / verbindingen / accountrechten / virtual hosts / policies / limieten / cluster), Prometheus `/metrics`, opdrachtregel `swiftmqctl`.
+- **Voldoende voor beheer**: beheer-UI (queues / exchanges / verbindingen / accountrechten / virtual hosts / policies / limieten / cluster), Prometheus `/metrics`, opdrachtregel `speedmqctl`.
 - **Standaardpoorten**: `5672` (AMQP), `1883` (MQTT), `15672` (beheer-UI / HTTP API / metrics).
 
 Reeds aanwezige mogelijkheden: persistentie (segmentlog + fsync-niveaus + crashherstel), publicatiebevestiging, TTL / dead letter / lengtelimiet, consumentprioriteit, Direct Reply-To, cluster (Raft-metadata + quorumqueues + doorsturen tussen nodes), hot start/stop van plugins.
@@ -23,39 +23,39 @@ Reeds aanwezige mogelijkheden: persistentie (segmentlog + fsync-niveaus + crashh
 **Zonder de repo te clonen: haal de image op en start hem direct.**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-De image staat op twee plekken met dezelfde inhoud (kies wat voor jou het snelst is): Docker Hub `houzch/swiftmq` en GitHub GHCR `ghcr.io/houzch/swiftmq`; beide bieden `linux/amd64` en `linux/arm64`.
+De image staat op twee plekken met dezelfde inhoud (kies wat voor jou het snelst is): Docker Hub `houzch/speedmq` en GitHub GHCR `ghcr.io/houzch/speedmq`; beide bieden `linux/amd64` en `linux/arm64`.
 
-- De data komt in het named volume `swiftmq-data` en blijft bewaard als de container opnieuw wordt aangemaakt.
-- Stoppen / verwijderen: `docker stop swiftmq`, `docker rm swiftmq` (het datavolume blijft behouden).
+- De data komt in het named volume `speedmq-data` en blijft bewaard als de container opnieuw wordt aangemaakt.
+- Stoppen / verwijderen: `docker stop speedmq`, `docker rm speedmq` (het datavolume blijft behouden).
 
 **Wil je de configuratie aanpassen of met compose werken, clone dan de repo:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # Gebruikt de gepubliceerde image; gebruik up -d --build om lokaal te bouwen
 
 docker compose ps        # Status zou Up (healthy) moeten zijn
 docker compose logs -f   # Logs volgen
 ```
 
-- De configuratie wordt read-only gemount vanuit `configs/swiftmqd.json`; wijzigingen gelden na `docker compose restart`.
+- De configuratie wordt read-only gemount vanuit `configs/speedmqd.json`; wijzigingen gelden na `docker compose restart`.
 - Stoppen: `docker compose down` (data blijft); `docker compose down -v` (data wordt ook verwijderd).
 
 ### Methode 2: Lokaal binary (vereist Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > De build-artefacten van de beheer-UI worden niet in de repository opgenomen. Wil je de UI gebruiken, voer dan eerst in `web/` `npm ci && npm run build` uit;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | Beheer-UI | <http://localhost:15672/>: queues / exchanges / verbindingen / accountrechten / virtual hosts / policies / limieten / feature flags / cluster; rechtsboven kun je automatisch verversen en de **interfacetaal** instellen |
 | Metrics | <http://localhost:15672/metrics> (Prometheus-tekst, authenticatie vereist); zie [docs/ops/monitoring](ops/monitoring/README.md) voor dashboards en alerts |
-| Opdrachtregel | `./bin/swiftmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (hot uitschakelen, de poort wordt onmiddellijk gesloten) |
+| Opdrachtregel | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (hot uitschakelen, de poort wordt onmiddellijk gesloten) |
 | Healthcheck | `nc -z 127.0.0.1 15672` (compose heeft al een ingebouwde healthcheck) |
 | Back-up en herstel | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | Upgraden | [docs/ops/upgrade.md](ops/upgrade.md) |
 | Beveiligingsbaseline | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-Veelgebruikte configuratie (zie [configs/swiftmqd.json](../../../configs/swiftmqd.json) voor een volledig voorbeeld; kan ook worden overschreven met `SWIFTMQ_*`-omgevingsvariabelen):
+Veelgebruikte configuratie (zie [configs/speedmqd.json](../../../configs/speedmqd.json) voor een volledig voorbeeld; kan ook worden overschreven met `SPEEDMQ_*`-omgevingsvariabelen):
 
 | Configuratieoptie | Beschrijving | Standaard |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ Veelgebruikte configuratie (zie [configs/swiftmqd.json](../../../configs/swiftmq
 | `storage.fsync` | Schrijfniveau `none / os / batch / always` (bepaalt ook het moment van confirm) | `os` |
 | `storage.memory_high_watermark`, `storage.disk_free_limit` | Resourcewatermerken: bij activering worden producers geblokkeerd, **berichten gaan niet verloren** | `0.4` / 50 MiB |
 | `users` | Ingebouwde gebruikerstabel (wachtwoord + tags + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | Cluster met meerdere nodes (standaard uitgeschakeld), ledenwijzigingen via `swiftmqctl add_member` | Uitgeschakeld |
+| `cluster.enabled` + `cluster.peers` | Cluster met meerdere nodes (standaard uitgeschakeld), ledenwijzigingen via `speedmqctl add_member` | Uitgeschakeld |
 
 > Poorten kunnen bezet zijn: vervang ze eenvoudig door andere poorten via `listeners` / `management.addr`.
 
@@ -142,10 +142,10 @@ Veelgebruikte configuratie (zie [configs/swiftmqd.json](../../../configs/swiftmq
 ## Projectstructuur
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # brokerproces-ingang (dit is wat je moet draaien)
-│   └── swiftmqctl/      # beheer-CLI (via beheer-HTTP-API, losgekoppeld van de kernelversie)
+│   ├── speedmqd/        # brokerproces-ingang (dit is wat je moet draaien)
+│   └── speedmqctl/      # beheer-CLI (via beheer-HTTP-API, losgekoppeld van de kernelversie)
 ├── internal/            # kernelimplementatie
 │   ├── protocol/        # protocolplugins: amqp091, mqtt (codering/decodering / methoden / sessies)
 │   ├── broker/          # kernel: vhost, exchanges, queues, dead letter, flow control, beheerweergave
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # voorbeeldconfiguraties
 ├── docs/ops/            # beheerdocumentatie: back-up en herstel / upgrade / beveiligingsbaseline / monitoring
 ├── Dockerfile, docker-compose.yml
-└── swiftmq-logo.PNG, 1280X1280.PNG (QR-code van de communitygroep)
+└── speedmq-logo.PNG, 1280X1280.PNG (QR-code van de communitygroep)
 ```
 
 ***
@@ -191,6 +191,6 @@ De AMQP 0-9-1-protocolspecificatie en de gedragssemantiek van [RabbitMQ](https:/
 
 ## Lid worden van de communitygroep
 
-Scan de QR-code om lid te worden van de SwiftMQ-communitygroep; bij vragen kun je het direct in de groep stellen:
+Scan de QR-code om lid te worden van de SpeedMQ-communitygroep; bij vragen kun je het direct in de groep stellen:
 
-![SwiftMQ-communitygroep](../../../1280X1280.PNG)
+![SpeedMQ-communitygroep](../../../1280X1280.PNG)

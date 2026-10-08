@@ -1,6 +1,6 @@
-# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar) ของ SwiftMQ
+# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar) ของ SpeedMQ
 
-> **กลุ่มเป้าหมาย**: นักพัฒนาที่ไม่ต้องการ fork หรือคอมไพล์เคอร์เนลใหม่ แต่ต้องการขยายความสามารถให้ SwiftMQ ด้วย**ภาษาใดก็ได้**
+> **กลุ่มเป้าหมาย**: นักพัฒนาที่ไม่ต้องการ fork หรือคอมไพล์เคอร์เนลใหม่ แต่ต้องการขยายความสามารถให้ SpeedMQ ด้วย**ภาษาใดก็ได้**
 > **ขอบเขต**: เอกสารนี้อธิบายรูปแบบปลั๊กอินเพียงแบบเดียว —— **ปลั๊กอินโปรเซสภายนอก** (คำศัพท์ของเคอร์เนลคือ `sidecar`) ปลั๊กอินโปรโตคอลที่บิลต์อินมากับเคอร์เนล (AMQP 0-9-1 / MQTT) ไม่อยู่ในขอบเขตของเอกสารนี้
 > **วิธีอ่าน**: ส่วนที่ 1–2 สร้างแบบจำลองทางความคิด ส่วนที่ 3 คือการเขียนโค้ด และ**ส่วนที่ 5 คือ "หลังพัฒนาเสร็จจะเชื่อมเข้ามารันร่วมกันและให้บริการภายนอกได้อย่างไร"**
 > **หากใช้ภาษาอื่น (Python / Node.js / PHP / Java) โปรดดูคู่มือแยกตามภาษาใน §4** (แต่ละฉบับมีโปรเจกต์ตัวอย่างที่ทดสอบรันผ่านจริงครบถ้วน)
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**ความหมายของสถานะ** (ดูได้ด้วย `swiftmqctl plugins show`):
+**ความหมายของสถานะ** (ดูได้ด้วย `speedmqctl plugins show`):
 
 | สถานะ | ความหมาย | การดำเนินการของฝ่ายปฏิบัติการ |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 ปลั๊กอินเป็น **Go module อิสระ** พึ่งพาเพียงสองแพ็กเกจสัญญาภายนอก:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— โปรโตคอลสายและการ implement ฝั่งปลั๊กอิน (**จำเป็น**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— ใช้เฉพาะเมื่อคุณต้องใช้ชนิดอย่าง `plugin.Message` / `plugin.Error` (ทางเลือก)
+- `github.com/houzch/speedmq/pkg/sidecar` —— โปรโตคอลสายและการ implement ฝั่งปลั๊กอิน (**จำเป็น**)
+- `github.com/houzch/speedmq/pkg/plugin` —— ใช้เฉพาะเมื่อคุณต้องใช้ชนิดอย่าง `plugin.Message` / `plugin.Error` (ทางเลือก)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > เมื่อใช้ `replace` ในการดีบักร่วม ปลั๊กอินกับเคอร์เนลต้องเป็น**ซอร์สโค้ดชุดเดียวกัน** มิฉะนั้นเวอร์ชัน API (`v1`) แม้ตรงกัน แต่ชนิดอาจไม่เหมือนกัน
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ func (h *handler) serve(stream *sidecar.Stream) error {
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 > **มีคู่มือแยกตามภาษาพร้อมโปรเจกต์ตัวอย่างครบถ้วนให้แล้ว** (ตัวอย่างทั้งหมดทดสอบรันผ่านจริง: การจับมือ → การยืนยันตัวตน → บริดจ์ความหมายเชิงความหมาย → การนำส่ง/เคลียร์ → สตรีมไบต์):
 >
-> | ภาษา | คู่มือ | โปรเจกต์ตัวอย่าง (เวิร์กสเปซ `swiftmq-plugin/`) |
+> | ภาษา | คู่มือ | โปรเจกต์ตัวอย่าง (เวิร์กสเปซ `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (เฉพาะไลบรารีมาตรฐาน) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (เฉพาะไลบรารีมาตรฐาน) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (เฉพาะไลบรารีมาตรฐาน) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (ไฟล์เดียว เฉพาะ JDK) |
 >
-> สำหรับการ implement อ้างอิงฉบับเต็มในภาษา Go ดูโปรเจกต์ทดสอบแยกต่างหาก `swiftmq-test/test/integration/echosidecar/` (มันใช้ `pkg/sidecar.Server` โดยตรง
+> สำหรับการ implement อ้างอิงฉบับเต็มในภาษา Go ดูโปรเจกต์ทดสอบแยกต่างหาก `speedmq-test/test/integration/echosidecar/` (มันใช้ `pkg/sidecar.Server` โดยตรง
 > ไม่ต้องสนใจรายละเอียดระดับไบต์ด้านล่าง)
 
 **รูปแบบเฟรม** (ทุกเฟรมเหมือนกัน):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **โครงสร้าง JSON ของระนาบควบคุม** (ชื่อฟิลด์ตรงกับ `proto.go`)
 
 > ส่วนนี้เป็น**ตัวอย่างข้อความโปรโตคอลสาย** (ในบล็อกเดียวกันให้ข้อความหลายรายการตามลำดับ จึงใช้ `//` คั่นคำอธิบาย)
-> **ไม่ใช่คอนฟิกที่เขียนลง `swiftmqd.json` ได้โดยตรง**
+> **ไม่ใช่คอนฟิกที่เขียนลง `speedmqd.json` ได้โดยตรง**
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. นำมารันร่วมกัน: การเชื่อมต่อ การให้บริการภายนอก การแพ็กเกจ ★
 
-ส่วนนี้อธิบาย "หลังพัฒนาเสร็จจะเชื่อมเข้า SwiftMQ และให้บริการภายนอกได้อย่างไร"
+ส่วนนี้อธิบาย "หลังพัฒนาเสร็จจะเชื่อมเข้า SpeedMQ และให้บริการภายนอกได้อย่างไร"
 
 ### 5.1 ประกาศปลั๊กอินในคอนฟิก
 
-ปลั๊กอินภายนอก**ถูกดูแลจัดการด้วยคอนฟิกทั้งหมด** เคอร์เนลไม่ต้องแก้โค้ดใด ๆ เพื่อมัน ให้เพิ่มรายการในส่วน `plugins` ของ `swiftmqd.json`
+ปลั๊กอินภายนอก**ถูกดูแลจัดการด้วยคอนฟิกทั้งหมด** เคอร์เนลไม่ต้องแก้โค้ดใด ๆ เพื่อมัน ให้เพิ่มรายการในส่วน `plugins` ของ `speedmqd.json`
 (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
 
 ```json
@@ -554,7 +554,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 การเลือกที่อยู่:
 
 - **เครื่องเดียวกันแนะนำ unix socket** (`unix:///tmp/my-sidecar.sock`): ไม่ยึดครองพอร์ต TCP ไม่ได้รับผลกระทบจากการที่พอร์ตโฮสต์ถูกใช้อยู่
-  ระวังว่าเส้นทาง socket ต้องเขียนได้โดยโปรเซสเคอร์เนล (ในคอนเทนเนอร์คือผู้ใช้ `swiftmq` ที่ไม่ใช่ root)
+  ระวังว่าเส้นทาง socket ต้องเขียนได้โดยโปรเซสเคอร์เนล (ในคอนเทนเนอร์คือผู้ใช้ `speedmq` ที่ไม่ใช่ root)
 - **ข้ามคอนเทนเนอร์ต้องเป็น TCP** และโปรเซสปลั๊กอินต้องรับฟังบน `0.0.0.0` โดย `address` ใช้**ชื่อบริการในเครือข่ายคอนเทนเนอร์**
 
 > อย่าสลับทิศทาง: **ที่อยู่ที่ปลั๊กอินรับฟัง** = `address`; **พอร์ตที่เปิดให้ไคลเอนต์ภายนอก** = `protocols[].listeners`
@@ -584,8 +584,8 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.5 การแพ็กเกจ: ให้ปลั๊กอินรันร่วมกับเคอร์เนล
 
-**วิธี A —— บิลต์เข้าไปในอิมเมจเดียวกัน** (แนะนำสำหรับปลั๊กอินที่ "เผยแพร่พร้อมเคอร์เนล"): เพิ่มหนึ่งบรรทัดในสเตจรันไทม์ของ `swiftmq/Dockerfile`:
+**วิธี A —— บิลต์เข้าไปในอิมเมจเดียวกัน** (แนะนำสำหรับปลั๊กอินที่ "เผยแพร่พร้อมเคอร์เนล"): เพิ่มหนึ่งบรรทัดในสเตจรันไทม์ของ `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-side
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ services:
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ services:
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 | การดำเนินการ | คำสั่ง / อินเทอร์เฟซ | ผลลัพธ์ |
 | --- | --- | --- |
-| ปิดแบบ hot | `swiftmqctl plugins disable my-sidecar` หรือ `PUT /api/plugins/my-sidecar/disable` | **ปิดการรับฟังภายนอกของปลั๊กอินนั้น** (ปิดในระดับความสามารถ); เคอร์เนลและปลั๊กอินอื่นไม่ได้รับผลกระทบ |
-| เปิดแบบ hot | `swiftmqctl plugins enable my-sidecar` | เปิดการรับฟังของมันใหม่; หากก่อนหน้านี้สตาร์ทล้มเหลวจะลองอีกครั้ง |
-| ดูสถานะ | `swiftmqctl plugins list/show` | สถานะ + สาเหตุความล้มเหลว/การขาดการเชื่อมต่อ |
+| ปิดแบบ hot | `speedmqctl plugins disable my-sidecar` หรือ `PUT /api/plugins/my-sidecar/disable` | **ปิดการรับฟังภายนอกของปลั๊กอินนั้น** (ปิดในระดับความสามารถ); เคอร์เนลและปลั๊กอินอื่นไม่ได้รับผลกระทบ |
+| เปิดแบบ hot | `speedmqctl plugins enable my-sidecar` | เปิดการรับฟังของมันใหม่; หากก่อนหน้านี้สตาร์ทล้มเหลวจะลองอีกครั้ง |
+| ดูสถานะ | `speedmqctl plugins list/show` | สถานะ + สาเหตุความล้มเหลว/การขาดการเชื่อมต่อ |
 | เคอร์เนลออก | — | ตัดการเชื่อมต่อกับปลั๊กอิน เก็บคืนเซสชันบนบริดจ์ **ยุติโปรเซสลูกที่เคอร์เนล `spawn` ขึ้นมา** |
 
 > การปิดแบบ hot ปิดเพียง "ความสามารถ" (พอร์ตรับฟัง) **ไม่**ฆ่าโปรเซสปลั๊กอินที่ดึงขึ้นมาด้วย `spawn`; การเก็บคืนโปรเซสเกิดตอนเคอร์เนลออก
@@ -751,7 +751,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | สถานะ `failed` สาเหตุมี "ชื่อปลั๊กอินไม่ตรงกัน" | ชื่อปลั๊กอินในคอนฟิก ≠ `HelloAck.name`; แก้ให้ตรง |
 | สถานะ `failed` สาเหตุมี "เวอร์ชัน API ไม่ตรงกัน" | `HelloAck.api_version` ≠ `APIVersion` ของเคอร์เนล; แก้ให้ตรง |
 | สถานะ `failed` สาเหตุมี "ปฏิเสธการจับมือ" | `Hello` ของปลั๊กอินคืน error (`deny`); ดูเอาต์พุตปลั๊กอินที่ถูกส่งต่อในล็อกเคอร์เนล |
-| สถานะ `failed` สาเหตุมี "เชื่อมต่อปลั๊กอินภายนอกล้มเหลว" | โปรเซสไม่ขึ้นมา / `address` เขียนผิด / เส้นทาง socket เขียนไม่ได้ (ในคอนเทนเนอร์ระวังสิทธิ์ผู้ใช้ `swiftmq`) |
+| สถานะ `failed` สาเหตุมี "เชื่อมต่อปลั๊กอินภายนอกล้มเหลว" | โปรเซสไม่ขึ้นมา / `address` เขียนผิด / เส้นทาง socket เขียนไม่ได้ (ในคอนเทนเนอร์ระวังสิทธิ์ผู้ใช้ `speedmq`) |
 | สถานะ `down` | โปรเซสปลั๊กอินคราชหรือการเชื่อมต่อขาด; `restart=always` จะเชื่อมต่อใหม่เอง `never` ต้องดึงขึ้นมาด้วยมือ |
 | พอร์ตไม่เปิด / ไคลเอนต์เชื่อมต่อไม่ได้ | `protocols[].listeners` ไม่ได้ตั้งค่าหรือที่อยู่ถูก `listeners.<ชื่อโปรโตคอล>` เขียนทับไป; ตรวจสอบทั้งสองที่ |
 | ไคลเอนต์เชื่อมต่อพอร์ตอื่นแล้วถูกตัดทันที | พอร์ตนั้นไม่ตรงกับโปรโตคอลของคุณ (`prefix` ว่างหรือคำนำหน้าไม่ตรง); ตั้ง `prefix` ที่ไม่ว่างให้โปรโตคอล (ดู §5.3) |
@@ -772,7 +772,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | ชนิดระนาบการดำเนินการของเซสชันเคอร์เนล (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | การรับฟัง การดักจับ การเปิด-ปิดแบบ hot ตามปลั๊กอิน | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | วงจรชีวิตและการกำกับดูแลปลั๊กอิน (แยก/สถานะ/ตรวจสอบ) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| รายการคอนฟิกและตัวอย่าง (รวมส่วน sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| การประกอบโปรเซส (sidecar ถูกประกอบเข้าเคอร์เนลอย่างไร) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| การ implement อ้างอิงภาษา Go (ใช้ `pkg/sidecar.Server` รวมบริดจ์ `session.*` และ `core.authenticate`) | โปรเจกต์ทดสอบแยกต่างหาก `swiftmq-test/test/integration/echosidecar/` |
-| **คู่มือแยกตามภาษา + โปรเจกต์ตัวอย่าง** | ไดเรกทอรีนี้ `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; ตัวอย่างอยู่ใน**เวิร์กสเปซ** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| รายการคอนฟิกและตัวอย่าง (รวมส่วน sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| การประกอบโปรเซส (sidecar ถูกประกอบเข้าเคอร์เนลอย่างไร) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| การ implement อ้างอิงภาษา Go (ใช้ `pkg/sidecar.Server` รวมบริดจ์ `session.*` และ `core.authenticate`) | โปรเจกต์ทดสอบแยกต่างหาก `speedmq-test/test/integration/echosidecar/` |
+| **คู่มือแยกตามภาษา + โปรเจกต์ตัวอย่าง** | ไดเรกทอรีนี้ `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; ตัวอย่างอยู่ใน**เวิร์กสเปซ** `speedmq-plugin/{python,nodejs,php,java}/` |

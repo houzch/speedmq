@@ -1,9 +1,9 @@
-# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SwiftMQ —— Python
+# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SpeedMQ —— Python
 
-> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SwiftMQ ด้วย Python
+> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SpeedMQ ด้วย Python
 > **อ่านก่อน**: [คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar)](plugin-development.md) —— ที่นั่นอธิบายแบบจำลองทางความคิด ฟิลด์คอนฟิก และตารางสรุปโปรโตคอลสาย
 > เอกสารนี้อธิบายเฉพาะ **วิธีลงมือทำด้วย Python** พร้อมขั้นตอนและผลลัพธ์ที่ทดสอบจริงบนเครื่องนี้
-> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `swiftmq-plugin/python/sidecar_plugin.py` (เฉพาะไลบรารีมาตรฐาน ไม่มีการพึ่งพาภายนอก)
+> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `speedmq-plugin/python/sidecar_plugin.py` (เฉพาะไลบรารีมาตรฐาน ไม่มีการพึ่งพาภายนอก)
 
 ---
 
@@ -31,7 +31,7 @@
 
 ### ขั้นที่หนึ่ง: ประกาศปลั๊กอินในคอนฟิก
 
-`swiftmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
+`speedmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
 
 ```json
 {
@@ -41,7 +41,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 4. อ่านโค้ด (โปรเจกต์ตัวอย่าง)
 
-`swiftmq-plugin/python/sidecar_plugin.py` ประมาณ 320 บรรทัด ฟังก์ชันสำคัญ:
+`speedmq-plugin/python/sidecar_plugin.py` ประมาณ 320 บรรทัด ฟังก์ชันสำคัญ:
 
 | ตำแหน่ง | หน้าที่ |
 | --- | --- |
@@ -169,7 +169,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 5. การทดสอบจริง (จำลองบนเครื่องนี้)
 
-สภาพแวดล้อม: Windows + Python 3.12; เคอร์เนลรันบน Docker (`swiftmq:1.1.01`) ปลั๊กอินรันบนโฮสต์
+สภาพแวดล้อม: Windows + Python 3.12; เคอร์เนลรันบน Docker (`speedmq:1.1.01`) ปลั๊กอินรันบนโฮสต์
 เคอร์เนลเชื่อมต่อด้วย `tcp://host.docker.internal:19001`
 
 ```

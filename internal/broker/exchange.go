@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // binding 是一条"交换机 → 目标队列"的绑定。

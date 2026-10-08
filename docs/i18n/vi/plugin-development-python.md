@@ -1,9 +1,9 @@
-# Hướng dẫn phát triển plugin tiến trình ngoài cho SwiftMQ —— Python
+# Hướng dẫn phát triển plugin tiến trình ngoài cho SpeedMQ —— Python
 
-> **Đối tượng**: các nhà phát triển dùng Python để viết plugin tiến trình ngoài (sidecar) cho SwiftMQ.
+> **Đối tượng**: các nhà phát triển dùng Python để viết plugin tiến trình ngoài (sidecar) cho SpeedMQ.
 > **Đọc trước**: [Hướng dẫn phát triển plugin tiến trình ngoài (sidecar)](plugin-development.md) —— ở đó trình bày mô hình tư duy, trường cấu hình và bảng tổng hợp giao thức đường dây;
 > tài liệu này chỉ bàn **cách triển khai cụ thể bằng Python**, cùng các bước và kết quả đã kiểm nghiệm thực tế trên máy cục bộ.
-> **Dự án ví dụ**: workspace `swiftmq-plugin/python/sidecar_plugin.py` (chỉ thư viện chuẩn, không phụ thuộc bên thứ ba).
+> **Dự án ví dụ**: workspace `speedmq-plugin/python/sidecar_plugin.py` (chỉ thư viện chuẩn, không phụ thuộc bên thứ ba).
 
 ---
 
@@ -31,7 +31,7 @@ Ba điểm chính (dễ hiểu nhầm, hãy nhớ kỹ trước):
 
 ### Bước một: khai báo plugin trong cấu hình
 
-`swiftmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
+`speedmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
 
 ```json
 {
@@ -41,7 +41,7 @@ Ba điểm chính (dễ hiểu nhầm, hãy nhớ kỹ trước):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ phải ném sang luồng riêng để xử lý, vì trong lúc xử lý nó có 
 
 ## 4. Đọc hiểu mã (dự án ví dụ)
 
-`swiftmq-plugin/python/sidecar_plugin.py` khoảng 320 dòng, các hàm trọng tâm:
+`speedmq-plugin/python/sidecar_plugin.py` khoảng 320 dòng, các hàm trọng tâm:
 
 | Vị trí | Chức năng |
 | --- | --- |
@@ -169,7 +169,7 @@ phải ném sang luồng riêng để xử lý, vì trong lúc xử lý nó có 
 
 ## 5. Kiểm nghiệm thực tế (tái hiện trên máy cục bộ)
 
-Môi trường: Windows + Python 3.12; kernel chạy trong Docker (`swiftmq:1.1.01`), plugin chạy trên máy host,
+Môi trường: Windows + Python 3.12; kernel chạy trong Docker (`speedmq:1.1.01`), plugin chạy trên máy host,
 kernel dùng `tcp://host.docker.internal:19001` để kết nối tới nó.
 
 ```

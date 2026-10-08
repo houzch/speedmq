@@ -1,8 +1,8 @@
-# Gabay sa Pagbuo ng External-Process Plugin ng SwiftMQ —— PHP
+# Gabay sa Pagbuo ng External-Process Plugin ng SpeedMQ —— PHP
 
-> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SwiftMQ gamit ang PHP.
+> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SpeedMQ gamit ang PHP.
 > **Basahin muna**: [Gabay sa Pagbuo ng External-Process Plugin (sidecar)](plugin-development.md) (mental model / config field / pangkalahatang talahanayan ng wire protocol).
-> **Halimbawang proyekto**: workspace na `swiftmq-plugin/php/sidecar_plugin.php` (standard library lamang, **walang kailangang composer dependency**).
+> **Halimbawang proyekto**: workspace na `speedmq-plugin/php/sidecar_plugin.php` (standard library lamang, **walang kailangang composer dependency**).
 
 ---
 
@@ -26,7 +26,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
 
 ### Unang hakbang: config
 
-`swiftmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
+`speedmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Ang delivery ay **itutulak pabalik nang forward** ng kernel (`method = "session.
 
 ## 4. Code Walkthrough (halimbawang proyekto)
 
-Ang `swiftmq-plugin/php/sidecar_plugin.php` ay humigit-kumulang 320 linya:
+Ang `speedmq-plugin/php/sidecar_plugin.php` ay humigit-kumulang 320 linya:
 
 | Lokasyon | Tungkulin |
 | --- | --- |
@@ -171,7 +171,7 @@ Ang `swiftmq-plugin/php/sidecar_plugin.php` ay humigit-kumulang 320 linya:
 
 ## 5. Aktwal na Pagsusubok (na-reproduce sa makinang ito)
 
-Windows + PHP 7.4; kernel sa Docker (`swiftmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; kernel sa Docker (`speedmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

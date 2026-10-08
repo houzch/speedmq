@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/store"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/store"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 预声明交换机。

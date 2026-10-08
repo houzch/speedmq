@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/houzch/swiftmq/internal/protocol/spec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/spec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 队列日志记录中的消息编码：

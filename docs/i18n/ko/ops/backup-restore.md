@@ -1,4 +1,4 @@
-# SwiftMQ 백업과 복구
+# SpeedMQ 백업과 복구
 
 > 이 문서의 "실측" 결론은 모두 **Windows + PowerShell 5.1**에서의 실제 리허설(임시 `data_dir`과 임시 포트)에서 나온 것입니다.
 > 리허설 명령과 핵심 출력은 §6에 그대로 실었습니다. **【미검증】** 부분은 명시적으로 표시합니다(클러스터 백업/복구, Docker 볼륨 백업 등).
@@ -55,15 +55,15 @@
 
 ```powershell
 # 1) 프로세스 중지(포그라운드: Ctrl+C, 백그라운드: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) data_dir 전체 복사(타임스탬프 포함)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (선택) 백업의 메타데이터 스냅샷이 파싱 가능한지 검증
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 클러스터
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # 컨테이너를 중지한 뒤, 일회성 컨테이너로 볼륨 내용을 묶어 복사해 꺼냅니다
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【미검증】**(로컬에서 Docker를 실행하지 않았습니다).
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) 프로세스가 중지되었는지 확인
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) 현재 data_dir을 옮기거나 삭제해 신·구 파일이 섞이지 않게 합니다
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) 백업으로 복원
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) 기동
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 핵심:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > 환경: `data_dir`은 임시 디렉터리, AMQP `127.0.0.1:5676`, 관리면 `127.0.0.1:15677`, MQTT `127.0.0.1:1884`,
 > 기본 계정 `guest/guest`. 기동 로그:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

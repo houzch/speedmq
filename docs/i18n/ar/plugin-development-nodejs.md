@@ -1,8 +1,8 @@
-# دليل تطوير المكوّن الإضافي كعملية خارجية في SwiftMQ —— Node.js
+# دليل تطوير المكوّن الإضافي كعملية خارجية في SpeedMQ —— Node.js
 
-> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSwiftMQ بلغة Node.js.
+> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSpeedMQ بلغة Node.js.
 > **اقرأ أولًا**: [دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar)](plugin-development.md) (النموذج الذهني / حقول الإعداد / الجدول الكامل لبروتوكول السلك).
-> **المشروع النموذجي**: في مساحة العمل `swiftmq-plugin/nodejs/index.js` (مكتبة Node القياسية فقط، **بلا حاجة إلى اعتماديات npm**).
+> **المشروع النموذجي**: في مساحة العمل `speedmq-plugin/nodejs/index.js` (مكتبة Node القياسية فقط، **بلا حاجة إلى اعتماديات npm**).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### الخطوة الأولى: الإعداد
 
-`swiftmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
+`speedmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. قراءة الشيفرة (المشروع النموذجي)
 
-يبلغ `swiftmq-plugin/nodejs/index.js` نحو 330 سطرًا:
+يبلغ `speedmq-plugin/nodejs/index.js` نحو 330 سطرًا:
 
 | الموضع | الوظيفة |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. اختبار فعلي (إعادة الإنتاج محليًا)
 
-Windows + Node v24؛ والنواة في Docker (`swiftmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19011`).
+Windows + Node v24؛ والنواة في Docker (`speedmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

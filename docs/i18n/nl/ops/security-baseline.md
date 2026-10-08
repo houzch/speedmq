@@ -1,4 +1,4 @@
-# SwiftMQ beveiligingsbaseline (checklist met aanvinkvakjes)
+# SpeedMQ beveiligingsbaseline (checklist met aanvinkvakjes)
 
 > Principe: **alleen capaciteiten die deze repository daadwerkelijk heeft worden beschreven**. Bij elk item staat "waarom je het moet doen + hoe je verifieert dat het gedaan is"; de verificatieopdrachten zijn allemaal uitvoerbaar.
 > Items gemarkeerd met **【geverifieerd】** zijn op deze machine (Windows + PowerShell 5.1, `1.0.0`) **daadwerkelijk uitgevoerd**;
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Waarom**: afgestemd op RabbitMQ staat de ingebouwde `guest` standaard alleen lokale aanmelding toe; bij een externe uitrol moet je ervoor zorgen dat de bron van bevoorrechte accounts beperkt is.
 - **Hoe / reikwijdte (belangrijke beperking)**:
   - `remote_access` kan alleen in `users.<name>.remote_access` van het **configuratiebestand** worden gezet en **werkt alleen bij de eerste bootstrap**;
-  - **accounts die via de beheer-API / `swiftmqctl` worden aangemaakt, hebben altijd `remote_access=true`** (aanmelding vanaf elke bron toegestaan) ——
+  - **accounts die via de beheer-API / `speedmqctl` worden aangemaakt, hebben altijd `remote_access=true`** (aanmelding vanaf elke bron toegestaan) ——
     op basis van de `UpsertUser`-commentaar in `internal/broker/observe.go` en de gemeten `"remote_access":true` in `meta/state.json`.
     Met andere woorden: **de API kan een account momenteel niet beperken tot alleen lokaal**.
 - **Hoe verifiëren**: maak vanaf **een andere host** (niet `127.0.0.1`) met dat account verbinding; je moet 403 krijgen; een lokale verbinding moet slagen.
@@ -96,9 +96,9 @@ TLS-configuratieopties (de toegangslaag en het beheervlak **delen** dezelfde set
   **【geverifieerd】** Drie foutieve configuraties op deze machine, allemaal `exit=1`, start geweigerd:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Hoe verifiëren (positief/negatief)**: een TLS-client kan verbinden, een plaintext-client die verbinding maakt met de TLS-poort wordt geweigerd.
   **【geverifieerd】** Op deze machine is een TLS-instantie gestart (`amqp091` via TLS) en is met een echte client een probe uitgevoerd:
@@ -137,7 +137,7 @@ TLS-configuratieopties (de toegangslaag en het beheervlak **delen** dezelfde set
 
 - **Waarom**: het beheervlak luistert standaard op `:15672` (alle netwerkkaarten). Bij een externe uitrol moet je aan een intern/loopback-adres binden of de bron met een firewall beperken.
 - **Hoe**: stel `management.addr` in op `127.0.0.1:15672` of een intern adres; of schakel het volledig uit met `management.enabled=false`
-  (daarna is er geen beheerpoort meer, maar is `swiftmqctl` ook niet meer beschikbaar).
+  (daarna is er geen beheerpoort meer, maar is `speedmqctl` ook niet meer beschikbaar).
 - **Hoe verifiëren**:
   **【geverifieerd】** Op deze machine is het beheervlak ingesteld op `127.0.0.1:15677`; het gemeten luisteradres was inderdaad loopback:
 
@@ -160,8 +160,8 @@ TLS-configuratieopties (de toegangslaag en het beheervlak **delen** dezelfde set
 
 ## D. Beveiligingsversterking van de containeruitvoering
 
-Feiten over de image in deze repository (`Dockerfile`): statisch gelinkte binary + alpine, **draait als niet-root (uid 10001, gebruiker `swiftmq`)**,
-en de gegevensmap `/var/lib/swiftmq` is een volume. `docker-compose.yml` gebruikt een **benoemd volume** voor persistentie, **alleen-lezen mount** van de configuratie en logrotatie.
+Feiten over de image in deze repository (`Dockerfile`): statisch gelinkte binary + alpine, **draait als niet-root (uid 10001, gebruiker `speedmq`)**,
+en de gegevensmap `/var/lib/speedmq` is een volume. `docker-compose.yml` gebruikt een **benoemd volume** voor persistentie, **alleen-lezen mount** van de configuratie en logrotatie.
 
 ### D-1. Draaien als niet-root 【niet geverifieerd (Docker is op deze machine niet uitgevoerd)】
 

@@ -1,4 +1,4 @@
-# SwiftMQ 備份與還原
+# SpeedMQ 備份與還原
 
 > 本文中的「實測」結論全部來自 **Windows + PowerShell 5.1** 上的一次真實演練（臨時 `data_dir` 與臨時連接埠）。
 > 演練命令與關鍵輸出原樣貼在 §6。**【未驗證】** 的部分會明確標註（叢集備份/還原、Docker 磁碟區備份等）。
@@ -55,15 +55,15 @@
 
 ```powershell
 # 1) 停止處理程序（前景：Ctrl+C；背景：Stop-Process）
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) 複製整個 data_dir（附時間戳記）
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) （選用）驗證備份裡中繼資料快照可解析
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 叢集
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # 停止容器後，用一次性容器把磁碟區內容封裝複製出來
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【未驗證】**（本機未執行 Docker）。
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) 確認處理程序已停止
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) 移走（或刪除）目前 data_dir，避免新舊檔案混在一起
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) 用備份還原
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) 啟動
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 要點：
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > 環境：`data_dir` 在臨時目錄，AMQP `127.0.0.1:5676`、管理面 `127.0.0.1:15677`、MQTT `127.0.0.1:1884`，
 > 預設帳號 `guest/guest`。啟動日誌：
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

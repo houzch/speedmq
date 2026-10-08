@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/houzch/swiftmq/internal/protocol/codec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // MessageCodec 实现 plugin.MessageCodec：用 AMQP 内容头的**规范编码**承载属性与消息头。

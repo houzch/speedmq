@@ -1,9 +1,9 @@
-# Panduan Pengembangan Plugin Proses Eksternal SwiftMQ — Python
+# Panduan Pengembangan Plugin Proses Eksternal SpeedMQ — Python
 
-> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SwiftMQ dengan Python.
+> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SpeedMQ dengan Python.
 > **Baca dulu**: [Panduan Pengembangan Plugin Proses Eksternal (sidecar)](plugin-development.md) —— di sana dibahas model mental, field konfigurasi, dan tabel lengkap protokol kabel;
 > dokumen ini hanya membahas **bagaimana menerapkannya di Python**, serta langkah dan hasil yang telah diuji di mesin lokal.
-> **Proyek contoh**: workspace `swiftmq-plugin/python/sidecar_plugin.py` (hanya pustaka standar, tanpa dependensi pihak ketiga).
+> **Proyek contoh**: workspace `speedmq-plugin/python/sidecar_plugin.py` (hanya pustaka standar, tanpa dependensi pihak ketiga).
 
 ---
 
@@ -31,7 +31,7 @@ Tiga poin penting (mudah keliru, ingat dulu):
 
 ### Langkah 1: Mendeklarasikan Plugin di Konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
+`speedmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
 
 ```json
 {
@@ -41,7 +41,7 @@ Tiga poin penting (mudah keliru, ingat dulu):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ harus dilempar ke thread terpisah, karena saat pemrosesan ia bisa jadi perlu mem
 
 ## 4. Penelusuran Kode (Proyek Contoh)
 
-`swiftmq-plugin/python/sidecar_plugin.py` sekitar 320 baris, fungsi penting:
+`speedmq-plugin/python/sidecar_plugin.py` sekitar 320 baris, fungsi penting:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -169,7 +169,7 @@ harus dilempar ke thread terpisah, karena saat pemrosesan ia bisa jadi perlu mem
 
 ## 5. Uji Empiris (Direproduksi Lokal)
 
-Lingkungan: Windows + Python 3.12; kernel berjalan di Docker (`swiftmq:1.1.01`), plugin berjalan di host,
+Lingkungan: Windows + Python 3.12; kernel berjalan di Docker (`speedmq:1.1.01`), plugin berjalan di host,
 dan kernel menyambung ke sana via `tcp://host.docker.internal:19001`.
 
 ```

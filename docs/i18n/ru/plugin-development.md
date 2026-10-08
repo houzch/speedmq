@@ -1,6 +1,6 @@
-# Руководство по разработке внешних процессных плагинов (sidecar) для SwiftMQ
+# Руководство по разработке внешних процессных плагинов (sidecar) для SpeedMQ
 
-> **Для кого**: для разработчиков, которые не хотят форкать / перекомпилировать ядро и желают расширять возможности SwiftMQ на **любом языке**.
+> **Для кого**: для разработчиков, которые не хотят форкать / перекомпилировать ядро и желают расширять возможности SpeedMQ на **любом языке**.
 > **Область**: в этом документе рассматривается только одна форма плагина — **внешний процессный плагин** (термин ядра `sidecar`). Встроенные протокольные плагины ядра (AMQP 0-9-1 / MQTT) в область не входят.
 > **Как читать**: разделы 1–2 формируют ментальную модель, раздел 3 — про написание кода, а **раздел 5 посвящён тому, "как после разработки подключить плагин и запустить его вместе с ядром, чтобы он обслуживал клиентов"**;
 > **для других языков (Python / Node.js / PHP / Java) смотрите языковые руководства в §4** (каждое идёт с полностью проверенным на практике примером проекта).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**Семантика состояний** (видна в `swiftmqctl plugins show`):
+**Семантика состояний** (видна в `speedmqctl plugins show`):
 
 | Состояние | Значение | Действие эксплуатации |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 Плагин — это **отдельный Go-модуль**, зависящий только от двух публичных контрактных пакетов:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` — проводной протокол и реализация на стороне плагина (**обязательно**)
-- `github.com/houzch/swiftmq/pkg/plugin` — только если вам нужны типы вроде `plugin.Message` / `plugin.Error` (необязательно)
+- `github.com/houzch/speedmq/pkg/sidecar` — проводной протокол и реализация на стороне плагина (**обязательно**)
+- `github.com/houzch/speedmq/pkg/plugin` — только если вам нужны типы вроде `plugin.Message` / `plugin.Error` (необязательно)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > При совместной отладке через `replace` плагин и ядро должны использовать **один и тот же исходный код**, иначе версия API (`v1`) может совпадать, а типы — отличаться.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ func (h *handler) serve(stream *sidecar.Stream) error {
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 > **Уже есть языковые руководства с полными примерами проектов** (все примеры прошли проверку: рукопожатие → аутентификация → семантический мост → доставка/расчёт → поток байтов):
 >
-> | Язык | Руководство | Пример проекта (рабочая область `swiftmq-plugin/`) |
+> | Язык | Руководство | Пример проекта (рабочая область `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (только стандартная библиотека) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (только стандартная библиотека) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (только стандартная библиотека) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (один файл, только JDK) |
 >
-> Полную эталонную реализацию на Go см. в отдельном тестовом проекте `swiftmq-test/test/integration/echosidecar/` (он напрямую использует `pkg/sidecar.Server`,
+> Полную эталонную реализацию на Go см. в отдельном тестовом проекте `speedmq-test/test/integration/echosidecar/` (он напрямую использует `pkg/sidecar.Server`,
 > так что о байтовых деталях ниже заботиться не нужно).
 
 **Формат кадра** (единый для всех кадров):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **JSON-структуры плоскости управления** (имена полей совпадают с `proto.go`).
 
 > Этот фрагмент — **примеры сообщений проводного протокола** (в одном блоке по порядку приведено несколько сообщений, поэтому они разделены `//`),
-> а **не конфигурация, которую можно напрямую записать в `swiftmqd.json`**.
+> а **не конфигурация, которую можно напрямую записать в `speedmqd.json`**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. Совместный запуск: подключение, обслуживание клиентов, упаковка ★
 
-Этот раздел отвечает на вопрос "как после разработки подключить плагин к SwiftMQ и как начать обслуживать клиентов".
+Этот раздел отвечает на вопрос "как после разработки подключить плагин к SpeedMQ и как начать обслуживать клиентов".
 
 ### 5.1 Объявление плагина в конфигурации
 
-Внешний плагин **полностью управляется конфигурацией**, для него не нужно менять код ядра. Добавьте пункт в раздел `plugins` файла `swiftmqd.json`
+Внешний плагин **полностью управляется конфигурацией**, для него не нужно менять код ядра. Добавьте пункт в раздел `plugins` файла `speedmqd.json`
 (**реальная конфигурация — это стандартный JSON, комментарии недопустимы**):
 
 ```json
@@ -554,7 +554,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 Выбор адреса:
 
 - **На одной машине рекомендуется unix socket** (`unix:///tmp/my-sidecar.sock`): не занимает TCP-порт и не зависит от занятости портов хоста.
-  Обратите внимание, что путь к socket должен быть доступен на запись процессу ядра (в контейнере это непривилегированный пользователь `swiftmq`).
+  Обратите внимание, что путь к socket должен быть доступен на запись процессу ядра (в контейнере это непривилегированный пользователь `speedmq`).
 - **Между контейнерами обязателен TCP**, при этом процесс плагина должен слушать `0.0.0.0`, а в `address` указывается **имя сервиса в сети контейнеров**.
 
 > Не перепутайте направление: **адрес, который слушает плагин** = `address`; **порт, открытый наружу для клиентов** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.5 Упаковка: запуск плагина вместе с ядром
 
-**Вариант A — упаковать в тот же образ** (рекомендуется для плагинов, выпускаемых вместе с ядром): добавьте строку на этапе выполнения в `swiftmq/Dockerfile`:
+**Вариант A — упаковать в тот же образ** (рекомендуется для плагинов, выпускаемых вместе с ядром): добавьте строку на этапе выполнения в `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-side
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ services:
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ services:
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 | Операция | Команда / интерфейс | Эффект |
 | --- | --- | --- |
-| Горячее отключение | `swiftmqctl plugins disable my-sidecar` или `PUT /api/plugins/my-sidecar/disable` | **Закрыть внешние слушатели этого плагина** (отключение на уровне возможностей); ядро и другие плагины не затрагиваются |
-| Горячее включение | `swiftmqctl plugins enable my-sidecar` | Снова открыть его слушатели; если ранее был сбой запуска, будет одна повторная попытка |
-| Просмотр состояния | `swiftmqctl plugins list/show` | Состояние + причина сбоя/разрыва |
+| Горячее отключение | `speedmqctl plugins disable my-sidecar` или `PUT /api/plugins/my-sidecar/disable` | **Закрыть внешние слушатели этого плагина** (отключение на уровне возможностей); ядро и другие плагины не затрагиваются |
+| Горячее включение | `speedmqctl plugins enable my-sidecar` | Снова открыть его слушатели; если ранее был сбой запуска, будет одна повторная попытка |
+| Просмотр состояния | `speedmqctl plugins list/show` | Состояние + причина сбоя/разрыва |
 | Выход ядра | — | Разорвать соединение с плагином, освободить сессии на мосте, **завершить дочерние процессы, запущенные ядром через `spawn`** |
 
 > Горячее отключение закрывает только "возможности" (порты прослушивания) и **не** убивает процесс плагина, запущенный через `spawn`; освобождение процесса происходит при выходе ядра.
@@ -751,7 +751,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | Состояние `failed`, причина содержит "имя плагина не совпадает" | Имя плагина в конфигурации ≠ `HelloAck.name`; приведите к одному значению |
 | Состояние `failed`, причина содержит "несовпадение версии API" | `HelloAck.api_version` ≠ `APIVersion` ядра; приведите к одному значению |
 | Состояние `failed`, причина содержит "рукопожатие отклонено" | Плагин `Hello` вернул error (`deny`); смотрите перенаправленный вывод плагина в журнале ядра |
-| Состояние `failed`, причина содержит "не удалось подключиться к внешнему плагину" | Процесс не запустился / `address` указан неверно / путь к socket недоступен на запись (в контейнере учтите права пользователя `swiftmq`) |
+| Состояние `failed`, причина содержит "не удалось подключиться к внешнему плагину" | Процесс не запустился / `address` указан неверно / путь к socket недоступен на запись (в контейнере учтите права пользователя `speedmq`) |
 | Состояние `down` | Процесс плагина упал или соединение оборвалось; при `restart=always` переподключится автоматически, при `never` нужно поднять вручную |
 | Порт не открыт / клиент не может подключиться | Не настроен `protocols[].listeners` или адрес перекрыт `listeners.<имя протокола>`; проверьте оба места |
 | Клиент подключается к другому порту и сразу отключается | Этот порт не соответствует вашему протоколу (`prefix` пуст или префикс не совпадает); задайте протоколу непустой `prefix` (см. §5.3) |
@@ -772,7 +772,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | Типы операционной поверхности сессии ядра (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | Прослушивание, сниффинг, горячий запуск-остановка по плагинам | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | Жизненный цикл и управление плагинами (изоляция/состояние/аудит) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| Пункты конфигурации и примеры (включая раздел sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| Сборка процесса (как sidecar встраивается в ядро) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Эталонная реализация на Go (использует `pkg/sidecar.Server`, включает мост `session.*` и `core.authenticate`) | Отдельный тестовый проект `swiftmq-test/test/integration/echosidecar/` |
-| **Языковые руководства + примеры проектов** | В этом каталоге `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; примеры — в **рабочей области** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| Пункты конфигурации и примеры (включая раздел sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| Сборка процесса (как sidecar встраивается в ядро) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Эталонная реализация на Go (использует `pkg/sidecar.Server`, включает мост `session.*` и `core.authenticate`) | Отдельный тестовый проект `speedmq-test/test/integration/echosidecar/` |
+| **Языковые руководства + примеры проектов** | В этом каталоге `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; примеры — в **рабочей области** `speedmq-plugin/{python,nodejs,php,java}/` |

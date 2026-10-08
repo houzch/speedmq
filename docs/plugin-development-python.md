@@ -1,11 +1,11 @@
-# SwiftMQ 外部进程插件开发指南 —— Python
+# SpeedMQ 外部进程插件开发指南 —— Python
 
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
-> **面向**：用 Python 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
+> **面向**：用 Python 给 SpeedMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md) —— 那里讲了心智模型、配置字段与线协议总表；
 > 本文只讲 **Python 怎么落地**，以及本机实测过的步骤与结果。
-> **示例工程**：工作区 `swiftmq-plugin/python/sidecar_plugin.py`（仅标准库，零第三方依赖）。
+> **示例工程**：工作区 `speedmq-plugin/python/sidecar_plugin.py`（仅标准库，零第三方依赖）。
 
 ---
 
@@ -33,7 +33,7 @@
 
 ### 第一步：在配置里声明插件
 
-`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
+`speedmqd.json`（**实际配置是标准 JSON，不能带注释**）：
 
 ```json
 {
@@ -43,7 +43,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -155,7 +155,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 4. 代码走读（示例工程）
 
-`swiftmq-plugin/python/sidecar_plugin.py` 约 320 行，重点函数：
+`speedmq-plugin/python/sidecar_plugin.py` 约 320 行，重点函数：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -171,7 +171,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 5. 实测（本机复现）
 
-环境：Windows + Python 3.12；内核跑在 Docker（`swiftmq:1.1.01`），插件跑在宿主机，
+环境：Windows + Python 3.12；内核跑在 Docker（`speedmq:1.1.01`），插件跑在宿主机，
 内核用 `tcp://host.docker.internal:19001` 连它。
 
 ```

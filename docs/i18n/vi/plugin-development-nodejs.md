@@ -1,8 +1,8 @@
-# Hướng dẫn phát triển plugin tiến trình ngoài cho SwiftMQ —— Node.js
+# Hướng dẫn phát triển plugin tiến trình ngoài cho SpeedMQ —— Node.js
 
-> **Đối tượng**: các nhà phát triển dùng Node.js để viết plugin tiến trình ngoài (sidecar) cho SwiftMQ.
+> **Đối tượng**: các nhà phát triển dùng Node.js để viết plugin tiến trình ngoài (sidecar) cho SpeedMQ.
 > **Đọc trước**: [Hướng dẫn phát triển plugin tiến trình ngoài (sidecar)](plugin-development.md) (mô hình tư duy / trường cấu hình / bảng tổng hợp giao thức đường dây).
-> **Dự án ví dụ**: workspace `swiftmq-plugin/nodejs/index.js` (chỉ thư viện chuẩn của Node, **không cần phụ thuộc npm**).
+> **Dự án ví dụ**: workspace `speedmq-plugin/nodejs/index.js` (chỉ thư viện chuẩn của Node, **không cần phụ thuộc npm**).
 
 ---
 
@@ -26,7 +26,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
 
 ### Bước một: cấu hình
 
-`swiftmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
+`speedmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 4. Đọc hiểu mã (dự án ví dụ)
 
-`swiftmq-plugin/nodejs/index.js` khoảng 330 dòng:
+`speedmq-plugin/nodejs/index.js` khoảng 330 dòng:
 
 | Vị trí | Chức năng |
 | --- | --- |
@@ -152,7 +152,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 5. Kiểm nghiệm thực tế (tái hiện trên máy cục bộ)
 
-Windows + Node v24; kernel trong Docker (`swiftmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; kernel trong Docker (`speedmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

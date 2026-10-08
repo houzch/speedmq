@@ -1,8 +1,8 @@
-# SwiftMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — Node.js
+# SpeedMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — Node.js
 
-> **Zielgruppe**: Entwickler, die SwiftMQ mit Node.js um externe Prozess-Plugins (Sidecars) erweitern möchten.
+> **Zielgruppe**: Entwickler, die SpeedMQ mit Node.js um externe Prozess-Plugins (Sidecars) erweitern möchten.
 > **Zuerst lesen**: [Leitfaden zur Entwicklung externer Prozess-Plugins (Sidecar)](plugin-development.md) (mentales Modell / Konfigurationsfelder / vollständige Wire-Protokoll-Tabelle).
-> **Beispielprojekt**: Workspace `swiftmq-plugin/nodejs/index.js` (nur Node-Standardbibliothek, **keine npm-Abhängigkeiten erforderlich**).
+> **Beispielprojekt**: Workspace `speedmq-plugin/nodejs/index.js` (nur Node-Standardbibliothek, **keine npm-Abhängigkeiten erforderlich**).
 
 ---
 
@@ -26,7 +26,7 @@ Drei Kernpunkte: **Dein Prozess ist der Server** (wartet darauf, dass der Kernel
 
 ### Erster Schritt: Konfiguration
 
-`swiftmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
+`speedmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Drei Kernpunkte: **Dein Prozess ist der Server** (wartet darauf, dass der Kernel
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Zustellungen werden vom Kernel **per Forward-Aufruf zurückgeschoben** (`method 
 
 ## 4. Code-Durchgang (Beispielprojekt)
 
-`swiftmq-plugin/nodejs/index.js` umfasst etwa 330 Zeilen:
+`speedmq-plugin/nodejs/index.js` umfasst etwa 330 Zeilen:
 
 | Position | Zweck |
 | --- | --- |
@@ -152,7 +152,7 @@ Zustellungen werden vom Kernel **per Forward-Aufruf zurückgeschoben** (`method 
 
 ## 5. Praxistest (lokal reproduziert)
 
-Windows + Node v24; der Kernel läuft in Docker (`swiftmq:1.1.01`), das Plugin auf dem Host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; der Kernel läuft in Docker (`speedmq:1.1.01`), das Plugin auf dem Host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

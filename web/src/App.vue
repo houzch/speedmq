@@ -14,8 +14,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useVhostStore } from '@/stores/vhost'
 import { REFRESH_INTERVALS, useRefreshStore } from '@/stores/refresh'
 import { formatTimestamp } from '@/utils/format'
-// 品牌图标：源图 swiftmq-logo.PNG（无透明通道），放在深色顶栏里时用白色圆角底框承载
-import logoUrl from '@/assets/swiftmq-logo.png'
+// 品牌图标：源图 speedmq-logo.PNG（无透明通道），放在深色顶栏里时用白色圆角底框承载
+import logoUrl from '@/assets/speedmq-logo.png'
 
 const auth = useAuthStore()
 const vhostStore = useVhostStore()
@@ -227,8 +227,8 @@ onMounted(async () => {
     <el-container class="app-container">
       <el-header class="app-header">
         <div class="app-brand">
-          <img class="app-logo" :src="logoUrl" alt="SwiftMQ" />
-          <span class="app-name">SwiftMQ</span>
+          <img class="app-logo" :src="logoUrl" alt="SpeedMQ" />
+          <span class="app-name">SpeedMQ</span>
           <span class="app-subtitle">{{ t('app.subtitle') }}</span>
         </div>
         <div class="app-header-actions">

@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | **Português** | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Middleware de mensagens **compatível com RabbitMQ** escrito em Go. Os clientes RabbitMQ existentes se conectam **sem alterar código nem trocar de SDK**, bastando mudar o endereço de conexão.
 
@@ -9,7 +9,7 @@ Middleware de mensagens **compatível com RabbitMQ** escrito em Go. Os clientes 
 
 - **Compatibilidade de protocolo**: AMQP 0-9-1 (com extensões do RabbitMQ) e MQTT 3.1.1; a linha de base de compatibilidade é a **semântica do RabbitMQ 4.3**.
 - **Implantação simples**: um binário / um contêiner, com a UI de gerenciamento já embutida, sem precisar de Nginx, banco de dados ou runtime Node adicionais.
-- **Operação suficiente**: UI de gerenciamento (filas / exchanges / conexões / permissões de contas / hosts virtuais / políticas / limites / cluster), `/metrics` do Prometheus, linha de comando `swiftmqctl`.
+- **Operação suficiente**: UI de gerenciamento (filas / exchanges / conexões / permissões de contas / hosts virtuais / políticas / limites / cluster), `/metrics` do Prometheus, linha de comando `speedmqctl`.
 - **Portas padrão**: `5672` (AMQP), `1883` (MQTT), `15672` (UI de gerenciamento / API HTTP / métricas).
 
 Recursos já disponíveis: persistência (log de segmentos + níveis de fsync + recuperação de falhas), confirmação de publicação, TTL / dead letter / limite de tamanho, prioridade de consumidores, Direct Reply-To, cluster (metadados Raft + filas quórum + encaminhamento entre nós), ativação/desativação de plugins a quente.
@@ -23,39 +23,39 @@ Recursos já disponíveis: persistência (log de segmentos + níveis de fsync + 
 **Sem clonar o repositório: baixe a imagem e execute.**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-A imagem é publicada em dois locais com o mesmo conteúdo (use o mais rápido para você): Docker Hub `houzch/swiftmq` e GitHub GHCR `ghcr.io/houzch/swiftmq`; ambos oferecem `linux/amd64` e `linux/arm64`.
+A imagem é publicada em dois locais com o mesmo conteúdo (use o mais rápido para você): Docker Hub `houzch/speedmq` e GitHub GHCR `ghcr.io/houzch/speedmq`; ambos oferecem `linux/amd64` e `linux/arm64`.
 
-- Os dados ficam no volume nomeado `swiftmq-data`, que sobrevive à recriação do contêiner.
-- Parar / remover: `docker stop swiftmq`, `docker rm swiftmq` (o volume de dados é mantido).
+- Os dados ficam no volume nomeado `speedmq-data`, que sobrevive à recriação do contêiner.
+- Parar / remover: `docker stop speedmq`, `docker rm speedmq` (o volume de dados é mantido).
 
 **Para alterar a configuração ou usar compose, clone o repositório:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # Usa a imagem publicada; troque para up -d --build para compilar localmente
 
 docker compose ps        # O status deve ser Up (healthy)
 docker compose logs -f   # Acompanhar os logs
 ```
 
-- A configuração é montada somente leitura a partir de `configs/swiftmqd.json`; as alterações valem após `docker compose restart`.
+- A configuração é montada somente leitura a partir de `configs/speedmqd.json`; as alterações valem após `docker compose restart`.
 - Parar: `docker compose down` (mantém os dados); `docker compose down -v` (apaga os dados também).
 
 ### Opção 2: binário local (requer Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > O artefato de build da UI de gerenciamento não é versionado. Se quiser usar a UI, execute antes `npm ci && npm run build` em `web/`;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | UI de gerenciamento | <http://localhost:15672/>: filas / exchanges / conexões / permissões de contas / hosts virtuais / políticas / limites / feature flags / cluster; no canto superior direito é possível configurar a atualização automática e o **idioma da interface** |
 | Métricas de monitoramento | <http://localhost:15672/metrics> (texto Prometheus, requer autenticação); painéis e alertas em [docs/ops/monitoring](ops/monitoring/README.md) |
-| Linha de comando | `./bin/swiftmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (desativação a quente, a porta fecha imediatamente) |
+| Linha de comando | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (desativação a quente, a porta fecha imediatamente) |
 | Verificação de saúde | `nc -z 127.0.0.1 15672` (o compose já inclui healthcheck) |
 | Backup e restauração | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | Atualização | [docs/ops/upgrade.md](ops/upgrade.md) |
 | Linha de base de segurança | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-Configurações comuns (exemplo completo em [configs/swiftmqd.json](../../../configs/swiftmqd.json), também sobreponíveis por variáveis de ambiente `SWIFTMQ_*`):
+Configurações comuns (exemplo completo em [configs/speedmqd.json](../../../configs/speedmqd.json), também sobreponíveis por variáveis de ambiente `SPEEDMQ_*`):
 
 | Item de configuração | Descrição | Padrão |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ Configurações comuns (exemplo completo em [configs/swiftmqd.json](../../../con
 | `storage.fsync` | Nível de gravação em disco `none / os / batch / always` (também determina o momento do confirm) | `os` |
 | `storage.memory_high_watermark`, `storage.disk_free_limit` | Níveis de recursos: ao serem atingidos, bloqueiam os produtores, **sem perder mensagens** | `0.4` / 50 MiB |
 | `users` | Tabela de usuários embutida (senha + tags + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | Cluster multinó (desativado por padrão); mudanças de membros com `swiftmqctl add_member` | desativado |
+| `cluster.enabled` + `cluster.peers` | Cluster multinó (desativado por padrão); mudanças de membros com `speedmqctl add_member` | desativado |
 
 > As portas podem estar em uso: basta trocá-las por outras via `listeners` / `management.addr`.
 
@@ -142,10 +142,10 @@ Configurações comuns (exemplo completo em [configs/swiftmqd.json](../../../con
 ## Estrutura do projeto
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # Ponto de entrada do processo broker (é este que você executa)
-│   └── swiftmqctl/      # CLI de operação (usa a API HTTP de gerenciamento, desacoplada da versão do núcleo)
+│   ├── speedmqd/        # Ponto de entrada do processo broker (é este que você executa)
+│   └── speedmqctl/      # CLI de operação (usa a API HTTP de gerenciamento, desacoplada da versão do núcleo)
 ├── internal/            # Implementação do núcleo
 │   ├── protocol/        # Plugins de protocolo: amqp091, mqtt (codificação/decodificação / métodos / sessões)
 │   ├── broker/          # Núcleo: vhost, exchanges, filas, dead letter, controle de fluxo, visão do plano de gerenciamento
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # Configurações de exemplo
 ├── docs/ops/            # Documentação de operação: backup/restauração / atualização / linha de base de segurança / monitoramento
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG (QR code do grupo de chat)
+└── speedmq-logo.PNG、1280X1280.PNG (QR code do grupo de chat)
 ```
 
 ***
@@ -191,6 +191,6 @@ A especificação do protocolo AMQP 0-9-1 e a semântica de comportamento do [Ra
 
 ## Entre no grupo de chat
 
-Escaneie o código para entrar no grupo de chat do SwiftMQ; se tiver dúvidas, pode perguntar diretamente no grupo:
+Escaneie o código para entrar no grupo de chat do SpeedMQ; se tiver dúvidas, pode perguntar diretamente no grupo:
 
-![Grupo de chat do SwiftMQ](../../../1280X1280.PNG)
+![Grupo de chat do SpeedMQ](../../../1280X1280.PNG)

@@ -71,7 +71,7 @@ const publishForm = reactive({
   content_type: 'text/plain',
   delivery_mode: 2,
   headersText: '{}',
-  payload: '{"hello":"swiftmq"}',
+  payload: '{"hello":"speedmq"}',
   mandatory: true,
 })
 const publishing = ref(false)

@@ -1,8 +1,8 @@
-# Hướng dẫn phát triển plugin tiến trình ngoài cho SwiftMQ —— Java
+# Hướng dẫn phát triển plugin tiến trình ngoài cho SpeedMQ —— Java
 
-> **Đối tượng**: các nhà phát triển dùng Java để viết plugin tiến trình ngoài (sidecar) cho SwiftMQ.
+> **Đối tượng**: các nhà phát triển dùng Java để viết plugin tiến trình ngoài (sidecar) cho SpeedMQ.
 > **Đọc trước**: [Hướng dẫn phát triển plugin tiến trình ngoài (sidecar)](plugin-development.md) (mô hình tư duy / trường cấu hình / bảng tổng hợp giao thức đường dây).
-> **Dự án ví dụ**: workspace `swiftmq-plugin/java/SidecarPlugin.java` (một tệp, chỉ thư viện chuẩn JDK, không cần Maven/Gradle).
+> **Dự án ví dụ**: workspace `speedmq-plugin/java/SidecarPlugin.java` (một tệp, chỉ thư viện chuẩn JDK, không cần Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
 
 ### Bước một: cấu hình
 
-`swiftmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
+`speedmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 4. Đọc hiểu mã (dự án ví dụ)
 
-`swiftmq-plugin/java/SidecarPlugin.java` khoảng 470 dòng (gồm JSON tối giản):
+`speedmq-plugin/java/SidecarPlugin.java` khoảng 470 dòng (gồm JSON tối giản):
 
 | Vị trí | Chức năng |
 | --- | --- |
@@ -167,7 +167,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 5. Kiểm nghiệm thực tế (tái hiện trên máy cục bộ)
 
-Windows + JDK 25; kernel trong Docker (`swiftmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; kernel trong Docker (`speedmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Bao phủ: **bắt tay → xác thực → cầu ngữ nghĩa → đẩy deliver
 ## 7. Nâng cao
 
 - Đóng gói thành jar chạy được (`Main-Class: SidecarPlugin`) hoặc dùng `jlink` để tinh gọn runtime,
-  rồi đổi `spawn` thành `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  rồi đổi `spawn` thành `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Plugin có sẵn giao diện quản trị: thêm `console_url` vào cấu hình (tài liệu chính §5.8), trang「Quản lý plugin」của UI quản trị sẽ xuất hiện lối vào trực tiếp.
 - Triển khai độc lập: `spawn: []` + `address: "tcp://<tên dịch vụ>:19031"`, lắng nghe `0.0.0.0` trong container.

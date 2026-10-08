@@ -1,8 +1,8 @@
-# SwiftMQ Guida allo sviluppo dei plugin in processo esterno —— Java
+# SpeedMQ Guida allo sviluppo dei plugin in processo esterno —— Java
 
-> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SwiftMQ in Java.
+> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SpeedMQ in Java.
 > **Leggi prima**: [Guida allo sviluppo dei plugin in processo esterno (sidecar)](plugin-development.md) (modello mentale / campi di configurazione / tabella completa del protocollo di rete).
-> **Progetto di esempio**: workspace `swiftmq-plugin/java/SidecarPlugin.java` (file singolo, sola libreria standard del JDK, senza Maven/Gradle).
+> **Progetto di esempio**: workspace `speedmq-plugin/java/SidecarPlugin.java` (file singolo, sola libreria standard del JDK, senza Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
 
 ### Primo passo: configurazione
 
-`swiftmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
+`speedmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 4. Lettura guidata del codice (progetto di esempio)
 
-`swiftmq-plugin/java/SidecarPlugin.java` è di circa 470 righe (incluso un JSON minimale):
+`speedmq-plugin/java/SidecarPlugin.java` è di circa 470 righe (incluso un JSON minimale):
 
 | Posizione | Scopo |
 | --- | --- |
@@ -167,7 +167,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 5. Verifica pratica (riprodotta in locale)
 
-Windows + JDK 25; il kernel in Docker (`swiftmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; il kernel in Docker (`speedmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Coperto: **handshake → autenticazione → ponte semantico → rinvio delle con
 ## 7. Argomenti avanzati
 
 - Impacchettalo in un jar eseguibile (`Main-Class: SidecarPlugin`) o in un runtime ridotto con `jlink`,
-  poi cambia `spawn` in `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  poi cambia `spawn` in `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Plugin con interfaccia di gestione propria: aggiungi `console_url` nella configurazione (documento principale §5.8), e nella pagina "Gestione plugin" della console di gestione comparirà una voce diretta.
 - Deployment autonomo: `spawn: []` + `address: "tcp://<nome del servizio>:19031"`, ascolto su `0.0.0.0` dentro il container.

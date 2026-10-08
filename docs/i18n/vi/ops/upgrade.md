@@ -1,12 +1,12 @@
-# Phương án nâng cấp và di trú SwiftMQ
+# Phương án nâng cấp và di trú SpeedMQ
 
-> Phiên bản áp dụng: `1.0.0` (`broker.Version`, xem `swiftmq_build_info` của `/metrics`).
+> Phiên bản áp dụng: `1.0.0` (`broker.Version`, xem `speedmq_build_info` của `/metrics`).
 > Tất cả kết luận "đo thực tế" trong tài liệu này đều đến từ chạy thật trên máy cục bộ; những gì chưa đo thực tế đều được đánh dấu rõ ràng **【chưa kiểm chứng】**.
 > Môi trường máy cục bộ: Windows + PowerShell 5.1, Go 1.27.1 windows/386, `data_dir` tạm + cổng không mặc định.
 
 ---
 
-## 1. Di trú (chuyển từ RabbitMQ sang SwiftMQ)
+## 1. Di trú (chuyển từ RabbitMQ sang SpeedMQ)
 
 Định vị của dự án này là **tương thích ở mức giao thức AMQP 0-9-1**, do đó "di trú" chủ yếu là **đổi địa chỉ kết nối**:
 
@@ -16,7 +16,7 @@
 
 **Khác biệt ngữ nghĩa cần tự kiểm tra trước khi di trú** (đều là chủ ý của kho này, căn cứ theo README / tài liệu thiết kế):
 
-| Mục | Hành vi SwiftMQ | Ảnh hưởng di trú |
+| Mục | Hành vi SpeedMQ | Ảnh hưởng di trú |
 | --- | --- | --- |
 | Queue tạm thời (không bền vững và không độc quyền) | **Từ chối khai báo** (541), `auto_delete` không được miễn trừ | Client cũ nếu phụ thuộc loại queue này sẽ thất bại, cần đổi thành durable hoặc exclusive |
 | vhost mặc định `/` | **Không thể xóa** (400), RabbitMQ cho phép | Script tự động hóa nếu xóa vhost mặc định sẽ thất bại (đây là ràng buộc an toàn chủ động duy nhất) |
@@ -24,8 +24,8 @@
 | Queue trọng tài | Hỗ trợ mở rộng bản sao, **không hỗ trợ thu hẹp** | Khi quy hoạch cần tính toán một lần cho đủ |
 | Plugin | Không có hệ sinh thái plugin Erlang, AMQP 1.0 / STOMP chưa được hiện thực | Tình huống dùng các giao thức này tạm thời chưa thể di trú |
 
-**Di trú dữ liệu**: Định dạng lưu trữ của SwiftMQ và RabbitMQ không tương thích, **không cung cấp công cụ vận chuyển dữ liệu trực tuyến/ngoại tuyến**.
-Cách di trú là "tạo SwiftMQ rỗng mới → chạy song song để kiểm chứng → chuyển lưu lượng theo kiểu gray". **【chưa kiểm chứng】** Tài liệu này không bao gồm bất kỳ diễn tập vận chuyển dữ liệu RabbitMQ thực tế nào.
+**Di trú dữ liệu**: Định dạng lưu trữ của SpeedMQ và RabbitMQ không tương thích, **không cung cấp công cụ vận chuyển dữ liệu trực tuyến/ngoại tuyến**.
+Cách di trú là "tạo SpeedMQ rỗng mới → chạy song song để kiểm chứng → chuyển lưu lượng theo kiểu gray". **【chưa kiểm chứng】** Tài liệu này không bao gồm bất kỳ diễn tập vận chuyển dữ liệu RabbitMQ thực tế nào.
 
 ---
 
@@ -84,7 +84,7 @@ data/
 - Cả hai **chỉ có hiệu lực khi khởi tạo lần đầu**: lần khởi động đầu tiên sẽ ghi vhosts/users trong cấu hình vào siêu dữ liệu và để lại tệp dấu hiệu
   `meta/vhosts.seeded` / `meta/users.seeded`; **sau đó lấy siêu dữ liệu làm chuẩn**.
 - Do đó **khi nâng cấp/đổi cấu hình, đừng trông mong thêm bớt tài khoản hay vhost bằng cách sửa tệp cấu hình** —— sửa cũng không có hiệu lực;
-  hãy dùng API quản trị hoặc `swiftmqctl`.
+  hãy dùng API quản trị hoặc `speedmqctl`.
 - Ngược lại, nâng cấp **sẽ không** dùng cấu hình để ghi đè tài khoản sẵn có: mật khẩu đã đổi trong lúc chạy sẽ không bị khởi động lại đẩy về giá trị cũ trong cấu hình,
   tài khoản đã xóa trong lúc chạy cũng không sống lại. Căn cứ: logic dấu hiệu gieo hạt của `cluster.go`; README M8-4 / M8-7.
 
@@ -102,22 +102,22 @@ data/
 ### 5.1 Các bước
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) dừng tiến trình (thoát êm sẽ ghi đĩa kết thúc; xem §4「nhất quán」)
 #    nếu chạy kiểu foreground: Ctrl+C; nếu chạy kiểu service: Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) sao lưu thư mục dữ liệu (nhớ làm sau khi tiến trình đã dừng)
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) thay thế binary (đặt swiftmqd.exe / swiftmqctl.exe phiên bản mới vào đường dẫn cũ)
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) thay thế binary (đặt speedmqd.exe / speedmqctl.exe phiên bản mới vào đường dẫn cũ)
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) khởi động
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) kiểm tra: tiến trình còn sống + API quản trị đọc được
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -127,22 +127,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 Danh sách kiểm tra sau khi nâng cấp
 
-- Log khởi động xuất hiện `SwiftMQ 启动中 ... version=<新版本>` và `管理面已启动`;
+- Log khởi động xuất hiện `SpeedMQ 启动中 ... version=<新版本>` và `管理面已启动`;
 - `object_totals` / `queue_totals` của `/api/overview` nhất quán với trước khi sao lưu (đối chiếu `backup-restore.md` §5);
 - `messages` / `messages_ready` của mỗi queue durable trong `/api/queues` nhất quán với trước khi sao lưu;
-- `/metrics` thu thập được và `swiftmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
+- `/metrics` thu thập được và `speedmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
 
 ---
 
 ## 6. Nâng cấp image (container)
 
-Image khoảng 13 MB (binary liên kết tĩnh + alpine), **chạy với quyền non-root (uid 10001)**, thư mục dữ liệu được mount tại `/var/lib/swiftmq`.
+Image khoảng 13 MB (binary liên kết tĩnh + alpine), **chạy với quyền non-root (uid 10001)**, thư mục dữ liệu được mount tại `/var/lib/speedmq`.
 
 ```powershell
 # 1) kéo/build image mới (tag dùng số phiên bản mới, tránh nhầm lẫn old/new)
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) dừng container cũ (compose sẽ giữ lại volume có tên swiftmq-data)
+# 2) dừng container cũ (compose sẽ giữ lại volume có tên speedmq-data)
 docker compose down
 
 # 3) khởi động phiên bản mới (đổi image trong tệp compose sang tag mới)
@@ -153,14 +153,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **Tác vụ dùng một lần trong container** (ví dụ chạy `swiftmqctl` trong container): `run` của `docker compose ...` trong môi trường phi tương tác bắt buộc phải thêm `-T`,
+> **Tác vụ dùng một lần trong container** (ví dụ chạy `speedmqctl` trong container): `run` của `docker compose ...` trong môi trường phi tương tác bắt buộc phải thêm `-T`,
 > nếu không sẽ thất bại do xin cấp TTY:
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-Việc lưu trữ bền vững dữ liệu phụ thuộc **volume có tên** `swiftmq-data` của compose, tạo lại container không mất dữ liệu (từ M4 mới thực sự ghi xuống đĩa).
-Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đương với sao lưu `/var/lib/swiftmq` (xem `backup-restore.md` §3.2). **【nâng cấp image chưa đo thực tế】** (máy cục bộ chưa chạy Docker).
+Việc lưu trữ bền vững dữ liệu phụ thuộc **volume có tên** `speedmq-data` của compose, tạo lại container không mất dữ liệu (từ M4 mới thực sự ghi xuống đĩa).
+Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đương với sao lưu `/var/lib/speedmq` (xem `backup-restore.md` §3.2). **【nâng cấp image chưa đo thực tế】** (máy cục bộ chưa chạy Docker).
 
 ---
 
@@ -168,7 +168,7 @@ Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đươn
 
 ### 7.1 Máy đơn
 
-- **Gray**: SwiftMQ máy đơn không có sẵn khả năng "hai phiên bản cũ/mới trong cùng tiến trình". Cách gray khả thi là **bóng mờ song song**:
+- **Gray**: SpeedMQ máy đơn không có sẵn khả năng "hai phiên bản cũ/mới trong cùng tiến trình". Cách gray khả thi là **bóng mờ song song**:
   instance phiên bản mới trước tiên dùng **consume chỉ đọc/queue bóng** móc vào cùng một nguồn lưu lượng thượng nguồn để quan sát, xác nhận không vấn đề rồi mới chuyển bên ghi.
 - **Rollback**:
   1. dừng tiến trình phiên bản mới;
@@ -181,7 +181,7 @@ Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đươn
 Phía nền tảng không cung cấp "nâng cấp cuốn chiếu một nút", cần thao tác thủ công từng node theo thứ tự dưới đây:
 
 1. **Mỗi lần chỉ nâng cấp một node**: dừng node đó → sao lưu `data_dir` của nó → đổi binary → khởi động → chờ nó tham gia lại và đuổi kịp
-   (`swiftmqctl cluster_status` / `GET /api/cluster` xem `role`, `commit_index`/`last_applied`).
+   (`speedmqctl cluster_status` / `GET /api/cluster` xem `role`, `commit_index`/`last_applied`).
 2. **Thứ tự khuyến nghị**: nâng **learner / thành viên không bỏ phiếu** trước (không ảnh hưởng tới đa số), rồi nâng **follower**, cuối cùng nâng **leader**
    (nâng leader sẽ kích hoạt một lần bầu chọn leader, trong thời gian đó có khoảng ngắn không ghi được).
 3. **Ảnh hưởng của việc dừng tới đa số** (then chốt):
@@ -201,10 +201,10 @@ Phía nền tảng không cung cấp "nâng cấp cuốn chiếu một nút", c�
 
 - **Hạ cấp xuyên đại phiên bản: không hỗ trợ, chưa kiểm chứng**. Nếu phiên bản mới đã ghi dữ liệu bằng định dạng mới/ngữ nghĩa mới, **không có** đảm bảo "quay lại binary cũ đọc nguyên trạng";
   rollback chỉ có thể dựa vào bản sao lưu trước khi nâng cấp.
-- **Định dạng cấu hình không đổi**: vẫn là JSON + biến môi trường `SWIFTMQ_*`. **Cấu hình YAML chưa được hỗ trợ** (cần đưa vào dependency phân tích, M8-17 đang chờ đánh giá),
+- **Định dạng cấu hình không đổi**: vẫn là JSON + biến môi trường `SPEEDMQ_*`. **Cấu hình YAML chưa được hỗ trợ** (cần đưa vào dependency phân tích, M8-17 đang chờ đánh giá),
   nâng cấp sẽ không mang lại YAML.
 - **Nâng cấp nóng plugin/giao thức trực tuyến**: plugin được biên dịch kèm nhân (dạng A) hoặc `spawn` khởi động theo cấu hình (dạng B),
   nâng cấp nhân = khởi động lại tiến trình; **không có** cơ chế thay nóng binary tại chỗ.
 - **Di trú tại chỗ engine lưu trữ**: luân chuyển phân đoạn/nén chỉ mục là hành vi chạy nền trong lúc chạy, **không có** lệnh "di trú/nén dữ liệu" độc lập.
 - **Nâng cấp cluster dưới mạng thật**: kho này chỉ làm chaos thu nhỏ (kill ở mức tiến trình), **chưa làm** diễn tập nâng cấp dưới phân vùng mạng, đĩa ghi đầy.
-- Tài liệu này **không bao gồm** bất kỳ kiểm chứng vận chuyển dữ liệu nào giữa SwiftMQ và broker khác (RabbitMQ).
+- Tài liệu này **không bao gồm** bất kỳ kiểm chứng vận chuyển dữ liệu nào giữa SpeedMQ và broker khác (RabbitMQ).

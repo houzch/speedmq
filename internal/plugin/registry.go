@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 内核级契约错误。这类错误会让内核直接拒绝启动，而不是隔离单个插件。

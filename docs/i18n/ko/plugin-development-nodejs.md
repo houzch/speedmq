@@ -1,8 +1,8 @@
-# SwiftMQ 외부 프로세스 플러그인 개발 가이드 —— Node.js
+# SpeedMQ 외부 프로세스 플러그인 개발 가이드 —— Node.js
 
-> **대상**: Node.js로 SwiftMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
+> **대상**: Node.js로 SpeedMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
 > **먼저 읽기**: [외부 프로세스 플러그인(sidecar) 개발 가이드](plugin-development.md)(멘탈 모델 / 설정 필드 / 와이어 프로토콜 총표).
-> **예제 프로젝트**: 작업 공간 `swiftmq-plugin/nodejs/index.js`(Node 표준 라이브러리만, **npm 의존성 없음**).
+> **예제 프로젝트**: 작업 공간 `speedmq-plugin/nodejs/index.js`(Node 표준 라이브러리만, **npm 의존성 없음**).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 1단계: 설정
 
-`swiftmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
+`speedmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. 코드 훑어보기(예제 프로젝트)
 
-`swiftmq-plugin/nodejs/index.js`는 약 330줄:
+`speedmq-plugin/nodejs/index.js`는 약 330줄:
 
 | 위치 | 역할 |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. 실측(로컬 재현)
 
-Windows + Node v24; 커널은 Docker(`swiftmq:1.1.01`), 플러그인은 호스트(`tcp://host.docker.internal:19011`).
+Windows + Node v24; 커널은 Docker(`speedmq:1.1.01`), 플러그인은 호스트(`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

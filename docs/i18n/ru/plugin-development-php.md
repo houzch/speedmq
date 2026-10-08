@@ -1,8 +1,8 @@
-# Руководство по разработке внешних процессных плагинов (sidecar) для SwiftMQ — PHP
+# Руководство по разработке внешних процессных плагинов (sidecar) для SpeedMQ — PHP
 
-> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SwiftMQ на PHP.
+> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SpeedMQ на PHP.
 > **Сначала прочитайте**: [Руководство по разработке внешних процессных плагинов (sidecar)](plugin-development.md) (ментальная модель / поля конфигурации / сводная таблица проводного протокола).
-> **Пример проекта**: рабочая область `swiftmq-plugin/php/sidecar_plugin.php` (только стандартная библиотека, **без зависимостей composer**).
+> **Пример проекта**: рабочая область `speedmq-plugin/php/sidecar_plugin.php` (только стандартная библиотека, **без зависимостей composer**).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### Шаг первый: конфигурация
 
-`swiftmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
+`speedmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. Разбор кода (пример проекта)
 
-`swiftmq-plugin/php/sidecar_plugin.php` — около 320 строк:
+`speedmq-plugin/php/sidecar_plugin.php` — около 320 строк:
 
 | Место | Назначение |
 | --- | --- |
@@ -171,7 +171,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. Практическая проверка (воспроизведено на локальной машине)
 
-Windows + PHP 7.4; ядро в Docker (`swiftmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; ядро в Docker (`speedmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

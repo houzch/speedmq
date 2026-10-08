@@ -1,8 +1,8 @@
-# SwiftMQ Guida allo sviluppo dei plugin in processo esterno —— PHP
+# SpeedMQ Guida allo sviluppo dei plugin in processo esterno —— PHP
 
-> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SwiftMQ in PHP.
+> **Destinatari**: sviluppatori che scrivono plugin in processo esterno (sidecar) per SpeedMQ in PHP.
 > **Leggi prima**: [Guida allo sviluppo dei plugin in processo esterno (sidecar)](plugin-development.md) (modello mentale / campi di configurazione / tabella completa del protocollo di rete).
-> **Progetto di esempio**: workspace `swiftmq-plugin/php/sidecar_plugin.php` (sola libreria standard, **nessuna dipendenza composer**).
+> **Progetto di esempio**: workspace `speedmq-plugin/php/sidecar_plugin.php` (sola libreria standard, **nessuna dipendenza composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
 
 ### Primo passo: configurazione
 
-`swiftmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
+`speedmqd.json` (**la configurazione effettiva è JSON standard, non può contenere commenti**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tre punti chiave: **il tuo processo è il server** (attende che il kernel si con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 4. Lettura guidata del codice (progetto di esempio)
 
-`swiftmq-plugin/php/sidecar_plugin.php` è di circa 320 righe:
+`speedmq-plugin/php/sidecar_plugin.php` è di circa 320 righe:
 
 | Posizione | Scopo |
 | --- | --- |
@@ -171,7 +171,7 @@ Le consegne sono **respinte in avanti** dal kernel (`method = "session.deliver"`
 
 ## 5. Verifica pratica (riprodotta in locale)
 
-Windows + PHP 7.4; il kernel in Docker (`swiftmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; il kernel in Docker (`speedmq:1.1.01`), il plugin sull'host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

@@ -1,8 +1,8 @@
-# Руководство по разработке внешних процессных плагинов (sidecar) для SwiftMQ — Node.js
+# Руководство по разработке внешних процессных плагинов (sidecar) для SpeedMQ — Node.js
 
-> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SwiftMQ на Node.js.
+> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SpeedMQ на Node.js.
 > **Сначала прочитайте**: [Руководство по разработке внешних процессных плагинов (sidecar)](plugin-development.md) (ментальная модель / поля конфигурации / сводная таблица проводного протокола).
-> **Пример проекта**: рабочая область `swiftmq-plugin/nodejs/index.js` (только стандартная библиотека Node, **без зависимостей npm**).
+> **Пример проекта**: рабочая область `speedmq-plugin/nodejs/index.js` (только стандартная библиотека Node, **без зависимостей npm**).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### Шаг первый: конфигурация
 
-`swiftmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
+`speedmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. Разбор кода (пример проекта)
 
-`swiftmq-plugin/nodejs/index.js` — около 330 строк:
+`speedmq-plugin/nodejs/index.js` — около 330 строк:
 
 | Место | Назначение |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. Практическая проверка (воспроизведено на локальной машине)
 
-Windows + Node v24; ядро в Docker (`swiftmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19011`).
+Windows + Node v24; ядро в Docker (`speedmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

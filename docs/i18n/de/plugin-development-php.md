@@ -1,8 +1,8 @@
-# SwiftMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — PHP
+# SpeedMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — PHP
 
-> **Zielgruppe**: Entwickler, die SwiftMQ mit PHP um externe Prozess-Plugins (Sidecars) erweitern möchten.
+> **Zielgruppe**: Entwickler, die SpeedMQ mit PHP um externe Prozess-Plugins (Sidecars) erweitern möchten.
 > **Zuerst lesen**: [Leitfaden zur Entwicklung externer Prozess-Plugins (Sidecar)](plugin-development.md) (mentales Modell / Konfigurationsfelder / vollständige Wire-Protokoll-Tabelle).
-> **Beispielprojekt**: Workspace `swiftmq-plugin/php/sidecar_plugin.php` (nur Standardbibliothek, **keine composer-Abhängigkeiten erforderlich**).
+> **Beispielprojekt**: Workspace `speedmq-plugin/php/sidecar_plugin.php` (nur Standardbibliothek, **keine composer-Abhängigkeiten erforderlich**).
 
 ---
 
@@ -26,7 +26,7 @@ Drei Kernpunkte: **Dein Prozess ist der Server** (wartet darauf, dass der Kernel
 
 ### Erster Schritt: Konfiguration
 
-`swiftmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
+`speedmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Drei Kernpunkte: **Dein Prozess ist der Server** (wartet darauf, dass der Kernel
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Zustellungen werden vom Kernel **per Forward-Aufruf zurückgeschoben** (`method 
 
 ## 4. Code-Durchgang (Beispielprojekt)
 
-`swiftmq-plugin/php/sidecar_plugin.php` umfasst etwa 320 Zeilen:
+`speedmq-plugin/php/sidecar_plugin.php` umfasst etwa 320 Zeilen:
 
 | Position | Zweck |
 | --- | --- |
@@ -171,7 +171,7 @@ Zustellungen werden vom Kernel **per Forward-Aufruf zurückgeschoben** (`method 
 
 ## 5. Praxistest (lokal reproduziert)
 
-Windows + PHP 7.4; der Kernel läuft in Docker (`swiftmq:1.1.01`), das Plugin auf dem Host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; der Kernel läuft in Docker (`speedmq:1.1.01`), das Plugin auf dem Host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

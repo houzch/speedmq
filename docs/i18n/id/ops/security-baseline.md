@@ -1,4 +1,4 @@
-# Baseline Pengerasan Keamanan SwiftMQ (Checklist yang Dapat Dicentang)
+# Baseline Pengerasan Keamanan SpeedMQ (Checklist yang Dapat Dicentang)
 
 > Prinsip: **hanya menuliskan kemampuan yang benar-benar dimiliki repositori ini**. Setiap poin memberikan "mengapa perlu dilakukan + bagaimana memverifikasi sudah dilakukan", perintah verifikasinya semua dapat dijalankan.
 > Yang ditandai **【Terverifikasi】** berarti benar-benar **pernah dieksekusi** di mesin lokal (Windows + PowerShell 5.1, `1.0.0`);
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Mengapa**: selaras dengan RabbitMQ, `guest` bawaan secara default hanya mengizinkan login dari mesin lokal; saat deployment ke luar harus memastikan sumber akun istimewa dibatasi.
 - **Bagaimana / ketentuan (batasan penting)**:
   - `remote_access` hanya dapat ditulis di `users.<name>.remote_access` pada **file konfigurasi**, **hanya berlaku saat bootstrap pertama**;
-  - **akun yang dibuat melalui API manajemen / `swiftmqctl` selalu `remote_access=true`** (mengizinkan login dari sumber mana pun) ——
+  - **akun yang dibuat melalui API manajemen / `speedmqctl` selalu `remote_access=true`** (mengizinkan login dari sumber mana pun) ——
     dasar komentar `UpsertUser` di `internal/broker/observe.go` dan uji nyata `"remote_access":true` di `meta/state.json`.
     Artinya **API saat ini tidak dapat membatasi suatu akun hanya untuk mesin lokal**.
 - **Bagaimana memverifikasi**: dari **host lain** (bukan `127.0.0.1`) menggunakan akun tersebut untuk terhubung, harus ditolak 403; koneksi dari mesin lokal harus berhasil.
@@ -96,9 +96,9 @@ Item konfigurasi TLS (lapisan akses dan bidang manajemen **berbagi** set field y
   **【Terverifikasi】** Tiga konfigurasi salah diuji nyata di mesin lokal, semuanya `exit=1`, menolak start:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Bagaimana memverifikasi (positif/negatif)**: klien TLS dapat terhubung, klien plaintext yang terhubung ke port TLS akan ditolak.
   **【Terverifikasi】** Mesin lokal menjalankan instans TLS (`amqp091` lewat TLS), dengan probe klien sungguhan:
@@ -137,7 +137,7 @@ Item konfigurasi TLS (lapisan akses dan bidang manajemen **berbagi** set field y
 
 - **Mengapa**: bidang manajemen default `:15672` (semua NIC). Deployment ke luar harus diikat ke alamat intranet/loopback, atau batasi sumber dengan firewall.
 - **Bagaimana**: konfigurasikan `management.addr` menjadi `127.0.0.1:15672` atau alamat intranet; atau matikan sepenuhnya dengan `management.enabled=false`
-  (setelah dimatikan tidak ada port manajemen, tetapi `swiftmqctl` juga menjadi tidak tersedia).
+  (setelah dimatikan tidak ada port manajemen, tetapi `speedmqctl` juga menjadi tidak tersedia).
 - **Bagaimana memverifikasi**:
   **【Terverifikasi】** Mesin lokal mengonfigurasi bidang manajemen menjadi `127.0.0.1:15677`, alamat listen uji nyata memang loopback:
 
@@ -160,8 +160,8 @@ Item konfigurasi TLS (lapisan akses dan bidang manajemen **berbagi** set field y
 
 ## D. Pengerasan operasi kontainer
 
-Fakta image repositori (`Dockerfile`): biner statis + alpine, **berjalan sebagai non-root (uid 10001, pengguna `swiftmq`)**,
-direktori data `/var/lib/swiftmq` sebagai volume. `docker-compose.yml` menggunakan **named volume** untuk persistensi, konfigurasi **dipasang read-only**, rotasi log.
+Fakta image repositori (`Dockerfile`): biner statis + alpine, **berjalan sebagai non-root (uid 10001, pengguna `speedmq`)**,
+direktori data `/var/lib/speedmq` sebagai volume. `docker-compose.yml` menggunakan **named volume** untuk persistensi, konfigurasi **dipasang read-only**, rotasi log.
 
 ### D-1. Berjalan sebagai non-root 【Belum Diverifikasi (mesin lokal tidak menjalankan Docker)】
 

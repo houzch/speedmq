@@ -1,12 +1,12 @@
-# SwiftMQ upgrade- en migratieplan
+# SpeedMQ upgrade- en migratieplan
 
-> Toepasselijke versie: `1.0.0` (`broker.Version`, zie `swiftmq_build_info` in `/metrics`).
+> Toepasselijke versie: `1.0.0` (`broker.Version`, zie `speedmq_build_info` in `/metrics`).
 > Alle "in de praktijk geteste" conclusies in dit document komen uit echte uitvoeringen op deze machine; alles wat niet in de praktijk is getest, is expliciet gemarkeerd met **【niet geverifieerd】**.
 > Omgeving van deze machine: Windows + PowerShell 5.1, Go 1.27.1 windows/386, tijdelijke `data_dir` + niet-standaardpoorten.
 
 ---
 
-## 1. Migratie (van RabbitMQ naar SwiftMQ)
+## 1. Migratie (van RabbitMQ naar SpeedMQ)
 
 Dit project positioneert zich als **protocolniveau-compatibel met AMQP 0-9-1**; "migratie" draait daarom vooral om **het aanpassen van het verbindingsadres**:
 
@@ -16,7 +16,7 @@ Dit project positioneert zich als **protocolniveau-compatibel met AMQP 0-9-1**; 
 
 **Semantische verschillen om vóór de migratie zelf te controleren** (allemaal bewust zo in deze repository, op basis van README / ontwerpdocument):
 
-| Item | SwiftMQ-gedrag | Gevolg voor migratie |
+| Item | SpeedMQ-gedrag | Gevolg voor migratie |
 | --- | --- | --- |
 | Vluchtige (niet-persistente en niet-exclusieve) queues | **Declaratie wordt geweigerd** (541), `auto_delete` is geen uitzondering | Oude clients die van dit soort queues afhankelijk zijn, falen; ze moeten worden omgezet naar durable of exclusive |
 | Standaard-vhost `/` | **Niet verwijderbaar** (400), bij RabbitMQ wel toegestaan | Automatiseringsscripts die de standaard-vhost verwijderen, falen (dit is de enige actieve veiligheidsbeperking) |
@@ -24,8 +24,8 @@ Dit project positioneert zich als **protocolniveau-compatibel met AMQP 0-9-1**; 
 | Quorumqueues | Uitbreiden van replica's wordt ondersteund, **krimpen niet** | Plan meteen goed |
 | Plugins | Geen Erlang-plugin-ecosysteem, AMQP 1.0 / STOMP niet geïmplementeerd | Scenario's die deze protocollen gebruiken, kunnen voorlopig niet migreren |
 
-**Gegevensmigratie**: de opslagformaten van SwiftMQ en RabbitMQ zijn niet compatibel; er is **geen online/offline tool voor gegevensoverdracht**.
-De migratiemethode is "een lege SwiftMQ aanmaken → dubbel draaien ter verificatie → geleidelijk verkeer overzetten". **【niet geverifieerd】** Dit document bevat geen enkele echte oefening voor het overdragen van RabbitMQ-gegevens.
+**Gegevensmigratie**: de opslagformaten van SpeedMQ en RabbitMQ zijn niet compatibel; er is **geen online/offline tool voor gegevensoverdracht**.
+De migratiemethode is "een lege SpeedMQ aanmaken → dubbel draaien ter verificatie → geleidelijk verkeer overzetten". **【niet geverifieerd】** Dit document bevat geen enkele echte oefening voor het overdragen van RabbitMQ-gegevens.
 
 ---
 
@@ -83,7 +83,7 @@ data/
 - Beide **werken alleen bij de eerste bootstrap**: bij de eerste start worden de vhosts/users uit de configuratie in de metadata geschreven en worden de markeringsbestanden
   `meta/vhosts.seeded` / `meta/users.seeded` achtergelaten; **daarna is de metadata leidend**.
 - Reken er dus bij **een upgrade/wissel van configuratie niet op dat je accounts of vhosts kunt toevoegen/verwijderen via het configuratiebestand** — wijzigingen hebben geen effect;
-  gebruik de beheer-API of `swiftmqctl`.
+  gebruik de beheer-API of `speedmqctl`.
 - Omgekeerd **zal** een upgrade bestaande accounts **niet** overschrijven met de configuratie: een tijdens bedrijf gewijzigd wachtwoord wordt na een herstart niet teruggezet naar de oude waarde uit de configuratie,
   en een tijdens bedrijf verwijderd account komt niet terug. Bewijs: de seed-markingslogica in `cluster.go`; README M8-4 / M8-7.
 
@@ -101,22 +101,22 @@ data/
 ### 5.1 Stappen
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) Proces stoppen (een sierlijke afsluiting doet een laatste flush naar schijf; zie §4 "Consistentie")
 #    Bij uitvoering op de voorgrond: Ctrl+C; als service: Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Gegevensmap back-uppen (beslist nadat het proces is gestopt)
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) Binary vervangen (plaats de nieuwe versie swiftmqd.exe / swiftmqctl.exe op het oorspronkelijke pad)
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) Binary vervangen (plaats de nieuwe versie speedmqd.exe / speedmqctl.exe op het oorspronkelijke pad)
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) Starten
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) Verificatie: proces leeft + beheer-API is leesbaar
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -126,22 +126,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 Verificatiechecklist na de upgrade
 
-- In het opstartlog verschijnen `SwiftMQ 启动中 ... version=<新版本>` en `管理面已启动`;
+- In het opstartlog verschijnen `SpeedMQ 启动中 ... version=<新版本>` en `管理面已启动`;
 - De `object_totals` / `queue_totals` van `/api/overview` zijn gelijk aan vóór de back-up (vergelijk met `backup-restore.md` §5);
 - De `messages` / `messages_ready` van elke durable queue in `/api/queues` zijn gelijk aan vóór de back-up;
-- `/metrics` is te scrapen en `swiftmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
+- `/metrics` is te scrapen en `speedmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
 
 ---
 
 ## 6. Image-upgrade (container)
 
-De image is ongeveer 13 MB (statisch gelinkte binary + alpine), **draait als niet-root (uid 10001)** en de gegevensmap is gemount op `/var/lib/swiftmq`.
+De image is ongeveer 13 MB (statisch gelinkte binary + alpine), **draait als niet-root (uid 10001)** en de gegevensmap is gemount op `/var/lib/speedmq`.
 
 ```powershell
 # 1) Nieuwe image ophalen/bouwen (gebruik het nieuwe versienummer als tag om verwarring tussen old/new te voorkomen)
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) Oude container stoppen (compose behoudt het benoemde volume swiftmq-data)
+# 2) Oude container stoppen (compose behoudt het benoemde volume speedmq-data)
 docker compose down
 
 # 3) Nieuwe versie starten (wijzig image in het compose-bestand naar de nieuwe tag)
@@ -152,14 +152,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **Eenmalige taken in de container** (bijvoorbeeld `swiftmqctl` in de container draaien): de `run` van `docker compose ...` moet in een niet-interactieve omgeving `-T` meekrijgen,
+> **Eenmalige taken in de container** (bijvoorbeeld `speedmqctl` in de container draaien): de `run` van `docker compose ...` moet in een niet-interactieve omgeving `-T` meekrijgen,
 > anders mislukt het door het aanvragen van een TTY:
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-Gegevenspersistentie is afhankelijk van het **benoemde volume** `swiftmq-data` van compose; gegevens gaan niet verloren bij het opnieuw opbouwen van de container (sinds M4 wordt echt naar schijf geschreven).
-Als je vóór de upgrade de inhoud van het volume wilt back-uppen, komt dat neer op het back-uppen van `/var/lib/swiftmq` (zie `backup-restore.md` §3.2). **【image-upgrade niet in de praktijk getest】** (Docker is op deze machine niet uitgevoerd).
+Gegevenspersistentie is afhankelijk van het **benoemde volume** `speedmq-data` van compose; gegevens gaan niet verloren bij het opnieuw opbouwen van de container (sinds M4 wordt echt naar schijf geschreven).
+Als je vóór de upgrade de inhoud van het volume wilt back-uppen, komt dat neer op het back-uppen van `/var/lib/speedmq` (zie `backup-restore.md` §3.2). **【image-upgrade niet in de praktijk getest】** (Docker is op deze machine niet uitgevoerd).
 
 ---
 
@@ -167,7 +167,7 @@ Als je vóór de upgrade de inhoud van het volume wilt back-uppen, komt dat neer
 
 ### 7.1 Enkele node
 
-- **Geleidelijke uitrol**: een enkele SwiftMQ-node heeft geen ingebouwde mogelijkheid voor "twee versies in hetzelfde proces". Een haalbare geleidelijke uitrol is een **sidecar-schaduw**:
+- **Geleidelijke uitrol**: een enkele SpeedMQ-node heeft geen ingebouwde mogelijkheid voor "twee versies in hetzelfde proces". Een haalbare geleidelijke uitrol is een **sidecar-schaduw**:
   de nieuwe versie wordt eerst met **alleen-lezen-consumptie/schaduwqueues** aan dezelfde upstream-stroom gehangen om te observeren; pas na bevestiging wordt de schrijfkant omgeschakeld.
 - **Terugdraaien**:
   1. Stop het proces van de nieuwe versie;
@@ -180,7 +180,7 @@ Als je vóór de upgrade de inhoud van het volume wilt back-uppen, komt dat neer
 Aan platformzijde is er geen "one-click rolling upgrade"; je moet de onderstaande volgorde handmatig node voor node uitvoeren:
 
 1. **Upgrade slechts één node per keer**: stop die node → back-up zijn `data_dir` → vervang de binary → starten → wachten tot hij weer toetreedt en bijwerkt
-   (bekijk `role`, `commit_index`/`last_applied` via `swiftmqctl cluster_status` / `GET /api/cluster`).
+   (bekijk `role`, `commit_index`/`last_applied` via `speedmqctl cluster_status` / `GET /api/cluster`).
 2. **Aanbevolen volgorde**: upgrade eerst **learner / niet-stemgerechtigde leden** (geen invloed op de meerderheid), dan **follower**, en pas als laatste **leader**
    (het upgraden van de leader veroorzaakt een leaderverkiezing, met een korte periode van niet-schrijfbaarheid).
 3. **Invloed van stoppen op de meerderheid** (kritiek):
@@ -200,10 +200,10 @@ Aan platformzijde is er geen "one-click rolling upgrade"; je moet de onderstaand
 
 - **Downgrade tussen grote versies: niet ondersteund, niet geverifieerd**. Als de nieuwe versie gegevens in een nieuw formaat/met nieuwe semantiek heeft weggeschreven, is er **geen** garantie dat "terugvallen op de oude binary gewoon kan lezen";
   terugdraaien kan alleen via de back-up van vóór de upgrade.
-- **Configuratieformaat ongewijzigd**: nog steeds JSON + `SWIFTMQ_*`-omgevingsvariabelen. **YAML-configuratie wordt nog niet ondersteund** (vereist het toevoegen van een parse-afhankelijkheid, M8-17 nog te evalueren);
+- **Configuratieformaat ongewijzigd**: nog steeds JSON + `SPEEDMQ_*`-omgevingsvariabelen. **YAML-configuratie wordt nog niet ondersteund** (vereist het toevoegen van een parse-afhankelijkheid, M8-17 nog te evalueren);
   een upgrade brengt geen YAML.
 - **Online hot-upgrade van plugins/protocollen**: plugins worden met de kernel meegecompileerd (vorm A) of volgens configuratie met `spawn` gestart (vorm B);
   de kernel upgraden = het proces herstarten; er is **geen** mechanisme om de binary ter plaatse hot te vervangen.
 - **In-place migratie van de opslagengine**: segmentrotatie/indexcompressie is runtime-achtergrondgedrag; er is **geen** afzonderlijke opdracht voor "gegevensmigratie/compressie".
 - **Clusterupgrade onder een echt netwerk**: deze repository heeft alleen kleinschalige chaos uitgevoerd (kill op procesniveau); er is **geen** upgrade-oefening gedaan onder netwerkpartitie of een volle schijf.
-- Dit document **bevat geen** enkele verificatie van gegevensoverdracht tussen SwiftMQ en een andere broker (RabbitMQ).
+- Dit document **bevat geen** enkele verificatie van gegevensoverdracht tussen SpeedMQ en een andere broker (RabbitMQ).

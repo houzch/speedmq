@@ -1,8 +1,8 @@
-# SwiftMQ 外部プロセスプラグイン開発ガイド —— PHP
+# SpeedMQ 外部プロセスプラグイン開発ガイド —— PHP
 
-> **対象読者**：PHP で SwiftMQ の外部プロセスプラグイン（sidecar）を書く開発者。
+> **対象読者**：PHP で SpeedMQ の外部プロセスプラグイン（sidecar）を書く開発者。
 > **先に読む**：[外部プロセスプラグイン（sidecar）開発ガイド](plugin-development.md)（メンタルモデル / 設定フィールド / ワイヤプロトコル総表）。
-> **サンプルプロジェクト**：ワークスペース `swiftmq-plugin/php/sidecar_plugin.php`（標準ライブラリのみ、**composer 依存不要**）。
+> **サンプルプロジェクト**：ワークスペース `speedmq-plugin/php/sidecar_plugin.php`（標準ライブラリのみ、**composer 依存不要**）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第 1 ステップ：設定
 
-`swiftmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
+`speedmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. コードウォークスルー（サンプルプロジェクト）
 
-`swiftmq-plugin/php/sidecar_plugin.php` 約 320 行：
+`speedmq-plugin/php/sidecar_plugin.php` 約 320 行：
 
 | 位置 | 役割 |
 | --- | --- |
@@ -171,7 +171,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. 実測（本機で再現）
 
-Windows + PHP 7.4；カーネルは Docker（`swiftmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19021`）。
+Windows + PHP 7.4；カーネルは Docker（`speedmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19021`）。
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

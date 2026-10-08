@@ -1,6 +1,6 @@
-# دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar) في SwiftMQ
+# دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar) في SpeedMQ
 
-> **الجمهور**: المطوّرون الذين لا يرغبون في عمل fork / إعادة ترجمة النواة، ويريدون توسيع قدرات SwiftMQ بـ**أي لغة**.
+> **الجمهور**: المطوّرون الذين لا يرغبون في عمل fork / إعادة ترجمة النواة، ويريدون توسيع قدرات SpeedMQ بـ**أي لغة**.
 > **النطاق**: يشرح هذا المستند شكلًا واحدًا فقط من المكوّنات الإضافية —— **المكوّن الإضافي كعملية خارجية** (مصطلح النواة `sidecar`). ومكوّنات البروتوكول المدمجة في النواة (AMQP 0-9-1 / MQTT) خارج نطاق هذا المستند.
 > **طريقة القراءة**: يبني القسمان 1–2 النموذج الذهني، والقسم 3 لكتابة الشيفرة، و**القسم 5 هو "كيفية إدخاله ليعمل معنا وتقديم الخدمة للعملاء بعد اكتمال التطوير"**؛
 > **للاستخدام بلغات أخرى (Python / Node.js / PHP / Java) انظر الأدلة الخاصة بكل لغة في §4** (كل منها يأتي بمشروع نموذجي كامل ومُختبَر فعليًا).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**دلالات الحالة** (ظاهرة عبر `swiftmqctl plugins show`):
+**دلالات الحالة** (ظاهرة عبر `speedmqctl plugins show`):
 
 | الحالة | المعنى | إجراء العمليات |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 المكوّن الإضافي هو **Go module مستقل**، ويعتمد على حزمتَي عقد خارجيتين فقط:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— بروتوكول السلك والتنفيذ على جهة المكوّن الإضافي (**إلزامي**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— فقط عندما تحتاج إلى أنواع مثل `plugin.Message` / `plugin.Error` (اختياري)
+- `github.com/houzch/speedmq/pkg/sidecar` —— بروتوكول السلك والتنفيذ على جهة المكوّن الإضافي (**إلزامي**)
+- `github.com/houzch/speedmq/pkg/plugin` —— فقط عندما تحتاج إلى أنواع مثل `plugin.Message` / `plugin.Error` (اختياري)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > عند استخدام `replace` للتشغيل المشترك، يجب أن يشترك المكوّن الإضافي والنواة في **نفس الشيفرة المصدرية**، وإلا فقد يتطابق إصدار الـ API (`v1`) بينما تختلف الأنواع.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ func (h *handler) serve(stream *sidecar.Stream) error {
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 > **تتوفّر أدلة خاصة بكل لغة مع مشاريع نموذجية كاملة** (وقد اجتازت الأمثلة فعليًا: المصافحة → المصادقة → جسر الدلالات → التسليم/التسوية → تدفّق البايتات):
 >
-> | اللغة | الدليل | المشروع النموذجي (في مساحة العمل `swiftmq-plugin/`) |
+> | اللغة | الدليل | المشروع النموذجي (في مساحة العمل `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (المكتبة القياسية فقط) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (المكتبة القياسية فقط) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (المكتبة القياسية فقط) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (ملف واحد، JDK فقط) |
 >
-> أما التنفيذ المرجعي الكامل بلغة Go فانظر المشروع الاختباري المستقل `swiftmq-test/test/integration/echosidecar/` (يستخدم `pkg/sidecar.Server` مباشرةً،
+> أما التنفيذ المرجعي الكامل بلغة Go فانظر المشروع الاختباري المستقل `speedmq-test/test/integration/echosidecar/` (يستخدم `pkg/sidecar.Server` مباشرةً،
 > ولا حاجة للاهتمام بتفاصيل طبقة البايت أدناه).
 
 **تنسيق الإطار** (موحّد لكل الإطارات):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **بنى JSON لمستوى التحكّم** (أسماء الحقول مطابقة لـ `proto.go`).
 
 > هذا المقطع **مثال على رسائل بروتوكول السلك** (تُعطى رسائل متعددة بالترتيب في الكتلة نفسها، ولذلك يُستخدم `//` للفصل والشرح)،
-> و**ليس إعدادًا يمكن كتابته مباشرة في `swiftmqd.json`**.
+> و**ليس إعدادًا يمكن كتابته مباشرة في `speedmqd.json`**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. إدخاله ليعمل معنا: الربط وتقديم الخدمة والتغليف ★
 
-يجيب هذا القسم عن "كيفية ربطه بـSwiftMQ وكيفية تقديم الخدمة للعملاء بعد اكتمال التطوير".
+يجيب هذا القسم عن "كيفية ربطه بـSpeedMQ وكيفية تقديم الخدمة للعملاء بعد اكتمال التطوير".
 
 ### 5.1 الإعلان عن المكوّن الإضافي في الإعداد
 
-المكوّن الإضافي الخارجي **مُدار بالكامل عبر الإعداد**، ولا تحتاج النواة إلى أي تعديل شيفرة لأجله. أضف عنصرًا في مقطع `plugins` داخل `swiftmqd.json`
+المكوّن الإضافي الخارجي **مُدار بالكامل عبر الإعداد**، ولا تحتاج النواة إلى أي تعديل شيفرة لأجله. أضف عنصرًا في مقطع `plugins` داخل `speedmqd.json`
 (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
 
 ```json
@@ -554,7 +554,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 اختيار العنوان:
 
 - **على نفس الجهاز يُفضَّل unix socket** (`unix:///tmp/my-sidecar.sock`): لا يشغل منفذ TCP ولا يتأثر بشغل منافذ المضيف.
-  وانتبه إلى أن مسار الـsocket يجب أن يكون قابلًا للكتابة من عملية النواة (داخل الحاوية المستخدم غير الجذري `swiftmq`).
+  وانتبه إلى أن مسار الـsocket يجب أن يكون قابلًا للكتابة من عملية النواة (داخل الحاوية المستخدم غير الجذري `speedmq`).
 - **عبر الحاويات يلزم TCP**، ويجب أن تستمع عملية المكوّن الإضافي إلى `0.0.0.0`، وأن يستخدم `address` **اسم الخدمة في شبكة الحاويات**.
 
 > لا تعكس الاتجاه: **العنوان الذي يستمع عليه المكوّن الإضافي** = `address`؛ **المنفذ المفتوح للعملاء** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.5 التغليف: تشغيل المكوّن الإضافي مع النواة
 
-**الخيار A —— تضمينه في الصورة نفسها** (مُوصى به للمكوّنات الإضافية "التي تُنشر مع النواة"): أضف سطرًا في مرحلة التشغيل من `swiftmq/Dockerfile`:
+**الخيار A —— تضمينه في الصورة نفسها** (مُوصى به للمكوّنات الإضافية "التي تُنشر مع النواة"): أضف سطرًا في مرحلة التشغيل من `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-side
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ services:
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ services:
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 | العملية | الأمر / الواجهة | الأثر |
 | --- | --- | --- |
-| إيقاف ساخن | `swiftmqctl plugins disable my-sidecar` أو `PUT /api/plugins/my-sidecar/disable` | **إغلاق المستمعات الخارجية لهذا المكوّن الإضافي** (تعطيل على مستوى القدرة)؛ ولا يتأثر النواة ولا المكوّنات الإضافية الأخرى |
-| تشغيل ساخن | `swiftmqctl plugins enable my-sidecar` | إعادة فتح مستمعاته؛ وإن كان قد فشل في البدء سابقًا يُعاد المحاولة مرة واحدة |
-| عرض الحالة | `swiftmqctl plugins list/show` | الحالة + سبب الفشل/الانقطاع |
+| إيقاف ساخن | `speedmqctl plugins disable my-sidecar` أو `PUT /api/plugins/my-sidecar/disable` | **إغلاق المستمعات الخارجية لهذا المكوّن الإضافي** (تعطيل على مستوى القدرة)؛ ولا يتأثر النواة ولا المكوّنات الإضافية الأخرى |
+| تشغيل ساخن | `speedmqctl plugins enable my-sidecar` | إعادة فتح مستمعاته؛ وإن كان قد فشل في البدء سابقًا يُعاد المحاولة مرة واحدة |
+| عرض الحالة | `speedmqctl plugins list/show` | الحالة + سبب الفشل/الانقطاع |
 | خروج النواة | — | قطع الاتصال بالمكوّن الإضافي، واسترجاع جلسات الجسر، و**إنهاء العمليات الفرعية التي أطلقتها النواة عبر `spawn`** |
 
 > الإيقاف الساخن يغلق "القدرة" فقط (منافذ الاستماع)، و**لا** يقتل عملية المكوّن الإضافي التي أُطلقت بـ`spawn`؛ ويحدث استرجاع العملية عند خروج النواة.
@@ -751,7 +751,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | الحالة `failed` والسبب يتضمّن "عدم تطابق اسم المكوّن الإضافي" | اسم المكوّن الإضافي في الإعداد ≠ `HelloAck.name`؛ طابقهما |
 | الحالة `failed` والسبب يتضمّن "عدم تطابق إصدار الـ API" | `HelloAck.api_version` ≠ `APIVersion` الخاص بالنواة؛ طابقهما |
 | الحالة `failed` والسبب يتضمّن "رفض المصافحة" | أعاد `Hello` في المكوّن الإضافي خطأ (`deny`)؛ راجع مخرجات المكوّن الإضافي المُمرَّرة في سجل النواة |
-| الحالة `failed` والسبب يتضمّن "فشل الاتصال بالمكوّن الإضافي الخارجي" | لم تبدأ العملية / `address` خاطئ / مسار الـsocket غير قابل للكتابة (انتبه لصلاحيات المستخدم `swiftmq` داخل الحاوية) |
+| الحالة `failed` والسبب يتضمّن "فشل الاتصال بالمكوّن الإضافي الخارجي" | لم تبدأ العملية / `address` خاطئ / مسار الـsocket غير قابل للكتابة (انتبه لصلاحيات المستخدم `speedmq` داخل الحاوية) |
 | الحالة `down` | انهارت عملية المكوّن الإضافي أو انقطع الاتصال؛ و`restart=always` يُعيد الاتصال تلقائيًا، بينما `never` يتطلّب إطلاقًا يدويًا |
 | المنفذ غير مفتوح / تعذّر اتصال العميل | `protocols[].listeners` غير مضبوط أو عُوِّض عنوانه بـ`listeners.<اسم البروتوكول>`؛ راجع الموضعين |
 | يتصل العميل بمنفذ آخر ثم يُقطع فورًا | هذا المنفذ لا يطابق بروتوكولك (`prefix` فارغ أو البادئة غير مطابقة)؛ اضبط للمكوّن الإضافي `prefix` غير فارغ (انظر §5.3) |
@@ -772,7 +772,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | أنواع سطح عمليات الجلسة في النواة (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | الاستماع والاستكشاف والتشغيل/الإيقاف الساخن حسب المكوّن الإضافي | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | دورة حياة المكوّن الإضافي وحوكمته (العزل/الحالة/التدقيق) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go)، [`registry.go`](../../../internal/plugin/registry.go) |
-| عناصر الإعداد والأمثلة (بما فيها مقطع sidecar) | [`internal/config/config.go`](../../../internal/config/config.go)، [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| تجميع العملية (كيف يُدمج sidecar في النواة) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| التنفيذ المرجعي بلغة Go (باستخدام `pkg/sidecar.Server`، مع جسر `session.*` و`core.authenticate`) | المشروع الاختباري المستقل `swiftmq-test/test/integration/echosidecar/` |
-| **أدلة كل لغة + المشاريع النموذجية** | في هذا الدليل `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`؛ والأمثلة في **مساحة العمل** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| عناصر الإعداد والأمثلة (بما فيها مقطع sidecar) | [`internal/config/config.go`](../../../internal/config/config.go)، [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| تجميع العملية (كيف يُدمج sidecar في النواة) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| التنفيذ المرجعي بلغة Go (باستخدام `pkg/sidecar.Server`، مع جسر `session.*` و`core.authenticate`) | المشروع الاختباري المستقل `speedmq-test/test/integration/echosidecar/` |
+| **أدلة كل لغة + المشاريع النموذجية** | في هذا الدليل `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`؛ والأمثلة في **مساحة العمل** `speedmq-plugin/{python,nodejs,php,java}/` |

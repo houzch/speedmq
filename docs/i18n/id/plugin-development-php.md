@@ -1,8 +1,8 @@
-# Panduan Pengembangan Plugin Proses Eksternal SwiftMQ — PHP
+# Panduan Pengembangan Plugin Proses Eksternal SpeedMQ — PHP
 
-> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SwiftMQ dengan PHP.
+> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SpeedMQ dengan PHP.
 > **Baca dulu**: [Panduan Pengembangan Plugin Proses Eksternal (sidecar)](plugin-development.md) (model mental / field konfigurasi / tabel lengkap protokol kabel).
-> **Proyek contoh**: workspace `swiftmq-plugin/php/sidecar_plugin.php` (hanya pustaka standar, **tanpa dependensi composer**).
+> **Proyek contoh**: workspace `speedmq-plugin/php/sidecar_plugin.php` (hanya pustaka standar, **tanpa dependensi composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
 
 ### Langkah 1: Konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
+`speedmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 4. Penelusuran Kode (Proyek Contoh)
 
-`swiftmq-plugin/php/sidecar_plugin.php` sekitar 320 baris:
+`speedmq-plugin/php/sidecar_plugin.php` sekitar 320 baris:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -171,7 +171,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 5. Uji Empiris (Direproduksi Lokal)
 
-Windows + PHP 7.4; kernel di Docker (`swiftmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; kernel di Docker (`speedmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

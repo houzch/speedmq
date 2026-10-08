@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/store"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/store"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // connEntry 是一条已建立连接的登记项。

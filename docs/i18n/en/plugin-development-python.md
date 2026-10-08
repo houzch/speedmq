@@ -1,9 +1,9 @@
-# SwiftMQ External-Process Plugin Development Guide — Python
+# SpeedMQ External-Process Plugin Development Guide — Python
 
-> **Audience**: developers writing external-process plugins (sidecars) for SwiftMQ in Python.
+> **Audience**: developers writing external-process plugins (sidecars) for SpeedMQ in Python.
 > **Read first**: [External-Process Plugin (sidecar) Development Guide](plugin-development.md) — it covers the mental model, configuration fields, and the full wire-protocol table;
 > this document only covers **how to put it into practice in Python**, along with the steps and results verified locally.
-> **Example project**: workspace `swiftmq-plugin/python/sidecar_plugin.py` (standard library only, zero third-party dependencies).
+> **Example project**: workspace `speedmq-plugin/python/sidecar_plugin.py` (standard library only, zero third-party dependencies).
 
 ---
 
@@ -31,7 +31,7 @@ Three key points (easy to get wrong, remember them first):
 
 ### Step 1: Declare the Plugin in Configuration
 
-`swiftmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
+`speedmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
 
 ```json
 {
@@ -41,7 +41,7 @@ Three key points (easy to get wrong, remember them first):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ must be dispatched to a separate thread, because during handling they may in tur
 
 ## 4. Code Walkthrough (Example Project)
 
-`swiftmq-plugin/python/sidecar_plugin.py` is about 320 lines; key functions:
+`speedmq-plugin/python/sidecar_plugin.py` is about 320 lines; key functions:
 
 | Location | Purpose |
 | --- | --- |
@@ -169,7 +169,7 @@ must be dispatched to a separate thread, because during handling they may in tur
 
 ## 5. Empirical Test (Reproduced Locally)
 
-Environment: Windows + Python 3.12; the kernel runs in Docker (`swiftmq:1.1.01`), the plugin runs on the host,
+Environment: Windows + Python 3.12; the kernel runs in Docker (`speedmq:1.1.01`), the plugin runs on the host,
 and the kernel connects to it via `tcp://host.docker.internal:19001`.
 
 ```

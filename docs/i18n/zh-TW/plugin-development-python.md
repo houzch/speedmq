@@ -1,9 +1,9 @@
-# SwiftMQ 外部行程外掛開發指南 —— Python
+# SpeedMQ 外部行程外掛開發指南 —— Python
 
-> **適用對象**：用 Python 為 SwiftMQ 撰寫外部行程外掛（sidecar）的開發者。
+> **適用對象**：用 Python 為 SpeedMQ 撰寫外部行程外掛（sidecar）的開發者。
 > **先讀**：[外部行程外掛（sidecar）開發指南](plugin-development.md) —— 那裡講了心智模型、設定欄位與線路協定總表；
 > 本文只講 **Python 怎麼落地**，以及本機實測過的步驟與結果。
-> **範例專案**：工作區 `swiftmq-plugin/python/sidecar_plugin.py`（僅標準函式庫，零第三方相依）。
+> **範例專案**：工作區 `speedmq-plugin/python/sidecar_plugin.py`（僅標準函式庫，零第三方相依）。
 
 ---
 
@@ -31,7 +31,7 @@
 
 ### 第一步：在設定裡宣告外掛
 
-`swiftmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
+`speedmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
 
 ```json
 {
@@ -41,7 +41,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 4. 程式碼走讀（範例專案）
 
-`swiftmq-plugin/python/sidecar_plugin.py` 約 320 行，重點函式：
+`speedmq-plugin/python/sidecar_plugin.py` 約 320 行，重點函式：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -169,7 +169,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 5. 實測（本機重現）
 
-環境：Windows + Python 3.12；核心跑在 Docker（`swiftmq:1.1.01`），外掛跑在宿主機，
+環境：Windows + Python 3.12；核心跑在 Docker（`speedmq:1.1.01`），外掛跑在宿主機，
 核心用 `tcp://host.docker.internal:19001` 連它。
 
 ```

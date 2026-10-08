@@ -1,4 +1,4 @@
-# Garis Dasar Pengukuhan Keselamatan SwiftMQ (senarai semak boleh tanda)
+# Garis Dasar Pengukuhan Keselamatan SpeedMQ (senarai semak boleh tanda)
 
 > Prinsip: **hanya tulis keupayaan yang benar-benar dimiliki oleh repositori ini**。Setiap item memberikan "mengapa perlu buat + bagaimana sahkan sudah dibuat"，dan arahan pengesahan semuanya boleh dijalankan。
 > Yang ditandakan **【Telah diverifikasi】** bermakna **benar-benar telah dilaksanakan** pada mesin ini（Windows + PowerShell 5.1，`1.0.0`）;
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Mengapa**: selaras RabbitMQ，`guest` terbina dalam secara lalai hanya membenarkan log masuk mesin tempatan; semasa penggunaan luar, pastikan sumber akaun istimewa terhad。
 - **Bagaimana / skop（kekangan penting）**:
   - `remote_access` hanya boleh ditulis dalam **fail konfigurasi** `users.<name>.remote_access`，**hanya berkesan semasa but pertama kali**;
-  - **Akaun yang dibina melalui API pengurusan / `swiftmqctl` semuanya `remote_access=true`**（membenarkan log masuk dari mana-mana sumber）——
+  - **Akaun yang dibina melalui API pengurusan / `speedmqctl` semuanya `remote_access=true`**（membenarkan log masuk dari mana-mana sumber）——
     asas komen `UpsertUser` dalam `internal/broker/observe.go` dan ujian sebenar `"remote_access":true` dalam `meta/state.json`。Maksudnya **API pada masa ini tidak dapat mengehadkan sesuatu akaun agar hanya mesin tempatan**。
 - **Cara sahkan**: sambung dari **hos lain**（bukan `127.0.0.1`）menggunakan akaun tersebut, sepatutnya 403; sambungan mesin tempatan sepatutnya berjaya。
   **【Belum diverifikasi】**: persekitaran mesin ini tidak dapat membina sumber jauh sebenar, belum diuji。
@@ -95,9 +95,9 @@ Item konfigurasi TLS（lapisan akses dan satah pengurusan **berkongsi** set meda
   **【Telah diverifikasi】** Tiga jenis konfigurasi salah diuji pada mesin ini, semuanya `exit=1`、tolak permulaan:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Cara sahkan (positif/negatif)**: klien TLS boleh menyambung、klien teks biasa menyambung ke port TLS akan ditolak。
   **【Telah diverifikasi】** Mesin ini memulakan instans TLS（`amqp091` melalui TLS），menggunakan klien sebenar sebagai prob:
@@ -136,7 +136,7 @@ Item konfigurasi TLS（lapisan akses dan satah pengurusan **berkongsi** set meda
 
 - **Mengapa**: satah pengurusan lalai `:15672`（semua kad rangkaian）。Penggunaan luaran sepatutnya diikat kepada alamat intranet/loopback, atau hadkan sumber dengan firewall。
 - **Bagaimana**: konfigurasikan `management.addr` sebagai `127.0.0.1:15672` atau alamat intranet; atau matikan sepenuhnya dengan `management.enabled=false`
-  （selepas ditutup tiada port pengurusan, tetapi `swiftmqctl` juga tidak boleh digunakan）。
+  （selepas ditutup tiada port pengurusan, tetapi `speedmqctl` juga tidak boleh digunakan）。
 - **Cara sahkan**:
   **【Telah diverifikasi】** Mesin ini mengkonfigurasikan satah pengurusan sebagai `127.0.0.1:15677`，ujian sebenar alamat pendengaran memang loopback:
 
@@ -159,8 +159,8 @@ Item konfigurasi TLS（lapisan akses dan satah pengurusan **berkongsi** set meda
 
 ## D. Pengukuhan operasi kontena
 
-Fakta imej repositori（`Dockerfile`）: binari pautan statik + alpine，**berjalan sebagai bukan root（uid 10001, pengguna `swiftmq`）**，
-direktori data `/var/lib/swiftmq` sebagai volum。`docker-compose.yml` menggunakan **volum bernama** untuk kegigihan、konfigurasi **dipasang baca sahaja**、putaran log。
+Fakta imej repositori（`Dockerfile`）: binari pautan statik + alpine，**berjalan sebagai bukan root（uid 10001, pengguna `speedmq`）**，
+direktori data `/var/lib/speedmq` sebagai volum。`docker-compose.yml` menggunakan **volum bernama** untuk kegigihan、konfigurasi **dipasang baca sahaja**、putaran log。
 
 ### D-1. Berjalan sebagai bukan root 【Belum diverifikasi（mesin ini tidak menjalankan Docker）】
 

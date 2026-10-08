@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // Version 是本插件版本。

@@ -1,7 +1,7 @@
 // 本文件是 MQTT 3.1.1 的**编解码层**：报文进出、字段读写、以及"畸形报文一律拒绝"。
 //
 // 它刻意不知道内核的存在（不 import pkg/plugin）：编解码正确性与会话语义解耦，
-// 单测因此可以只喂字节、断言字节（见 swiftmq-test/test/unit/mqtt 的编解码用例）。
+// 单测因此可以只喂字节、断言字节（见 speedmq-test/test/unit/mqtt 的编解码用例）。
 package mqtt
 
 import (

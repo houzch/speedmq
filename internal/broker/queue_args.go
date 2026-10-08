@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 队列参数键名（与 RabbitMQ 一致）。

@@ -1,8 +1,8 @@
-# Guide de développement des plugins en processus externe pour SwiftMQ —— Node.js
+# Guide de développement des plugins en processus externe pour SpeedMQ —— Node.js
 
-> **Public** : développeurs qui écrivent en Node.js des plugins en processus externe (sidecar) pour SwiftMQ.
+> **Public** : développeurs qui écrivent en Node.js des plugins en processus externe (sidecar) pour SpeedMQ.
 > **À lire d'abord** : [Guide de développement des plugins en processus externe (sidecar)](plugin-development.md) (modèle mental / champs de configuration / tableau complet du protocole filaire).
-> **Projet d'exemple** : espace de travail `swiftmq-plugin/nodejs/index.js` (bibliothèque standard Node uniquement, **aucune dépendance npm**).
+> **Projet d'exemple** : espace de travail `speedmq-plugin/nodejs/index.js` (bibliothèque standard Node uniquement, **aucune dépendance npm**).
 
 ---
 
@@ -26,7 +26,7 @@ Trois points essentiels : **votre processus est le serveur** (il attend que le n
 
 ### Étape 1 : configuration
 
-`swiftmqd.json` (**la configuration réelle est du JSON standard, sans commentaires possibles**) :
+`speedmqd.json` (**la configuration réelle est du JSON standard, sans commentaires possibles**) :
 
 ```json
 {
@@ -36,7 +36,7 @@ Trois points essentiels : **votre processus est le serveur** (il attend que le n
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Les livraisons sont **renvoyées en sens direct** par le noyau (`method = "sessi
 
 ## 4. Lecture guidée du code (projet d'exemple)
 
-`swiftmq-plugin/nodejs/index.js` compte environ 330 lignes :
+`speedmq-plugin/nodejs/index.js` compte environ 330 lignes :
 
 | Emplacement | Rôle |
 | --- | --- |
@@ -152,7 +152,7 @@ Les livraisons sont **renvoyées en sens direct** par le noyau (`method = "sessi
 
 ## 5. Mesures réelles (reproduction locale)
 
-Windows + Node v24 ; le noyau dans Docker (`swiftmq:1.1.01`), le plugin sur la machine hôte (`tcp://host.docker.internal:19011`).
+Windows + Node v24 ; le noyau dans Docker (`speedmq:1.1.01`), le plugin sur la machine hôte (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

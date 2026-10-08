@@ -1,8 +1,8 @@
-# Hướng dẫn phát triển plugin tiến trình ngoài cho SwiftMQ —— PHP
+# Hướng dẫn phát triển plugin tiến trình ngoài cho SpeedMQ —— PHP
 
-> **Đối tượng**: các nhà phát triển dùng PHP để viết plugin tiến trình ngoài (sidecar) cho SwiftMQ.
+> **Đối tượng**: các nhà phát triển dùng PHP để viết plugin tiến trình ngoài (sidecar) cho SpeedMQ.
 > **Đọc trước**: [Hướng dẫn phát triển plugin tiến trình ngoài (sidecar)](plugin-development.md) (mô hình tư duy / trường cấu hình / bảng tổng hợp giao thức đường dây).
-> **Dự án ví dụ**: workspace `swiftmq-plugin/php/sidecar_plugin.php` (chỉ thư viện chuẩn, **không cần phụ thuộc composer**).
+> **Dự án ví dụ**: workspace `speedmq-plugin/php/sidecar_plugin.php` (chỉ thư viện chuẩn, **không cần phụ thuộc composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
 
 ### Bước một: cấu hình
 
-`swiftmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
+`speedmqd.json` (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Ba điểm chính: **tiến trình của bạn là server** (chờ kernel kết 
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 4. Đọc hiểu mã (dự án ví dụ)
 
-`swiftmq-plugin/php/sidecar_plugin.php` khoảng 320 dòng:
+`speedmq-plugin/php/sidecar_plugin.php` khoảng 320 dòng:
 
 | Vị trí | Chức năng |
 | --- | --- |
@@ -171,7 +171,7 @@ Delivery được kernel **đẩy xuôi về** (`method = "session.deliver"`), x
 
 ## 5. Kiểm nghiệm thực tế (tái hiện trên máy cục bộ)
 
-Windows + PHP 7.4; kernel trong Docker (`swiftmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; kernel trong Docker (`speedmq:1.1.01`), plugin trên máy host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

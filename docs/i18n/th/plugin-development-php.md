@@ -1,8 +1,8 @@
-# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SwiftMQ —— PHP
+# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SpeedMQ —— PHP
 
-> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SwiftMQ ด้วย PHP
+> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SpeedMQ ด้วย PHP
 > **อ่านก่อน**: [คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar)](plugin-development.md) (แบบจำลองทางความคิด / ฟิลด์คอนฟิก / ตารางสรุปโปรโตคอลสาย)
-> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `swiftmq-plugin/php/sidecar_plugin.php` (เฉพาะไลบรารีมาตรฐาน **ไม่ต้องมี dependency ของ composer**)
+> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `speedmq-plugin/php/sidecar_plugin.php` (เฉพาะไลบรารีมาตรฐาน **ไม่ต้องมี dependency ของ composer**)
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### ขั้นที่หนึ่ง: คอนฟิก
 
-`swiftmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
+`speedmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. อ่านโค้ด (โปรเจกต์ตัวอย่าง)
 
-`swiftmq-plugin/php/sidecar_plugin.php` ประมาณ 320 บรรทัด:
+`speedmq-plugin/php/sidecar_plugin.php` ประมาณ 320 บรรทัด:
 
 | ตำแหน่ง | หน้าที่ |
 | --- | --- |
@@ -171,7 +171,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. การทดสอบจริง (จำลองบนเครื่องนี้)
 
-Windows + PHP 7.4; เคอร์เนลบน Docker (`swiftmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19021`)
+Windows + PHP 7.4; เคอร์เนลบน Docker (`speedmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19021`)
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

@@ -1,6 +1,6 @@
-# Hướng dẫn phát triển plugin tiến trình ngoài (sidecar) cho SwiftMQ
+# Hướng dẫn phát triển plugin tiến trình ngoài (sidecar) cho SpeedMQ
 
-> **Đối tượng**: các nhà phát triển không muốn fork / biên dịch lại kernel mà muốn dùng **bất kỳ ngôn ngữ nào** để mở rộng năng lực cho SwiftMQ.
+> **Đối tượng**: các nhà phát triển không muốn fork / biên dịch lại kernel mà muốn dùng **bất kỳ ngôn ngữ nào** để mở rộng năng lực cho SpeedMQ.
 > **Phạm vi**: tài liệu này chỉ bàn về một dạng plugin —— **plugin tiến trình ngoài** (thuật ngữ kernel là `sidecar`). Plugin giao thức tích hợp sẵn của kernel (AMQP 0-9-1 / MQTT) không thuộc phạm vi tài liệu này.
 > **Cách đọc**: mục 1–2 xây dựng mô hình tư duy, mục 3 viết mã, **mục 5 là "sau khi phát triển xong thì tích hợp vào chạy chung và cung cấp dịch vụ ra bên ngoài như thế nào"**;
 > **dùng ngôn ngữ khác (Python / Node.js / PHP / Java) thì xem hướng dẫn theo từng ngôn ngữ ở §4** (mỗi phần kèm một dự án ví dụ hoàn chỉnh đã chạy thực tế).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**Ngữ nghĩa trạng thái** (thấy được qua `swiftmqctl plugins show`):
+**Ngữ nghĩa trạng thái** (thấy được qua `speedmqctl plugins show`):
 
 | Trạng thái | Ý nghĩa | Thao tác vận hành |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 Plugin là một **Go module độc lập**, chỉ phụ thuộc vào hai gói hợp đồng hướng ngoại:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— giao thức đường dây và hiện thực phía plugin (**bắt buộc**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— chỉ khi bạn cần dùng các kiểu như `plugin.Message` / `plugin.Error` (tùy chọn)
+- `github.com/houzch/speedmq/pkg/sidecar` —— giao thức đường dây và hiện thực phía plugin (**bắt buộc**)
+- `github.com/houzch/speedmq/pkg/plugin` —— chỉ khi bạn cần dùng các kiểu như `plugin.Message` / `plugin.Error` (tùy chọn)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > Khi dùng `replace` để liên kết gỡ lỗi, plugin và kernel phải dùng **cùng một bộ mã nguồn**, nếu không thì dù phiên bản API (`v1`) có khớp, kiểu dữ liệu vẫn có thể khác nhau.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ Trên một luồng, dùng theo thứ tự `session.open` → các `session.*` k
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ Kiểm thử đầu-cuối xem §5.
 
 > **Đã cung cấp hướng dẫn theo từng ngôn ngữ kèm dự án ví dụ hoàn chỉnh** (các ví dụ đều đã chạy thực tế qua: bắt tay → xác thực → cầu ngữ nghĩa → delivery/quyết toán → luồng byte):
 >
-> | Ngôn ngữ | Hướng dẫn | Dự án ví dụ (trong workspace `swiftmq-plugin/`) |
+> | Ngôn ngữ | Hướng dẫn | Dự án ví dụ (trong workspace `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py` (chỉ thư viện chuẩn) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js` (chỉ thư viện chuẩn) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php` (chỉ thư viện chuẩn) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java` (một tệp, chỉ JDK) |
 >
-> Bản hiện thực tham chiếu đầy đủ bằng Go xem ở dự án kiểm thử độc lập `swiftmq-test/test/integration/echosidecar/` (nó dùng trực tiếp `pkg/sidecar.Server`,
+> Bản hiện thực tham chiếu đầy đủ bằng Go xem ở dự án kiểm thử độc lập `speedmq-test/test/integration/echosidecar/` (nó dùng trực tiếp `pkg/sidecar.Server`,
 > không cần bận tâm tới các chi tiết tầng byte bên dưới).
 
 **Định dạng frame** (mọi frame đều thống nhất):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **Cấu trúc JSON mặt điều khiển** (tên trường khớp với `proto.go`).
 
 > Đoạn này là **ví dụ bản tin của giao thức đường dây** (trong cùng một khối đưa ra nhiều bản tin theo thứ tự, nên dùng `//` để phân tách và giải thích),
-> **không phải cấu hình có thể ghi thẳng vào `swiftmqd.json`**.
+> **không phải cấu hình có thể ghi thẳng vào `speedmqd.json`**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. Đưa vào chạy chung: tích hợp, cung cấp dịch vụ ra ngoài, đóng gói ★
 
-Mục này trả lời câu hỏi "sau khi phát triển xong thì tích hợp vào SwiftMQ thế nào, cung cấp dịch vụ ra ngoài ra sao".
+Mục này trả lời câu hỏi "sau khi phát triển xong thì tích hợp vào SpeedMQ thế nào, cung cấp dịch vụ ra ngoài ra sao".
 
 ### 5.1 Khai báo plugin trong cấu hình
 
-Plugin tiến trình ngoài **hoàn toàn do cấu hình quản lý**, kernel không cần sửa bất kỳ dòng mã nào vì nó. Thêm một mục vào đoạn `plugins` của `swiftmqd.json`
+Plugin tiến trình ngoài **hoàn toàn do cấu hình quản lý**, kernel không cần sửa bất kỳ dòng mã nào vì nó. Thêm một mục vào đoạn `plugins` của `speedmqd.json`
 (**cấu hình thực tế là JSON chuẩn, không được có chú thích**):
 
 ```json
@@ -554,7 +554,7 @@ Danh sách trường:
 Chọn địa chỉ:
 
 - **Cùng máy thì khuyến nghị dùng unix socket** (`unix:///tmp/my-sidecar.sock`): không chiếm cổng TCP, không bị ảnh hưởng bởi việc cổng máy chủ đã bị chiếm.
-  Lưu ý đường dẫn socket phải ghi được bởi tiến trình kernel (trong container là người dùng `swiftmq` không phải root).
+  Lưu ý đường dẫn socket phải ghi được bởi tiến trình kernel (trong container là người dùng `speedmq` không phải root).
 - **Khác container bắt buộc dùng TCP**, và tiến trình plugin phải lắng nghe `0.0.0.0`, `address` dùng **tên dịch vụ trong mạng container**.
 
 > Đừng nhầm ngược chiều: **địa chỉ plugin lắng nghe** = `address`; **cổng mở ra cho client bên ngoài** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ bên khớp sẽ tiếp nhận kết nối đó. Do đó:
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ bên khớp sẽ tiếp nhận kết nối đó. Do đó:
 
 ### 5.5 Đóng gói: để plugin chạy cùng kernel
 
-**Cách A —— Đóng gói vào cùng một image** (khuyến nghị cho plugin "phát hành kèm kernel"): thêm một dòng vào giai đoạn runtime của `swiftmq/Dockerfile`:
+**Cách A —— Đóng gói vào cùng một image** (khuyến nghị cho plugin "phát hành kèm kernel"): thêm một dòng vào giai đoạn runtime của `speedmq/Dockerfile`:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ Sau đó trong cấu hình đặt `spawn: ["/usr/local/bin/my-sidecar", "-addr",
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ Cấu hình dùng unix socket (tránh chiếm thêm cổng). Dưới đây là �
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ Trong cấu hình `spawn: []` (kernel chỉ kết nối không kéo lên), `addr
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ Trong `plugins show` hãy chú ý đặc biệt tới `state` và `RuntimeNote`:
 
 | Thao tác | Lệnh / giao diện | Hiệu quả |
 | --- | --- | --- |
-| Tắt nóng | `swiftmqctl plugins disable my-sidecar` hoặc `PUT /api/plugins/my-sidecar/disable` | **Đóng listener hướng ngoại của plugin đó** (vô hiệu hóa ở mức năng lực); kernel và các plugin khác không bị ảnh hưởng |
-| Bật nóng | `swiftmqctl plugins enable my-sidecar` | Mở lại listener của nó; nếu trước đó khởi động thất bại sẽ thử lại một lần |
-| Xem trạng thái | `swiftmqctl plugins list/show` | Trạng thái + lý do thất bại/đứt kết nối |
+| Tắt nóng | `speedmqctl plugins disable my-sidecar` hoặc `PUT /api/plugins/my-sidecar/disable` | **Đóng listener hướng ngoại của plugin đó** (vô hiệu hóa ở mức năng lực); kernel và các plugin khác không bị ảnh hưởng |
+| Bật nóng | `speedmqctl plugins enable my-sidecar` | Mở lại listener của nó; nếu trước đó khởi động thất bại sẽ thử lại một lần |
+| Xem trạng thái | `speedmqctl plugins list/show` | Trạng thái + lý do thất bại/đứt kết nối |
 | Kernel thoát | — | Ngắt kết nối với plugin, thu hồi phiên trên cầu, **chấm dứt tiến trình con do kernel `spawn`** |
 
 > Tắt nóng chỉ đóng "năng lực" (cổng lắng nghe), **không** giết tiến trình plugin được kéo lên bằng `spawn`; việc thu hồi tiến trình diễn ra khi kernel thoát.
@@ -751,7 +751,7 @@ Dưới đây chỉ vẽ mục `plugins.my-sidecar` (**JSON chuẩn, không đư
 | Trạng thái `failed`, lý do có "tên plugin không khớp" | Tên plugin trong cấu hình ≠ `HelloAck.name`; sửa cho khớp |
 | Trạng thái `failed`, lý do có "phiên bản API không khớp" | `HelloAck.api_version` ≠ `APIVersion` của kernel; sửa cho khớp |
 | Trạng thái `failed`, lý do có "từ chối bắt tay" | `Hello` của plugin trả về error (`deny`); xem output plugin được chuyển tiếp trong log kernel |
-| Trạng thái `failed`, lý do có "kết nối plugin tiến trình ngoài thất bại" | Tiến trình chưa lên / `address` ghi sai / đường dẫn socket không ghi được (trong container chú ý quyền của người dùng `swiftmq`) |
+| Trạng thái `failed`, lý do có "kết nối plugin tiến trình ngoài thất bại" | Tiến trình chưa lên / `address` ghi sai / đường dẫn socket không ghi được (trong container chú ý quyền của người dùng `speedmq`) |
 | Trạng thái `down` | Tiến trình plugin sập hoặc kết nối đứt; `restart=always` sẽ tự kết nối lại, `never` cần kéo lên thủ công |
 | Cổng không mở / client không kết nối được | `protocols[].listeners` chưa cấu hình hoặc địa chỉ bị `listeners.<tên giao thức>` ghi đè; đối chiếu cả hai nơi |
 | Client kết nối tới cổng khác rồi bị ngắt ngay | Cổng đó không khớp giao thức của bạn (`prefix` rỗng hoặc tiền tố không khớp); cấu hình `prefix` khác rỗng cho giao thức (xem §5.3) |
@@ -772,7 +772,7 @@ Dưới đây chỉ vẽ mục `plugins.my-sidecar` (**JSON chuẩn, không đư
 | Kiểu mặt thao tác phiên của kernel (`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | Lắng nghe, sniffing, bật/tắt nóng theo plugin | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | Vòng đời và quản trị plugin (cô lập/trạng thái/kiểm toán) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| Mục cấu hình và ví dụ (gồm đoạn sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| Lắp ghép tiến trình (sidecar được lắp vào kernel như thế nào) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Hiện thực tham chiếu bằng Go (dùng `pkg/sidecar.Server`, gồm cầu `session.*` và `core.authenticate`) | Dự án kiểm thử độc lập `swiftmq-test/test/integration/echosidecar/` |
-| **Hướng dẫn theo ngôn ngữ + dự án ví dụ** | Thư mục này `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; ví dụ ở **workspace** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| Mục cấu hình và ví dụ (gồm đoạn sidecar) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| Lắp ghép tiến trình (sidecar được lắp vào kernel như thế nào) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Hiện thực tham chiếu bằng Go (dùng `pkg/sidecar.Server`, gồm cầu `session.*` và `core.authenticate`) | Dự án kiểm thử độc lập `speedmq-test/test/integration/echosidecar/` |
+| **Hướng dẫn theo ngôn ngữ + dự án ví dụ** | Thư mục này `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; ví dụ ở **workspace** `speedmq-plugin/{python,nodejs,php,java}/` |

@@ -1,4 +1,4 @@
-// Package plugin 定义 SwiftMQ 对外的稳定插件 API。
+// Package plugin 定义 SpeedMQ 对外的稳定插件 API。
 //
 // 约束：插件只允许 import 本包，内核内部包一律不可见；
 // 该约束由 lint 规则（depguard）强制 —— 这样即使不做热加载，也能在编译期守住边界。

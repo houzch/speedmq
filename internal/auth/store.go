@@ -12,14 +12,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/protocol/codec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // Store 是内置用户表。
 //
-// M5 起支持运行期增删改（管理 API / swiftmqctl），因此所有访问都要过锁：
+// M5 起支持运行期增删改（管理 API / speedmqctl），因此所有访问都要过锁：
 // len(M5) 前后只有一个从配置加载的只读表，那时加锁是多余的；现在不是了。
 type Store struct {
 	mu    sync.RWMutex

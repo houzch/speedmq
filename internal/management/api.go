@@ -12,8 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/houzch/swiftmq/internal/broker"
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/broker"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 时间格式：RabbitMQ Management API 用本地时间的 "2006-01-02 15:04:05"。
@@ -37,7 +37,7 @@ func (s *Server) registerRoutes() {
 	s.handlePublic(http.MethodGet, "/api/default-language", s.getDefaultLanguage)
 
 	// ---- 集群（M6）----
-	// /api/cluster 是 SwiftMQ 的扩展端点（RabbitMQ 没有对应接口），
+	// /api/cluster 是 SpeedMQ 的扩展端点（RabbitMQ 没有对应接口），
 	// /api/cluster/name 则对齐 RabbitMQ，便于既有工具读取集群名。
 	s.handle(http.MethodGet, "/api/cluster", apiGroupCluster, s.getCluster)
 	s.handle(http.MethodGet, "/api/cluster/name", apiGroupCluster, s.getClusterName)
@@ -70,7 +70,7 @@ func (s *Server) registerRoutes() {
 	s.handle(http.MethodDelete, "/api/queues/{vhost}/{name}/contents", apiGroupTopology, s.purgeQueue)
 	s.handle(http.MethodPost, "/api/queues/{vhost}/{name}/get", apiGroupTopology, s.getQueueMessages)
 	s.handle(http.MethodGet, "/api/queues/{vhost}/{name}/bindings", apiGroupTopology, s.getQueueBindings)
-	// 仲裁队列的副本集运行期操作（M8-15，SwiftMQ 扩展端点，RabbitMQ 用 rabbitmq-queues 命令做同样的事）。
+	// 仲裁队列的副本集运行期操作（M8-15，SpeedMQ 扩展端点，RabbitMQ 用 rabbitmq-queues 命令做同样的事）。
 	//   PUT .../grow      {"count": N} 把副本数扩到 N（只增不减；单机模式返回 501）
 	//   PUT .../rebalance {}           把该队列的 leader 迁到副本集中较空的节点
 	s.handle(http.MethodPut, "/api/queues/{vhost}/{name}/grow", apiGroupTopology, s.growQueue)
@@ -212,7 +212,7 @@ func (s *Server) getOverview(w http.ResponseWriter, _ *http.Request, _ params, a
 	writeJSON(w, http.StatusOK, map[string]any{
 		"management_version": s.deps.Version,
 		"rabbitmq_version":   s.deps.Version,
-		"product_name":       "SwiftMQ",
+		"product_name":       "SpeedMQ",
 		"product_version":    s.deps.Version,
 		"cluster_name":       s.deps.NodeName,
 		"node":               s.deps.NodeName,
@@ -233,8 +233,8 @@ func (s *Server) getOverview(w http.ResponseWriter, _ *http.Request, _ params, a
 		},
 		// 非标准扩展字段：让运维/监控能在同一处看到资源水位与落盘档位
 		// （rabbitmqadmin 会忽略不认识的字段，因此不会破坏兼容性）。
-		"swiftmq_blocked": s.deps.Broker.BlockedState(),
-		"swiftmq_fsync":   s.deps.Broker.StorageFsync(),
+		"speedmq_blocked": s.deps.Broker.BlockedState(),
+		"speedmq_fsync":   s.deps.Broker.StorageFsync(),
 	})
 }
 
@@ -312,7 +312,7 @@ func (s *Server) getNodes(w http.ResponseWriter, _ *http.Request, _ params, au a
 	}
 	// 集群信息作为扩展字段挂在节点对象上：rabbitmqadmin 等工具会忽略不认识的字段，
 	// 但运维/监控能在 /api/nodes 里一并拿到"本节点在集群中的角色"。
-	node["swiftmq_cluster"] = s.clusterObject()
+	node["speedmq_cluster"] = s.clusterObject()
 	writeJSON(w, http.StatusOK, []map[string]any{node})
 }
 
@@ -329,7 +329,7 @@ func (s *Server) getCluster(w http.ResponseWriter, _ *http.Request, _ params, au
 
 // getClusterName 对齐 RabbitMQ 的 GET /api/cluster/name（返回 {"name": ...}）。
 //
-// SwiftMQ 本期没有独立的"集群名"概念：集群由静态成员表定义，
+// SpeedMQ 本期没有独立的"集群名"概念：集群由静态成员表定义，
 // 因此用本节点名作为集群名 —— 与 RabbitMQ 的默认行为一致（集群名 = 首个节点名）。
 func (s *Server) getClusterName(w http.ResponseWriter, _ *http.Request, _ params, au authUser) {
 	if err := au.requireRead(); err != nil {
@@ -765,10 +765,10 @@ func queueObject(node string, q broker.QueueSnapshot) map[string]any {
 	}
 	if q.Quorum != nil {
 		// 仲裁队列的副本集：`members` / `leader` 沿用 RabbitMQ 的字段名，
-		// `swiftmq_quorum` 是扩展细节（元数据里记录的副本集、投票/非投票成员划分）。
+		// `speedmq_quorum` 是扩展细节（元数据里记录的副本集、投票/非投票成员划分）。
 		obj["members"] = q.Quorum.Voters
 		obj["leader"] = q.Quorum.Leader
-		obj["swiftmq_quorum"] = quorumObject(*q.Quorum)
+		obj["speedmq_quorum"] = quorumObject(*q.Quorum)
 	}
 	return obj
 }
@@ -802,7 +802,7 @@ type queueDeclareRequest struct {
 	Durable    bool           `json:"durable"`
 	AutoDelete bool           `json:"auto_delete"`
 	Arguments  map[string]any `json:"arguments"`
-	// Node 是 RabbitMQ 的字段（把队列放到指定节点）。SwiftMQ 的队列放置由内核决定，
+	// Node 是 RabbitMQ 的字段（把队列放到指定节点）。SpeedMQ 的队列放置由内核决定，
 	// 这里**显式忽略而不是报错** —— 否则 rabbitmqadmin 与既有脚本多传一个字段就会失败。
 	Node string `json:"node"`
 }

@@ -1,8 +1,8 @@
-# SwiftMQ 外部行程外掛開發指南 —— PHP
+# SpeedMQ 外部行程外掛開發指南 —— PHP
 
-> **適用對象**：用 PHP 為 SwiftMQ 撰寫外部行程外掛（sidecar）的開發者。
+> **適用對象**：用 PHP 為 SpeedMQ 撰寫外部行程外掛（sidecar）的開發者。
 > **先讀**：[外部行程外掛（sidecar）開發指南](plugin-development.md)（心智模型 / 設定欄位 / 線路協定總表）。
-> **範例專案**：工作區 `swiftmq-plugin/php/sidecar_plugin.php`（僅標準函式庫，**無需 composer 相依**）。
+> **範例專案**：工作區 `speedmq-plugin/php/sidecar_plugin.php`（僅標準函式庫，**無需 composer 相依**）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第一步：設定
 
-`swiftmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
+`speedmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. 程式碼走讀（範例專案）
 
-`swiftmq-plugin/php/sidecar_plugin.php` 約 320 行：
+`speedmq-plugin/php/sidecar_plugin.php` 約 320 行：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -171,7 +171,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. 實測（本機重現）
 
-Windows + PHP 7.4；核心在 Docker（`swiftmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19021`）。
+Windows + PHP 7.4；核心在 Docker（`speedmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19021`）。
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

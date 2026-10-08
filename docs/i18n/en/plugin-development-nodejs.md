@@ -1,8 +1,8 @@
-# SwiftMQ External-Process Plugin Development Guide — Node.js
+# SpeedMQ External-Process Plugin Development Guide — Node.js
 
-> **Audience**: developers writing external-process plugins (sidecars) for SwiftMQ in Node.js.
+> **Audience**: developers writing external-process plugins (sidecars) for SpeedMQ in Node.js.
 > **Read first**: [External-Process Plugin (sidecar) Development Guide](plugin-development.md) (mental model / configuration fields / full wire-protocol table).
-> **Example project**: workspace `swiftmq-plugin/nodejs/index.js` (Node standard library only, **no npm dependencies**).
+> **Example project**: workspace `speedmq-plugin/nodejs/index.js` (Node standard library only, **no npm dependencies**).
 
 ---
 
@@ -26,7 +26,7 @@ Three key points: **your process is the server** (it waits for the kernel to con
 
 ### Step 1: Configuration
 
-`swiftmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
+`speedmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Three key points: **your process is the server** (it waits for the kernel to con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Deliveries are **pushed forward** by the kernel (`method = "session.deliver"`); 
 
 ## 4. Code Walkthrough (Example Project)
 
-`swiftmq-plugin/nodejs/index.js` is about 330 lines:
+`speedmq-plugin/nodejs/index.js` is about 330 lines:
 
 | Location | Purpose |
 | --- | --- |
@@ -152,7 +152,7 @@ Deliveries are **pushed forward** by the kernel (`method = "session.deliver"`); 
 
 ## 5. Empirical Test (Reproduced Locally)
 
-Windows + Node v24; the kernel runs in Docker (`swiftmq:1.1.01`), the plugin runs on the host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; the kernel runs in Docker (`speedmq:1.1.01`), the plugin runs on the host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

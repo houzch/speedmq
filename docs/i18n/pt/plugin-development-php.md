@@ -1,8 +1,8 @@
-# Guia de desenvolvimento de plugins de processo externo do SwiftMQ —— PHP
+# Guia de desenvolvimento de plugins de processo externo do SpeedMQ —— PHP
 
-> **Público-alvo**: desenvolvedores que escrevem plugins de processo externo (sidecar) para o SwiftMQ em PHP.
+> **Público-alvo**: desenvolvedores que escrevem plugins de processo externo (sidecar) para o SpeedMQ em PHP.
 > **Leia primeiro**: [Guia de desenvolvimento de plugins de processo externo (sidecar)](plugin-development.md) (modelo mental / campos de configuração / tabela geral do protocolo de linha).
-> **Projeto de exemplo**: no workspace `swiftmq-plugin/php/sidecar_plugin.php` (somente biblioteca padrão, **sem dependências do composer**).
+> **Projeto de exemplo**: no workspace `speedmq-plugin/php/sidecar_plugin.php` (somente biblioteca padrão, **sem dependências do composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Três pontos essenciais: **seu processo é o servidor** (espera o núcleo se con
 
 ### Passo 1: configuração
 
-`swiftmqd.json` (**a configuração real é JSON padrão e não pode conter comentários**):
+`speedmqd.json` (**a configuração real é JSON padrão e não pode conter comentários**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Três pontos essenciais: **seu processo é o servidor** (espera o núcleo se con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Entregas são **empurradas de volta** pelo núcleo (`method = "session.deliver"`
 
 ## 4. Passo a passo do código (projeto de exemplo)
 
-`swiftmq-plugin/php/sidecar_plugin.php` tem cerca de 320 linhas:
+`speedmq-plugin/php/sidecar_plugin.php` tem cerca de 320 linhas:
 
 | Local | Função |
 | --- | --- |
@@ -171,7 +171,7 @@ Entregas são **empurradas de volta** pelo núcleo (`method = "session.deliver"`
 
 ## 5. Teste prático (reprodução local)
 
-Windows + PHP 7.4; o núcleo no Docker (`swiftmq:1.1.01`), o plugin no host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; o núcleo no Docker (`speedmq:1.1.01`), o plugin no host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

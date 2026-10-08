@@ -1,8 +1,8 @@
-# SwiftMQ 外部行程外掛開發指南 —— Node.js
+# SpeedMQ 外部行程外掛開發指南 —— Node.js
 
-> **適用對象**：用 Node.js 為 SwiftMQ 撰寫外部行程外掛（sidecar）的開發者。
+> **適用對象**：用 Node.js 為 SpeedMQ 撰寫外部行程外掛（sidecar）的開發者。
 > **先讀**：[外部行程外掛（sidecar）開發指南](plugin-development.md)（心智模型 / 設定欄位 / 線路協定總表）。
-> **範例專案**：工作區 `swiftmq-plugin/nodejs/index.js`（僅 Node 標準函式庫，**無需 npm 相依**）。
+> **範例專案**：工作區 `speedmq-plugin/nodejs/index.js`（僅 Node 標準函式庫，**無需 npm 相依**）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第一步：設定
 
-`swiftmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
+`speedmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. 程式碼走讀（範例專案）
 
-`swiftmq-plugin/nodejs/index.js` 約 330 行：
+`speedmq-plugin/nodejs/index.js` 約 330 行：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. 實測（本機重現）
 
-Windows + Node v24；核心在 Docker（`swiftmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19011`）。
+Windows + Node v24；核心在 Docker（`speedmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19011`）。
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

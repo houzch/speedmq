@@ -8,8 +8,8 @@ export interface Credentials {
   password: string
 }
 
-const SS_USER = 'swiftmq.auth.user'
-const SS_PASSWORD = 'swiftmq.auth.password'
+const SS_USER = 'speedmq.auth.user'
+const SS_PASSWORD = 'speedmq.auth.password'
 
 /** 请求超时时间（毫秒） */
 const REQUEST_TIMEOUT = 10_000

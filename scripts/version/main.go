@@ -5,14 +5,14 @@
 //	go run ./scripts/version 1.2.0
 //
 // 它把新版本号写进所有引用处：内核 broker.Version、前端 web/package{,-lock}.json、
-// docker-compose.yml、README.md、docs/（含 i18n 各语言译文）与同级 swiftmq-test 的镜像 tag。
+// docker-compose.yml、README.md、docs/（含 i18n 各语言译文）与同级 speedmq-test 的镜像 tag。
 // 替换是“按模式认版本、不看旧值”，因此顺带修正历史遗漏（例如某些 i18n 译文还停在旧版本）。
 //
 // 为什么用同步命令而不是“单一来源文件 + 构建期注入”：版本号要同时出现在 Go 常量、npm 元数据、
 // compose 与给人看的文档里，构建期注入覆盖不到文档；一条命令改齐比让每个消费方各自去读同一个
 // 文件更直接，也不给编译与镜像构建增加额外步骤（口径见 AGENTS.md §12.1）。
 //
-// 刻意不动的位置：文档里的实测记录与线协议报文样例（`swiftmq:1.1.01`、`kernel=1.1.01`、
+// 刻意不动的位置：文档里的实测记录与线协议报文样例（`speedmq:1.1.01`、`kernel=1.1.01`、
 // `"kernel_version": "1.1.01"`）——它们记录的是某一时刻的事实，改了就是编造。
 package main
 
@@ -25,7 +25,7 @@ import (
 	"strings"
 )
 
-// semver 匹配版本串。用它收紧模式，避免把端口号之类（swiftmq:5672）当成版本。
+// semver 匹配版本串。用它收紧模式，避免把端口号之类（speedmq:5672）当成版本。
 const semver = `[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.+-]*`
 
 var (
@@ -33,11 +33,11 @@ var (
 	constRE = regexp.MustCompile(`(?m)^const Version = "[^"]*"`)
 	// jsonVerRE 命中 package.json / package-lock.json 里的 `"version": "x"`。
 	jsonVerRE = regexp.MustCompile(`"version"\s*:\s*"[^"]*"`)
-	// prefixedTagRE 命中带 houzch/ 前缀的版本引用：houzch/swiftmq:1.1.02、houzch/swiftmq@v1.1.02。
+	// prefixedTagRE 命中带 houzch/ 前缀的版本引用：houzch/speedmq:1.1.02、houzch/speedmq@v1.1.02。
 	// 第 1 组是分隔符（`:` 或 `@v`），替换时原样保留。
-	prefixedTagRE = regexp.MustCompile(`houzch/swiftmq(:|@v)` + semver)
-	// bareTagRE 命中 swiftmq-test 里不带前缀的镜像 tag：swiftmq:1.1.02（端口号 swiftmq:5672 不匹配）。
-	bareTagRE = regexp.MustCompile(`swiftmq:` + semver)
+	prefixedTagRE = regexp.MustCompile(`houzch/speedmq(:|@v)` + semver)
+	// bareTagRE 命中 speedmq-test 里不带前缀的镜像 tag：speedmq:1.1.02（端口号 speedmq:5672 不匹配）。
+	bareTagRE = regexp.MustCompile(`speedmq:` + semver)
 	// semverRE 校验命令行传入的版本号形状。
 	semverRE = regexp.MustCompile(`^` + semver + `$`)
 )
@@ -50,7 +50,7 @@ const (
 	jsonVersion1                 // package.json：只改第 1 个 `"version"`
 	jsonVersion2                 // package-lock.json：只改前 2 个（根包 + packages[""]）
 	prefixedTag                  // 带 houzch/ 前缀的镜像 tag 与 go get 版本
-	bareTag                      // swiftmq-test 里不带前缀的镜像 tag
+	bareTag                      // speedmq-test 里不带前缀的镜像 tag
 )
 
 func main() {
@@ -99,9 +99,9 @@ func main() {
 		fatal(err)
 	}
 
-	// swiftmq-test 与 swiftmq 同级。发布 CI 只检出 swiftmq，目录不存在时跳过。
+	// speedmq-test 与 speedmq 同级。发布 CI 只检出 speedmq，目录不存在时跳过。
 	// REPORT.md 与 artifacts/ 是历史实测记录，钉在当时的版本上，不参与同步。
-	testRoot := filepath.Clean(filepath.Join(root, "..", "swiftmq-test"))
+	testRoot := filepath.Clean(filepath.Join(root, "..", "speedmq-test"))
 	if fi, err := os.Stat(testRoot); err == nil && fi.IsDir() {
 		if err := walk(testRoot, func(p string) {
 			if strings.EqualFold(filepath.Base(p), "REPORT.md") {
@@ -115,7 +115,7 @@ func main() {
 			fatal(err)
 		}
 	} else {
-		lines = append(lines, "  （未找到同级目录 swiftmq-test，已跳过其镜像 tag）")
+		lines = append(lines, "  （未找到同级目录 speedmq-test，已跳过其镜像 tag）")
 	}
 
 	for _, l := range lines {
@@ -148,9 +148,9 @@ func syncFile(path, ver string, k editKind) (int, error) {
 	case jsonVersion2:
 		out, n = replaceFirstN(jsonVerRE, src, `"version": "`+ver+`"`, 2)
 	case prefixedTag:
-		out, n = replaceAll(prefixedTagRE, src, `houzch/swiftmq${1}`+ver)
+		out, n = replaceAll(prefixedTagRE, src, `houzch/speedmq${1}`+ver)
 	case bareTag:
-		out, n = replaceAll(bareTagRE, src, `swiftmq:`+ver)
+		out, n = replaceAll(bareTagRE, src, `speedmq:`+ver)
 	default:
 		return 0, fmt.Errorf("未知的替换类型 %d", k)
 	}
@@ -212,7 +212,7 @@ func walk(dir string, visit func(string)) error {
 	})
 }
 
-// repoRoot 从当前目录向上找 swiftmq 仓库根（module 声明所在的 go.mod）。
+// repoRoot 从当前目录向上找 speedmq 仓库根（module 声明所在的 go.mod）。
 func repoRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -220,12 +220,12 @@ func repoRoot() (string, error) {
 	}
 	for {
 		if b, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil &&
-			strings.Contains(string(b), "module github.com/houzch/swiftmq") {
+			strings.Contains(string(b), "module github.com/houzch/speedmq") {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("未找到 swiftmq 仓库根（请在 swiftmq/ 目录下执行）")
+			return "", fmt.Errorf("未找到 speedmq 仓库根（请在 speedmq/ 目录下执行）")
 		}
 		dir = parent
 	}

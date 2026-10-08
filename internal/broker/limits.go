@@ -3,8 +3,8 @@ package broker
 import (
 	"sort"
 
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件实现 vhost 级限制（对齐 RabbitMQ 的 vhost-limits）。

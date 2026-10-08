@@ -1,8 +1,8 @@
-# Ontwikkelgids voor SwiftMQ externe-procesplugins —— Node.js
+# Ontwikkelgids voor SpeedMQ externe-procesplugins —— Node.js
 
-> **Doelgroep**: ontwikkelaars die met Node.js externe-procesplugins (sidecar) voor SwiftMQ schrijven.
+> **Doelgroep**: ontwikkelaars die met Node.js externe-procesplugins (sidecar) voor SpeedMQ schrijven.
 > **Eerst lezen**: [Ontwikkelgids voor externe-procesplugins (sidecar)](plugin-development.md) (mentaal model / configuratievelden / wire-protocoltabel).
-> **Voorbeeldproject**: workspace `swiftmq-plugin/nodejs/index.js` (alleen de Node-standaardbibliotheek, **geen npm-afhankelijkheden**).
+> **Voorbeeldproject**: workspace `speedmq-plugin/nodejs/index.js` (alleen de Node-standaardbibliotheek, **geen npm-afhankelijkheden**).
 
 ---
 
@@ -26,7 +26,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
 
 ### Stap één: configuratie
 
-`swiftmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
+`speedmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 4. Codewandeling (voorbeeldproject)
 
-`swiftmq-plugin/nodejs/index.js` is ongeveer 330 regels:
+`speedmq-plugin/nodejs/index.js` is ongeveer 330 regels:
 
 | Locatie | Functie |
 | --- | --- |
@@ -152,7 +152,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 5. Meting (lokaal gereproduceerd)
 
-Windows + Node v24; de kernel draait in Docker (`swiftmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; de kernel draait in Docker (`speedmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

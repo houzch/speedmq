@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | **Bahasa Melayu** | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Perisian tengah mesej **serasi RabbitMQ** yang ditulis dalam Go. Klien RabbitMQ sedia ada **tidak perlu ubah kod, tidak perlu tukar SDK**, hanya tukar alamat sambungan sahaja untuk berintegrasi.
 
@@ -9,7 +9,7 @@ Perisian tengah mesej **serasi RabbitMQ** yang ditulis dalam Go. Klien RabbitMQ 
 
 - **Keserasian protokol**: AMQP 0-9-1 (termasuk sambungan RabbitMQ) dan MQTT 3.1.1; garis dasar keserasian ialah **semantik RabbitMQ 4.3**.
 - **Penggunaan mudah**: satu binari / satu kontena, UI pengurusan sudah terbenam, tidak memerlukan Nginx, pangkalan data atau runtime Node tambahan.
-- **Cukup untuk operasi**: UI pengurusan (baris gilir / penukar / sambungan / kebenaran akaun / hos maya / polisi / had / kluster), Prometheus `/metrics`, CLI `swiftmqctl`.
+- **Cukup untuk operasi**: UI pengurusan (baris gilir / penukar / sambungan / kebenaran akaun / hos maya / polisi / had / kluster), Prometheus `/metrics`, CLI `speedmqctl`.
 - **Port lalai**: `5672` (AMQP), `1883` (MQTT), `15672` (UI pengurusan / HTTP API / metrik).
 
 Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap), pengesahan penerbitan, TTL / surat mati / had panjang, keutamaan pengguna, Direct Reply-To, kluster (metadata Raft + baris gilir kuorum + penghantaran antara nod), mula/henti panas pemalam.
@@ -23,39 +23,39 @@ Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap),
 **Tanpa mengklon repositori: tarik imej dan jalankan terus.**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-Imej diterbitkan di dua tempat dengan kandungan sama (pilih yang lebih laju): Docker Hub `houzch/swiftmq` dan GitHub GHCR `ghcr.io/houzch/swiftmq`; kedua-duanya menyediakan `linux/amd64` dan `linux/arm64`.
+Imej diterbitkan di dua tempat dengan kandungan sama (pilih yang lebih laju): Docker Hub `houzch/speedmq` dan GitHub GHCR `ghcr.io/houzch/speedmq`; kedua-duanya menyediakan `linux/amd64` dan `linux/arm64`.
 
-- Data disimpan dalam volume bernama `swiftmq-data` dan kekal walaupun kontena dicipta semula.
-- Henti / buang: `docker stop swiftmq`, `docker rm swiftmq` (volume data dikekalkan).
+- Data disimpan dalam volume bernama `speedmq-data` dan kekal walaupun kontena dicipta semula.
+- Henti / buang: `docker stop speedmq`, `docker rm speedmq` (volume data dikekalkan).
 
 **Untuk ubah konfigurasi atau guna compose, klon repositori:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # Guna imej yang telah diterbitkan; tukar ke up -d --build untuk bina secara tempatan
 
 docker compose ps        # Status sepatutnya Up (healthy)
 docker compose logs -f   # Ikut log
 ```
 
-- Konfigurasi dipasang baca-sahaja daripada `configs/swiftmqd.json`; perubahan berkuat kuasa selepas `docker compose restart`.
+- Konfigurasi dipasang baca-sahaja daripada `configs/speedmqd.json`; perubahan berkuat kuasa selepas `docker compose restart`.
 - Henti: `docker compose down` (data kekal); `docker compose down -v` (data turut dipadam).
 
 ### Kaedah dua: binari tempatan (perlukan Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > Hasil binaan UI pengurusan tidak dimasukkan ke repositori. Jika mahu menggunakan UI, jalankan `npm ci && npm run build` dalam `web/` dahulu;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | UI pengurusan | <http://localhost:15672/>：baris gilir / penukar / sambungan / kebenaran akaun / hos maya / polisi / had / suis ciri / kluster, sudut kanan atas boleh menetapkan muat semula automatik dan **bahasa antara muka** |
 | Metrik pemantauan | <http://localhost:15672/metrics>（teks Prometheus, perlu pengesahan）; papan pemuka dan amaran lihat [docs/ops/monitoring](ops/monitoring/README.md) |
-| Baris arahan | `./bin/swiftmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（henti panas, port ditutup serta-merta） |
+| Baris arahan | `./bin/speedmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（henti panas, port ditutup serta-merta） |
 | Pemeriksaan kesihatan | `nc -z 127.0.0.1 15672`（compose sudah terbina healthcheck） |
 | Sandaran dan pemulihan | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | Naik taraf | [docs/ops/upgrade.md](ops/upgrade.md) |
 | Garis dasar keselamatan | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-Konfigurasi lazim (contoh penuh lihat [configs/swiftmqd.json](../../../configs/swiftmqd.json)，juga boleh ditimpa dengan pembolehubah persekitaran `SWIFTMQ_*`):
+Konfigurasi lazim (contoh penuh lihat [configs/speedmqd.json](../../../configs/speedmqd.json)，juga boleh ditimpa dengan pembolehubah persekitaran `SPEEDMQ_*`):
 
 | Item konfigurasi | Penerangan | Lalai |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ Konfigurasi lazim (contoh penuh lihat [configs/swiftmqd.json](../../../configs/s
 | `storage.fsync` | Gred penulisan cakera `none / os / batch / always`（juga menentukan masa confirm） | `os` |
 | `storage.memory_high_watermark`、`storage.disk_free_limit` | Paras sumber: apabila dicetuskan terus menyekat pengeluar, **tidak menggugurkan mesej** | `0.4` / 50 MiB |
 | `users` | Jadual pengguna terbina dalam (kata laluan + tag + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | Kluster berbilang nod (dimatikan secara lalai), perubahan ahli guna `swiftmqctl add_member` | Dimatikan |
+| `cluster.enabled` + `cluster.peers` | Kluster berbilang nod (dimatikan secara lalai), perubahan ahli guna `speedmqctl add_member` | Dimatikan |
 
 > Port mungkin telah digunakan: tukar kepada port lain melalui `listeners` / `management.addr`.
 
@@ -142,10 +142,10 @@ Konfigurasi lazim (contoh penuh lihat [configs/swiftmqd.json](../../../configs/s
 ## Struktur projek
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # titik masuk proses broker (inilah yang perlu dijalankan)
-│   └── swiftmqctl/      # CLI operasi (melalui HTTP API pengurusan, tidak bergantung pada versi kernel)
+│   ├── speedmqd/        # titik masuk proses broker (inilah yang perlu dijalankan)
+│   └── speedmqctl/      # CLI operasi (melalui HTTP API pengurusan, tidak bergantung pada versi kernel)
 ├── internal/            # pelaksanaan kernel
 │   ├── protocol/        # pemalam protokol: amqp091, mqtt (pengekodan/penyahkodan / kaedah / sesi)
 │   ├── broker/          # kernel: vhost, penukar, baris gilir, surat mati, kawalan aliran, pandangan satah pengurusan
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # konfigurasi contoh
 ├── docs/ops/            # dokumen operasi: sandaran & pemulihan / naik taraf / garis dasar keselamatan / pemantauan
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（kod QR kumpulan komunikasi）
+└── speedmq-logo.PNG、1280X1280.PNG（kod QR kumpulan komunikasi）
 ```
 
 ***
@@ -191,6 +191,6 @@ Spesifikasi protokol AMQP 0-9-1 dan semantik tingkah laku [RabbitMQ](https://www
 
 ## Sertai kumpulan komunikasi
 
-Imbas kod untuk menyertai kumpulan komunikasi SwiftMQ, jika ada masalah boleh tanya terus dalam kumpulan:
+Imbas kod untuk menyertai kumpulan komunikasi SpeedMQ, jika ada masalah boleh tanya terus dalam kumpulan:
 
-![Kumpulan komunikasi SwiftMQ](../../../1280X1280.PNG)
+![Kumpulan komunikasi SpeedMQ](../../../1280X1280.PNG)

@@ -1,8 +1,8 @@
-# Gabay sa Pagbuo ng External-Process Plugin ng SwiftMQ —— Node.js
+# Gabay sa Pagbuo ng External-Process Plugin ng SpeedMQ —— Node.js
 
-> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SwiftMQ gamit ang Node.js.
+> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SpeedMQ gamit ang Node.js.
 > **Basahin muna**: [Gabay sa Pagbuo ng External-Process Plugin (sidecar)](plugin-development.md) (mental model / config field / pangkalahatang talahanayan ng wire protocol).
-> **Halimbawang proyekto**: workspace na `swiftmq-plugin/nodejs/index.js` (Node standard library lamang, **walang kailangang npm dependency**).
+> **Halimbawang proyekto**: workspace na `speedmq-plugin/nodejs/index.js` (Node standard library lamang, **walang kailangang npm dependency**).
 
 ---
 
@@ -26,7 +26,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
 
 ### Unang hakbang: config
 
-`swiftmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
+`speedmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ Ang delivery ay **itutulak pabalik nang forward** ng kernel (`method = "session.
 
 ## 4. Code Walkthrough (halimbawang proyekto)
 
-Ang `swiftmq-plugin/nodejs/index.js` ay humigit-kumulang 330 linya:
+Ang `speedmq-plugin/nodejs/index.js` ay humigit-kumulang 330 linya:
 
 | Lokasyon | Tungkulin |
 | --- | --- |
@@ -152,7 +152,7 @@ Ang `swiftmq-plugin/nodejs/index.js` ay humigit-kumulang 330 linya:
 
 ## 5. Aktwal na Pagsusubok (na-reproduce sa makinang ito)
 
-Windows + Node v24; kernel sa Docker (`swiftmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19011`).
+Windows + Node v24; kernel sa Docker (`speedmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19011`).
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

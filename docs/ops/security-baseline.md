@@ -1,4 +1,4 @@
-# SwiftMQ 安全加固基线（可勾选清单）
+# SpeedMQ 安全加固基线（可勾选清单）
 
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
@@ -76,7 +76,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **为什么**：对齐 RabbitMQ，内置 `guest` 默认仅允许本机登录；对外部署时应确保特权账号的来源受限。
 - **怎么做 / 口径（重要限制）**：
   - `remote_access` 只能写在**配置文件**的 `users.<name>.remote_access` 里，**仅首次引导生效**；
-  - **通过管理 API / `swiftmqctl` 创建的账号一律 `remote_access=true`**（允许任意来源登录）——
+  - **通过管理 API / `speedmqctl` 创建的账号一律 `remote_access=true`**（允许任意来源登录）——
     依据 `internal/broker/observe.go` 的 `UpsertUser` 注释与实测 `meta/state.json` 中
     `"remote_access":true`。也就是说 **API 目前无法把某个账号限制为仅本机**。
 - **怎么验证**：从**另一台主机**（非 `127.0.0.1`）用该账号连接，应被 403；本机连接应成功。
@@ -98,9 +98,9 @@ TLS 配置项（接入层与管理面**共用**同一套字段）：`cert_file` 
   **【已验证】** 本机三种错误配置实测，全部 `exit=1`、拒绝启动：
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **怎么验证（正/反向）**：TLS 客户端能连、明文客户端连 TLS 端口会被拒。
   **【已验证】** 本机起 TLS 实例（`amqp091` 走 TLS），用真实客户端探针：
@@ -139,7 +139,7 @@ TLS 配置项（接入层与管理面**共用**同一套字段）：`cert_file` 
 
 - **为什么**：管理面默认 `:15672`（所有网卡）。对外部署应绑到内网/回环地址，或用防火墙限制来源。
 - **怎么做**：`management.addr` 配成 `127.0.0.1:15672` 或内网地址；或将 `management.enabled=false` 彻底关闭
-  （关闭后无管理端口，但 `swiftmqctl` 也随之不可用）。
+  （关闭后无管理端口，但 `speedmqctl` 也随之不可用）。
 - **怎么验证**：
   **【已验证】** 本机把管理面配成 `127.0.0.1:15677`，实测监听地址确为回环：
 
@@ -162,8 +162,8 @@ TLS 配置项（接入层与管理面**共用**同一套字段）：`cert_file` 
 
 ## D. 容器运行加固
 
-仓库镜像事实（`Dockerfile`）：静态链接二进制 + alpine，**以非 root（uid 10001，用户 `swiftmq`）运行**，
-数据目录 `/var/lib/swiftmq` 为卷。`docker-compose.yml` 使用**命名卷**持久化、配置**只读挂载**、日志轮转。
+仓库镜像事实（`Dockerfile`）：静态链接二进制 + alpine，**以非 root（uid 10001，用户 `speedmq`）运行**，
+数据目录 `/var/lib/speedmq` 为卷。`docker-compose.yml` 使用**命名卷**持久化、配置**只读挂载**、日志轮转。
 
 ### D-1. 非 root 运行 【未验证（本机未跑 Docker）】
 

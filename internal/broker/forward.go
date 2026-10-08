@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/raft"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/raft"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件是 M6b 的跨节点消息转发：让客户端**连到任意节点**都能发布与消费任意队列，

@@ -1,8 +1,8 @@
-# Panduan Pembangunan Pemalam Proses Luaran SwiftMQ —— PHP
+# Panduan Pembangunan Pemalam Proses Luaran SpeedMQ —— PHP
 
-> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SwiftMQ dengan PHP.
+> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SpeedMQ dengan PHP.
 > **Baca dahulu**: [Panduan Pembangunan Pemalam Proses Luaran (sidecar)](plugin-development.md) (model mental / medan konfigurasi / jadual penuh protokol wayar).
-> **Projek contoh**: ruang kerja `swiftmq-plugin/php/sidecar_plugin.php` (pustaka piawai sahaja, **tanpa kebergantungan composer**).
+> **Projek contoh**: ruang kerja `speedmq-plugin/php/sidecar_plugin.php` (pustaka piawai sahaja, **tanpa kebergantungan composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
 
 ### Langkah pertama: konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
+`speedmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 4. Walkthrough kod (projek contoh)
 
-`swiftmq-plugin/php/sidecar_plugin.php` kira-kira 320 baris:
+`speedmq-plugin/php/sidecar_plugin.php` kira-kira 320 baris:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -171,7 +171,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 5. Ujian sebenar (reproduksi setempat)
 
-Windows + PHP 7.4; kernel dalam Docker (`swiftmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; kernel dalam Docker (`speedmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

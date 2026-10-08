@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/store"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/store"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 死信原因（写入 x-death 的 reason 字段，取值与 RabbitMQ 一致）。

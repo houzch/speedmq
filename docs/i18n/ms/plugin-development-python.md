@@ -1,9 +1,9 @@
-# Panduan Pembangunan Pemalam Proses Luaran SwiftMQ —— Python
+# Panduan Pembangunan Pemalam Proses Luaran SpeedMQ —— Python
 
-> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SwiftMQ dengan Python.
+> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SpeedMQ dengan Python.
 > **Baca dahulu**: [Panduan Pembangunan Pemalam Proses Luaran (sidecar)](plugin-development.md) —— di sana diterangkan model mental, medan konfigurasi dan jadual penuh protokol wayar;
 > dokumen ini hanya membincangkan **cara melaksanakannya dalam Python**, serta langkah dan hasil yang telah diuji pada mesin ini.
-> **Projek contoh**: ruang kerja `swiftmq-plugin/python/sidecar_plugin.py` (pustaka piawai sahaja, sifar kebergantungan pihak ketiga).
+> **Projek contoh**: ruang kerja `speedmq-plugin/python/sidecar_plugin.py` (pustaka piawai sahaja, sifar kebergantungan pihak ketiga).
 
 ---
 
@@ -31,7 +31,7 @@ Tiga perkara penting (mudah tersalah, hafal dahulu):
 
 ### Langkah pertama: mengisytiharkan pemalam dalam konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
+`speedmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
 
 ```json
 {
@@ -41,7 +41,7 @@ Tiga perkara penting (mudah tersalah, hafal dahulu):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ mesti dilemparkan ke benang bebas untuk diproses, kerana semasa pemprosesan ia m
 
 ## 4. Walkthrough kod (projek contoh)
 
-`swiftmq-plugin/python/sidecar_plugin.py` kira-kira 320 baris, fungsi utama:
+`speedmq-plugin/python/sidecar_plugin.py` kira-kira 320 baris, fungsi utama:
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -169,7 +169,7 @@ mesti dilemparkan ke benang bebas untuk diproses, kerana semasa pemprosesan ia m
 
 ## 5. Ujian sebenar (reproduksi setempat)
 
-Persekitaran: Windows + Python 3.12; kernel berjalan dalam Docker (`swiftmq:1.1.01`), pemalam berjalan pada hos,
+Persekitaran: Windows + Python 3.12; kernel berjalan dalam Docker (`speedmq:1.1.01`), pemalam berjalan pada hos,
 kernel menyambungnya menggunakan `tcp://host.docker.internal:19001`.
 
 ```

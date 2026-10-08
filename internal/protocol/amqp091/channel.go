@@ -6,9 +6,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/houzch/swiftmq/internal/protocol/codec"
-	"github.com/houzch/swiftmq/internal/protocol/spec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/internal/protocol/spec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // channel 是一条 AMQP Channel 的状态。

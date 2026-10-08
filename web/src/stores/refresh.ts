@@ -4,7 +4,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 
 /** 间隔持久化键 */
-const STORAGE_KEY = 'swiftmq.refresh_interval'
+const STORAGE_KEY = 'speedmq.refresh_interval'
 
 /** 合法间隔（秒），0 表示不自动刷新；顺序即下拉展示顺序 */
 export const REFRESH_INTERVALS = [5, 10, 30, 0]

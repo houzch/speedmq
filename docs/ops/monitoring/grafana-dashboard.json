@@ -18,7 +18,7 @@
   "links": [],
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["swiftmq", "amqp", "mqtt"],
+  "tags": ["speedmq", "amqp", "mqtt"],
   "templating": {
     "list": [
       {
@@ -40,8 +40,8 @@
   "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "SwiftMQ 运维总览",
-  "uid": "swiftmq-overview",
+  "title": "SpeedMQ 运维总览",
+  "uid": "speedmq-overview",
   "version": 1,
   "weekStart": "",
   "panels": [
@@ -52,7 +52,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
       "targets": [
-        { "expr": "up{job=\"swiftmq\"}", "legendFormat": "{{instance}}", "refId": "A" }
+        { "expr": "up{job=\"speedmq\"}", "legendFormat": "{{instance}}", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -74,7 +74,7 @@
       "title": "连接数",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
-      "targets": [ { "expr": "swiftmq_connections{job=\"swiftmq\"}", "refId": "A" } ],
+      "targets": [ { "expr": "speedmq_connections{job=\"speedmq\"}", "refId": "A" } ],
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
@@ -83,7 +83,7 @@
       "title": "队列数",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
-      "targets": [ { "expr": "swiftmq_queues{job=\"swiftmq\"}", "refId": "A" } ],
+      "targets": [ { "expr": "speedmq_queues{job=\"speedmq\"}", "refId": "A" } ],
       "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
@@ -92,7 +92,7 @@
       "title": "消费者数",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
-      "targets": [ { "expr": "swiftmq_consumers{job=\"swiftmq\"}", "refId": "A" } ],
+      "targets": [ { "expr": "speedmq_consumers{job=\"speedmq\"}", "refId": "A" } ],
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
@@ -101,7 +101,7 @@
       "title": "资源水位阻塞生产者",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
-      "targets": [ { "expr": "swiftmq_resource_blocked{job=\"swiftmq\"}", "refId": "A" } ],
+      "targets": [ { "expr": "speedmq_resource_blocked{job=\"speedmq\"}", "refId": "A" } ],
       "fieldConfig": {
         "defaults": {
           "thresholds": {
@@ -122,37 +122,37 @@
       "title": "插件异常个数 (plugin_up=0)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
-      "targets": [ { "expr": "count(swiftmq_plugin_up{job=\"swiftmq\"} == 0) or vector(0)", "refId": "A" } ],
+      "targets": [ { "expr": "count(speedmq_plugin_up{job=\"speedmq\"} == 0) or vector(0)", "refId": "A" } ],
       "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
     {
       "id": 10,
       "type": "timeseries",
-      "title": "各队列就绪消息数 (swiftmq_queue_messages_ready)",
+      "title": "各队列就绪消息数 (speedmq_queue_messages_ready)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "targets": [
-        { "expr": "swiftmq_queue_messages_ready{job=\"swiftmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
+        { "expr": "speedmq_queue_messages_ready{job=\"speedmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
       ]
     },
     {
       "id": 11,
       "type": "timeseries",
-      "title": "各队列消费者数 (swiftmq_queue_consumers)",
+      "title": "各队列消费者数 (speedmq_queue_consumers)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "targets": [
-        { "expr": "swiftmq_queue_consumers{job=\"swiftmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
+        { "expr": "speedmq_queue_consumers{job=\"speedmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
       ]
     },
     {
       "id": 12,
       "type": "timeseries",
-      "title": "各队列未确认消息数 (swiftmq_queue_messages_unacknowledged)",
+      "title": "各队列未确认消息数 (speedmq_queue_messages_unacknowledged)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "targets": [
-        { "expr": "swiftmq_queue_messages_unacknowledged{job=\"swiftmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
+        { "expr": "speedmq_queue_messages_unacknowledged{job=\"speedmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
       ]
     },
     {
@@ -162,9 +162,9 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "targets": [
-        { "expr": "rate(swiftmq_queue_messages_published_total{job=\"swiftmq\", queue=~\".+\"}[5m])", "legendFormat": "publish {{vhost}}/{{queue}}", "refId": "A" },
-        { "expr": "rate(swiftmq_queue_messages_delivered_total{job=\"swiftmq\", queue=~\".+\"}[5m])", "legendFormat": "delivered {{vhost}}/{{queue}}", "refId": "B" },
-        { "expr": "rate(swiftmq_queue_messages_acked_total{job=\"swiftmq\", queue=~\".+\"}[5m])", "legendFormat": "acked {{vhost}}/{{queue}}", "refId": "C" }
+        { "expr": "rate(speedmq_queue_messages_published_total{job=\"speedmq\", queue=~\".+\"}[5m])", "legendFormat": "publish {{vhost}}/{{queue}}", "refId": "A" },
+        { "expr": "rate(speedmq_queue_messages_delivered_total{job=\"speedmq\", queue=~\".+\"}[5m])", "legendFormat": "delivered {{vhost}}/{{queue}}", "refId": "B" },
+        { "expr": "rate(speedmq_queue_messages_acked_total{job=\"speedmq\", queue=~\".+\"}[5m])", "legendFormat": "acked {{vhost}}/{{queue}}", "refId": "C" }
       ]
     },
     {
@@ -174,8 +174,8 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
       "targets": [
-        { "expr": "swiftmq_process_memory_bytes{job=\"swiftmq\"} / swiftmq_memory_total_bytes{job=\"swiftmq\"}", "legendFormat": "在用内存占比", "refId": "A" },
-        { "expr": "swiftmq_memory_high_watermark{job=\"swiftmq\"}", "legendFormat": "内存水位阈值", "refId": "B" }
+        { "expr": "speedmq_process_memory_bytes{job=\"speedmq\"} / speedmq_memory_total_bytes{job=\"speedmq\"}", "legendFormat": "在用内存占比", "refId": "A" },
+        { "expr": "speedmq_memory_high_watermark{job=\"speedmq\"}", "legendFormat": "内存水位阈值", "refId": "B" }
       ]
     },
     {
@@ -185,28 +185,28 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
       "targets": [
-        { "expr": "swiftmq_disk_free_bytes{job=\"swiftmq\"}", "legendFormat": "数据目录可用", "refId": "A" },
-        { "expr": "swiftmq_disk_free_limit_bytes{job=\"swiftmq\"}", "legendFormat": "磁盘下限", "refId": "B" }
+        { "expr": "speedmq_disk_free_bytes{job=\"speedmq\"}", "legendFormat": "数据目录可用", "refId": "A" },
+        { "expr": "speedmq_disk_free_limit_bytes{job=\"speedmq\"}", "legendFormat": "磁盘下限", "refId": "B" }
       ]
     },
     {
       "id": 16,
       "type": "timeseries",
-      "title": "插件状态 (swiftmq_plugin_up)",
+      "title": "插件状态 (speedmq_plugin_up)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
       "targets": [
-        { "expr": "swiftmq_plugin_up{job=\"swiftmq\"}", "legendFormat": "{{name}} ({{state}})", "refId": "A" }
+        { "expr": "speedmq_plugin_up{job=\"speedmq\"}", "legendFormat": "{{name}} ({{state}})", "refId": "A" }
       ]
     },
     {
       "id": 17,
       "type": "timeseries",
-      "title": "各队列内存占用估算 (swiftmq_queue_memory_bytes)",
+      "title": "各队列内存占用估算 (speedmq_queue_memory_bytes)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
       "targets": [
-        { "expr": "swiftmq_queue_memory_bytes{job=\"swiftmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
+        { "expr": "speedmq_queue_memory_bytes{job=\"speedmq\", queue=~\".+\"}", "legendFormat": "{{vhost}}/{{queue}}", "refId": "A" }
       ]
     }
   ]

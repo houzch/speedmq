@@ -1,12 +1,12 @@
-# Plan de mise à niveau et de migration de SwiftMQ
+# Plan de mise à niveau et de migration de SpeedMQ
 
-> Version applicable : `1.0.0` (`broker.Version`, voir `swiftmq_build_info` dans `/metrics`).
+> Version applicable : `1.0.0` (`broker.Version`, voir `speedmq_build_info` dans `/metrics`).
 > Toutes les conclusions « mesurées » de ce document proviennent d'une exécution réelle sur cette machine ; celles qui ne l'ont pas été sont explicitement marquées **【non vérifié】**.
 > Environnement de cette machine : Windows + PowerShell 5.1, Go 1.27.1 windows/386, `data_dir` temporaire + ports non standards.
 
 ---
 
-## 1. Migration (de RabbitMQ vers SwiftMQ)
+## 1. Migration (de RabbitMQ vers SpeedMQ)
 
 Ce projet vise la **compatibilité au niveau du protocole AMQP 0-9-1**, la « migration » consiste donc principalement à **changer l'adresse de connexion** :
 
@@ -16,7 +16,7 @@ Ce projet vise la **compatibilité au niveau du protocole AMQP 0-9-1**, la « mi
 
 **Différences sémantiques à vérifier avant la migration** (toutes intentionnelles dans ce dépôt, d'après le README / le document de conception) :
 
-| Élément | Comportement de SwiftMQ | Impact sur la migration |
+| Élément | Comportement de SpeedMQ | Impact sur la migration |
 | --- | --- | --- |
 | File transitoire (ni durable ni exclusive) | **Déclaration refusée** (541), `auto_delete` ne l'exempte pas | Les anciens clients qui dépendent de ce type de file échoueront ; il faut passer à durable ou exclusive |
 | vhost par défaut `/` | **Non supprimable** (400), alors que RabbitMQ l'autorise | Les scripts d'automatisation qui suppriment le vhost par défaut échoueront (c'est la seule contrainte de sécurité volontaire) |
@@ -24,8 +24,8 @@ Ce projet vise la **compatibilité au niveau du protocole AMQP 0-9-1**, la « mi
 | Files quorum | Extension du nombre de répliques prise en charge, **réduction non prise en charge** | À dimensionner correctement dès le départ |
 | Plugins | Pas d'écosystème de plugins Erlang, AMQP 1.0 / STOMP non implémentés | Les scénarios utilisant ces protocoles ne sont pas migrables pour l'instant |
 
-**Migration des données** : les formats de stockage de SwiftMQ et RabbitMQ sont incompatibles ; **aucun outil de transfert de données en ligne/hors ligne n'est fourni**.
-La méthode de migration est « créer un SwiftMQ vide → exécution en double pour validation → bascule progressive du trafic ». **【non vérifié】** Ce document ne contient aucun exercice réel de transfert de données RabbitMQ.
+**Migration des données** : les formats de stockage de SpeedMQ et RabbitMQ sont incompatibles ; **aucun outil de transfert de données en ligne/hors ligne n'est fourni**.
+La méthode de migration est « créer un SpeedMQ vide → exécution en double pour validation → bascule progressive du trafic ». **【non vérifié】** Ce document ne contient aucun exercice réel de transfert de données RabbitMQ.
 
 ---
 
@@ -83,7 +83,7 @@ data/
 - Les deux **ne prennent effet qu'au premier amorçage** : au premier démarrage, les vhosts/users de la configuration sont écrits dans les métadonnées et les fichiers marqueurs
   `meta/vhosts.seeded` / `meta/users.seeded` sont déposés ; **ensuite, ce sont les métadonnées qui font foi**.
 - Par conséquent, **lors d'une mise à niveau/changement de configuration, ne comptez pas sur la modification du fichier de configuration pour ajouter ou supprimer des comptes ou des vhosts** — cela ne prend pas effet ;
-  utilisez l'API d'administration ou `swiftmqctl`.
+  utilisez l'API d'administration ou `speedmqctl`.
 - Inversement, la mise à niveau **n'**écrase **pas** les comptes existants avec la configuration : un mot de passe modifié pendant l'exécution n'est pas ramené à l'ancienne valeur de la configuration par un redémarrage,
   et un compte supprimé pendant l'exécution ne réapparaît pas. Références : la logique des marqueurs d'amorçage de `cluster.go` ; README M8-4 / M8-7.
 
@@ -101,22 +101,22 @@ data/
 ### 5.1 Étapes
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) arrêter le processus (un arrêt gracieux effectue un vidage final ; voir §4 « Cohérence »)
 #    si lancé au premier plan : Ctrl+C ; si lancé comme service : Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) sauvegarder le répertoire de données (impérativement après l'arrêt du processus)
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) remplacer le binaire (placer les nouvelles versions swiftmqd.exe / swiftmqctl.exe aux chemins d'origine)
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) remplacer le binaire (placer les nouvelles versions speedmqd.exe / speedmqctl.exe aux chemins d'origine)
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) démarrer
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) vérifier : processus actif + API d'administration lisible
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -126,22 +126,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 Liste de vérifications après mise à niveau
 
-- Les logs de démarrage affichent `SwiftMQ 启动中 ... version=<新版本>` et `管理面已启动` ;
+- Les logs de démarrage affichent `SpeedMQ 启动中 ... version=<新版本>` et `管理面已启动` ;
 - Les `object_totals` / `queue_totals` de `/api/overview` correspondent à ceux d'avant la sauvegarde (comparer avec §5 de `backup-restore.md`) ;
 - Dans `/api/queues`, les `messages` / `messages_ready` de chaque file durable correspondent à ceux d'avant la sauvegarde ;
-- `/metrics` est récupérable et `swiftmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
+- `/metrics` est récupérable et `speedmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
 
 ---
 
 ## 6. Mise à niveau de l'image (conteneur)
 
-L'image fait environ 13 MB (binaire lié statiquement + alpine), **s'exécute en non-root (uid 10001)**, le répertoire de données est monté sur `/var/lib/swiftmq`.
+L'image fait environ 13 MB (binaire lié statiquement + alpine), **s'exécute en non-root (uid 10001)**, le répertoire de données est monté sur `/var/lib/speedmq`.
 
 ```powershell
 # 1) tirer/construire la nouvelle image (utiliser le nouveau numéro de version comme tag pour éviter toute confusion old/new)
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) arrêter l'ancien conteneur (compose conserve le volume nommé swiftmq-data)
+# 2) arrêter l'ancien conteneur (compose conserve le volume nommé speedmq-data)
 docker compose down
 
 # 3) démarrer la nouvelle version (modifier image dans le fichier compose pour le nouveau tag)
@@ -152,14 +152,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **Tâche ponctuelle dans le conteneur** (par exemple exécuter `swiftmqctl` dans le conteneur) : le `run` de `docker compose ...` doit être accompagné de `-T` en environnement non interactif,
+> **Tâche ponctuelle dans le conteneur** (par exemple exécuter `speedmqctl` dans le conteneur) : le `run` de `docker compose ...` doit être accompagné de `-T` en environnement non interactif,
 > sinon il échoue en demandant un TTY :
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-La persistance des données repose sur le **volume nommé** `swiftmq-data` de compose ; la reconstruction du conteneur ne perd pas les données (véritable écriture sur disque depuis M4).
-Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela équivaut à sauvegarder `/var/lib/swiftmq` (voir §3.2 de `backup-restore.md`). **【mise à niveau d'image non mesurée】** (Docker n'a pas été exécuté sur cette machine).
+La persistance des données repose sur le **volume nommé** `speedmq-data` de compose ; la reconstruction du conteneur ne perd pas les données (véritable écriture sur disque depuis M4).
+Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela équivaut à sauvegarder `/var/lib/speedmq` (voir §3.2 de `backup-restore.md`). **【mise à niveau d'image non mesurée】** (Docker n'a pas été exécuté sur cette machine).
 
 ---
 
@@ -167,7 +167,7 @@ Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela éq
 
 ### 7.1 Mode autonome
 
-- **Bascule progressive** : SwiftMQ en mode autonome n'a pas de capacité intégrée de « double version ancienne/nouvelle dans le même processus ». La bascule progressive praticable est le **shadowing en dérivation** :
+- **Bascule progressive** : SpeedMQ en mode autonome n'a pas de capacité intégrée de « double version ancienne/nouvelle dans le même processus ». La bascule progressive praticable est le **shadowing en dérivation** :
   l'instance de la nouvelle version s'attache d'abord en **consommation en lecture seule / file miroir** au même flux amont pour observation, puis on bascule le côté écriture après confirmation.
 - **Rollback** :
   1. arrêter le processus de la nouvelle version ;
@@ -180,7 +180,7 @@ Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela éq
 La plateforme ne fournit pas de « mise à niveau progressive en un clic » ; il faut opérer manuellement nœud par nœud dans l'ordre suivant :
 
 1. **Ne mettre à niveau qu'un seul nœud à la fois** : arrêter ce nœud → sauvegarder son `data_dir` → remplacer le binaire → démarrer → attendre qu'il rejoigne et rattrape
-   (`swiftmqctl cluster_status` / `GET /api/cluster` pour voir `role`, `commit_index`/`last_applied`).
+   (`speedmqctl cluster_status` / `GET /api/cluster` pour voir `role`, `commit_index`/`last_applied`).
 2. **Ordre recommandé** : mettre à niveau d'abord les **learners / membres non votants** (sans impact sur la majorité), puis les **followers**, et enfin le **leader**
    (la mise à niveau du leader déclenche une élection, avec une brève indisponibilité en écriture).
 3. **Impact de l'arrêt sur la majorité** (essentiel) :
@@ -200,10 +200,10 @@ La plateforme ne fournit pas de « mise à niveau progressive en un clic » ; il
 
 - **Rétrogradation entre versions majeures : non prise en charge, non vérifiée**. Si la nouvelle version a écrit des données dans un nouveau format/de nouvelles sémantiques, il **n'**existe **aucune** garantie de « retour à l'ancien binaire en lecture directe » ;
   le rollback ne peut reposer que sur la sauvegarde d'avant la mise à niveau.
-- **Format de configuration inchangé** : toujours JSON + variables d'environnement `SWIFTMQ_*`. **La configuration YAML n'est pas encore prise en charge** (nécessite l'introduction d'une dépendance de parsing, M8-17 à évaluer) ;
+- **Format de configuration inchangé** : toujours JSON + variables d'environnement `SPEEDMQ_*`. **La configuration YAML n'est pas encore prise en charge** (nécessite l'introduction d'une dépendance de parsing, M8-17 à évaluer) ;
   la mise à niveau n'apporte pas YAML.
 - **Mise à niveau à chaud des plugins/protocoles** : le plugin est compilé avec le noyau (forme A) ou lancé via `spawn` selon la configuration (forme B) ;
   mettre à niveau le noyau = redémarrer le processus ; il **n'**existe **aucun** mécanisme de remplacement à chaud du binaire sur place.
 - **Migration sur place du moteur de stockage** : la rotation des segments/compression de l'index est un comportement d'arrière-plan en cours d'exécution ; il **n'**existe **aucune** commande distincte de « migration/compression de données ».
 - **Mise à niveau de cluster en conditions réseau réelles** : ce dépôt n'a réalisé qu'un chaos à échelle réduite (kill au niveau du processus), **sans** exercice de mise à niveau sous partition réseau ni disque plein.
-- Ce document **ne contient** aucune validation de transfert de données entre SwiftMQ et d'autres brokers (RabbitMQ).
+- Ce document **ne contient** aucune validation de transfert de données entre SpeedMQ et d'autres brokers (RabbitMQ).

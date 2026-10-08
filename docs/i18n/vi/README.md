@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | **Tiếng Việt** | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Middleware nhắn tin **tương thích RabbitMQ** được viết bằng Go. Các client RabbitMQ hiện có **không cần sửa mã, không cần đổi SDK**, chỉ cần đổi địa chỉ kết nối là có thể tích hợp.
 
@@ -9,7 +9,7 @@ Middleware nhắn tin **tương thích RabbitMQ** được viết bằng Go. Cá
 
 - **Tương thích giao thức**: AMQP 0-9-1 (bao gồm phần mở rộng của RabbitMQ) và MQTT 3.1.1; đường cơ sở tương thích là **ngữ nghĩa RabbitMQ 4.3**.
 - **Triển khai đơn giản**: một binary / một container, UI quản trị đã được nhúng sẵn, không cần Nginx, cơ sở dữ liệu hay runtime Node bổ sung.
-- **Vận hành đủ dùng**: UI quản trị (queue / exchange / kết nối / quyền tài khoản / virtual host / policy / giới hạn / cluster), Prometheus `/metrics`, dòng lệnh `swiftmqctl`.
+- **Vận hành đủ dùng**: UI quản trị (queue / exchange / kết nối / quyền tài khoản / virtual host / policy / giới hạn / cluster), Prometheus `/metrics`, dòng lệnh `speedmqctl`.
 - **Cổng mặc định**: `5672` (AMQP), `1883` (MQTT), `15672` (UI quản trị / HTTP API / chỉ số).
 
 Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn + mức fsync + phục hồi sau sự cố), xác nhận publish, TTL / dead-letter / giới hạn độ dài, ưu tiên consumer, Direct Reply-To, cluster (siêu dữ liệu Raft + queue trọng tài + chuyển tiếp giữa các node), bật/tắt nóng plugin.
@@ -23,39 +23,39 @@ Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn +
 **Không cần clone kho mã: chỉ cần kéo image về và chạy.**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-Image được phát hành ở hai nơi với nội dung giống nhau (chọn nơi nhanh hơn): Docker Hub `houzch/swiftmq` và GitHub GHCR `ghcr.io/houzch/swiftmq`; cả hai đều có `linux/amd64` và `linux/arm64`.
+Image được phát hành ở hai nơi với nội dung giống nhau (chọn nơi nhanh hơn): Docker Hub `houzch/speedmq` và GitHub GHCR `ghcr.io/houzch/speedmq`; cả hai đều có `linux/amd64` và `linux/arm64`.
 
-- Dữ liệu nằm trong volume có tên `swiftmq-data`, không mất khi tạo lại container.
-- Dừng / xoá: `docker stop swiftmq`, `docker rm swiftmq` (volume dữ liệu vẫn giữ).
+- Dữ liệu nằm trong volume có tên `speedmq-data`, không mất khi tạo lại container.
+- Dừng / xoá: `docker stop speedmq`, `docker rm speedmq` (volume dữ liệu vẫn giữ).
 
 **Muốn sửa cấu hình hoặc dùng compose thì clone kho mã:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # Dùng image đã phát hành; đổi thành up -d --build nếu muốn build tại máy
 
 docker compose ps        # Trạng thái phải là Up (healthy)
 docker compose logs -f   # Theo dõi log
 ```
 
-- Cấu hình được mount chỉ đọc từ `configs/swiftmqd.json`; sửa xong `docker compose restart` là có hiệu lực.
+- Cấu hình được mount chỉ đọc từ `configs/speedmqd.json`; sửa xong `docker compose restart` là có hiệu lực.
 - Dừng: `docker compose down` (giữ dữ liệu); `docker compose down -v` (xoá cả dữ liệu).
 
 ### Cách 2: Binary cục bộ (cần Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > Sản phẩm build của UI quản trị không được đưa vào kho. Nếu muốn dùng UI, trước tiên chạy `npm ci && npm run build` trong `web/`;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | UI quản trị | <http://localhost:15672/>: queue / exchange / kết nối / quyền tài khoản / virtual host / policy / giới hạn / feature flag / cluster, góc trên bên phải có thể đặt tự động làm mới và **ngôn ngữ giao diện** |
 | Chỉ số giám sát | <http://localhost:15672/metrics> (định dạng text Prometheus, cần xác thực); bảng điều khiển và cảnh báo xem tại [docs/ops/monitoring](ops/monitoring/README.md) |
-| Dòng lệnh | `./bin/swiftmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (tắt nóng, cổng đóng ngay lập tức) |
+| Dòng lệnh | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (tắt nóng, cổng đóng ngay lập tức) |
 | Kiểm tra sức khỏe | `nc -z 127.0.0.1 15672` (compose đã tích hợp sẵn healthcheck) |
 | Sao lưu và phục hồi | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | Nâng cấp | [docs/ops/upgrade.md](ops/upgrade.md) |
 | Đường cơ sở bảo mật | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-Cấu hình thường dùng (ví dụ đầy đủ xem tại [configs/swiftmqd.json](../../../configs/swiftmqd.json), cũng có thể ghi đè bằng biến môi trường `SWIFTMQ_*`):
+Cấu hình thường dùng (ví dụ đầy đủ xem tại [configs/speedmqd.json](../../../configs/speedmqd.json), cũng có thể ghi đè bằng biến môi trường `SPEEDMQ_*`):
 
 | Mục cấu hình | Mô tả | Mặc định |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ Cấu hình thường dùng (ví dụ đầy đủ xem tại [configs/swiftmqd.j
 | `storage.fsync` | Mức ghi xuống đĩa `none / os / batch / always` (đồng thời quyết định thời điểm confirm) | `os` |
 | `storage.memory_high_watermark`, `storage.disk_free_limit` | Mức nước tài nguyên: khi kích hoạt sẽ chặn producer, **không mất message** | `0.4` / 50 MiB |
 | `users` | Bảng người dùng tích hợp (mật khẩu + tag + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | Cluster nhiều node (mặc định tắt), thay đổi thành viên dùng `swiftmqctl add_member` | Tắt |
+| `cluster.enabled` + `cluster.peers` | Cluster nhiều node (mặc định tắt), thay đổi thành viên dùng `speedmqctl add_member` | Tắt |
 
 > Cổng có thể bị chiếm: dùng `listeners` / `management.addr` để đổi sang cổng khác.
 
@@ -142,10 +142,10 @@ Cấu hình thường dùng (ví dụ đầy đủ xem tại [configs/swiftmqd.j
 ## Cấu trúc dự án
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # điểm vào tiến trình broker (thứ cần chạy chính là nó)
-│   └── swiftmqctl/      # CLI vận hành (đi qua HTTP API quản trị, tách rời khỏi phiên bản nhân)
+│   ├── speedmqd/        # điểm vào tiến trình broker (thứ cần chạy chính là nó)
+│   └── speedmqctl/      # CLI vận hành (đi qua HTTP API quản trị, tách rời khỏi phiên bản nhân)
 ├── internal/            # phần hiện thực nhân
 │   ├── protocol/        # plugin giao thức: amqp091, mqtt (mã hóa/giải mã / phương thức / phiên)
 │   ├── broker/          # nhân: vhost, exchange, queue, dead-letter, điều khiển luồng, chế độ xem mặt quản trị
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # cấu hình mẫu
 ├── docs/ops/            # tài liệu vận hành: sao lưu phục hồi / nâng cấp / đường cơ sở bảo mật / giám sát
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（交流群二维码）
+└── speedmq-logo.PNG、1280X1280.PNG（交流群二维码）
 ```
 
 ***
@@ -191,6 +191,6 @@ Copyright 2026 houzch (xem [NOTICE](../../../NOTICE))
 
 ## Tham gia nhóm trao đổi
 
-Quét mã để tham gia nhóm trao đổi SwiftMQ, có vấn đề gì có thể hỏi trực tiếp trong nhóm:
+Quét mã để tham gia nhóm trao đổi SpeedMQ, có vấn đề gì có thể hỏi trực tiếp trong nhóm:
 
-![Nhóm trao đổi SwiftMQ](../../../1280X1280.PNG)
+![Nhóm trao đổi SpeedMQ](../../../1280X1280.PNG)

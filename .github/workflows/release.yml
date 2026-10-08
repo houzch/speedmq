@@ -1,11 +1,11 @@
 # 发布流水线：推 v* tag 到 GitHub 远端时触发，产出 GitHub Release（多平台二进制归档）
 # 与多架构容器镜像（GHCR；配置了 Docker Hub 凭据时同时推 Docker Hub）。
 #
-#   git push swiftmq v1.1.0     # 注意：GitHub 远端名是 swiftmq，origin 指向 Gitee
+#   git push speedmq v1.1.0     # 注意：GitHub 远端名是 speedmq，origin 指向 Gitee
 #                                # tag 必须等于源码里的 broker.Version，否则 verify-version 直接失败
 #
 # 一次发布的完整步骤：用 go run ./scripts/version <版本> 改齐版本号 → 提交并推送 → 打 tag 推送 → 等 Actions 跑完。
-# 版本号由 scripts/version 统一写入（内核常量、npm 元数据、compose/README/docs 与 swiftmq-test 镜像 tag）；
+# 版本号由 scripts/version 统一写入（内核常量、npm 元数据、compose/README/docs 与 speedmq-test 镜像 tag）；
 # 下面的 verify-version 会对其中 4 个关键处（broker.go / package.json / package-lock.json / docker-compose.yml）做门禁校验。
 #
 # 平台口径：Linux / Windows / macOS 都在支持范围内（amd64 与 arm64）。
@@ -22,11 +22,11 @@ permissions:
   packages: write
 
 env:
-  # 本仓库解析为 ghcr.io/houzch/swiftmq；GHCR 要求镜像名全小写
+  # 本仓库解析为 ghcr.io/houzch/speedmq；GHCR 要求镜像名全小写
   IMAGE: ghcr.io/${{ github.repository }}
   # Docker Hub 镜像名：命名空间默认 houzch，可用仓库变量 DOCKERHUB_NAMESPACE 覆盖。
   # 是否真的推送由下面"有没有配 DOCKERHUB_TOKEN"决定（没配就跳过，不影响发布）。
-  DOCKERHUB_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'houzch' }}/swiftmq
+  DOCKERHUB_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'houzch' }}/speedmq
 
 jobs:
   # ---------- 0) 门禁：tag 必须与源码里的版本号一致 ----------
@@ -114,14 +114,14 @@ jobs:
 
           # 1) 编译两个二进制
           mkdir -p stage
-          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqd${ext}"   ./cmd/swiftmqd
-          go build -trimpath -ldflags="-s -w" -o "stage/swiftmqctl${ext}" ./cmd/swiftmqctl
+          go build -trimpath -ldflags="-s -w" -o "stage/speedmqd${ext}"   ./cmd/speedmqd
+          go build -trimpath -ldflags="-s -w" -o "stage/speedmqctl${ext}" ./cmd/speedmqctl
 
           # 2) 归档里附带 README 与 LICENSE，方便下载者直接看用法
           cp README.md LICENSE stage/
 
           # 3) 打包：Windows 用 zip，其余用 tar.gz
-          base="swiftmq-${ver}-${GOOS}-${GOARCH}"
+          base="speedmq-${ver}-${GOOS}-${GOARCH}"
           mkdir -p dist
           if [ "${GOOS}" = "windows" ]; then
             (cd stage && zip -q -r "../dist/${base}.zip" .)
@@ -132,7 +132,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: swiftmq-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: speedmq-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
 
@@ -160,7 +160,7 @@ jobs:
           set -euo pipefail
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "SwiftMQ ${GITHUB_REF_NAME}" \
+            --title "SpeedMQ ${GITHUB_REF_NAME}" \
             --generate-notes
 
   # ---------- 3) 构建多架构镜像并推到公共仓库（GHCR + 可选 Docker Hub）----------

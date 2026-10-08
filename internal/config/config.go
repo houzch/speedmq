@@ -1,6 +1,6 @@
 // Package config 负责内核配置的加载与默认值。
 //
-// M1 只支持"默认值 + JSON 配置文件覆盖"；YAML 与 SWIFTMQ_* 环境变量在 M5 随管理面一起补齐。
+// M1 只支持"默认值 + JSON 配置文件覆盖"；YAML 与 SPEEDMQ_* 环境变量在 M5 随管理面一起补齐。
 package config
 
 import (
@@ -128,10 +128,10 @@ type Cluster struct {
 	//
 	// 它既是传输层寻址的依据，也是**首次引导**时的投票成员集合；
 	// 一旦本地已持久化过成员表（发生过运行期成员变更），就以持久化的为准 ——
-	// 运行期成员变更无需再改配置文件（见 `join` 与 `swiftmqctl add_member`）。
+	// 运行期成员变更无需再改配置文件（见 `join` 与 `speedmqctl add_member`）。
 	Peers map[string]string `json:"peers,omitempty"`
 	// Join 表示本节点以 **learner** 身份加入既有集群：启动时只复制日志、不参与投票、
-	// 不发起竞选，等待集群 leader 通过 `swiftmqctl add_member` 把它提升为投票成员。
+	// 不发起竞选，等待集群 leader 通过 `speedmqctl add_member` 把它提升为投票成员。
 	//
 	// 与 Peers 一样只在**首次引导**时生效。新节点用它启动，可以避免"自认为已是成员、
 	// 却在别人的成员表之外"造成的选举抖动。
@@ -298,7 +298,7 @@ func Load(path string) (*Config, error) {
 	if cfg.Plugins == nil {
 		cfg.Plugins = map[string]json.RawMessage{}
 	}
-	// 环境变量优先于文件：容器化部署用 SWIFTMQ_* 覆盖镜像内置配置，
+	// 环境变量优先于文件：容器化部署用 SPEEDMQ_* 覆盖镜像内置配置，
 	// 这样同一份配置可以为不同环境所用（对齐设计第 11 章的"配置"选型）。
 	if err := cfg.ApplyEnv(); err != nil {
 		return nil, err
@@ -320,65 +320,65 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
-// ApplyEnv 用 SWIFTMQ_* 环境变量覆盖配置。未设置的变量不改变任何字段。
+// ApplyEnv 用 SPEEDMQ_* 环境变量覆盖配置。未设置的变量不改变任何字段。
 func (c *Config) ApplyEnv() error {
 	str := func(key string, dst *string) {
 		if v, ok := os.LookupEnv(key); ok && v != "" {
 			*dst = v
 		}
 	}
-	str("SWIFTMQ_DATA_DIR", &c.DataDir)
-	str("SWIFTMQ_DEFAULT_VHOST", &c.DefaultVHost)
-	str("SWIFTMQ_FSYNC", &c.Storage.Fsync)
-	str("SWIFTMQ_MANAGEMENT_ADDR", &c.Management.Addr)
-	str("SWIFTMQ_MANAGEMENT_LANGUAGE", &c.Management.Language)
-	str("SWIFTMQ_CLUSTER_NODE_ID", &c.Cluster.NodeID)
-	str("SWIFTMQ_CLUSTER_LISTEN", &c.Cluster.Listen)
-	str("SWIFTMQ_CLUSTER_PARTITION_POLICY", &c.Cluster.PartitionPolicy)
+	str("SPEEDMQ_DATA_DIR", &c.DataDir)
+	str("SPEEDMQ_DEFAULT_VHOST", &c.DefaultVHost)
+	str("SPEEDMQ_FSYNC", &c.Storage.Fsync)
+	str("SPEEDMQ_MANAGEMENT_ADDR", &c.Management.Addr)
+	str("SPEEDMQ_MANAGEMENT_LANGUAGE", &c.Management.Language)
+	str("SPEEDMQ_CLUSTER_NODE_ID", &c.Cluster.NodeID)
+	str("SPEEDMQ_CLUSTER_LISTEN", &c.Cluster.Listen)
+	str("SPEEDMQ_CLUSTER_PARTITION_POLICY", &c.Cluster.PartitionPolicy)
 
-	if v, ok := os.LookupEnv("SWIFTMQ_FLUSH_INTERVAL_MS"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_FLUSH_INTERVAL_MS"); ok && v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_FLUSH_INTERVAL_MS 取值非法: %q", v)
+			return fmt.Errorf("SPEEDMQ_FLUSH_INTERVAL_MS 取值非法: %q", v)
 		}
 		c.Storage.FlushIntervalMS = n
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_MEMORY_HIGH_WATERMARK"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_MEMORY_HIGH_WATERMARK"); ok && v != "" {
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_MEMORY_HIGH_WATERMARK 取值非法: %q", v)
+			return fmt.Errorf("SPEEDMQ_MEMORY_HIGH_WATERMARK 取值非法: %q", v)
 		}
 		c.Storage.MemoryHighWatermark = f
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_DISK_FREE_LIMIT"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_DISK_FREE_LIMIT"); ok && v != "" {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_DISK_FREE_LIMIT 取值非法: %q", v)
+			return fmt.Errorf("SPEEDMQ_DISK_FREE_LIMIT 取值非法: %q", v)
 		}
 		c.Storage.DiskFreeLimit = n
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_MANAGEMENT_ENABLED"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_MANAGEMENT_ENABLED"); ok && v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_MANAGEMENT_ENABLED 取值非法: %q（应为 true/false）", v)
+			return fmt.Errorf("SPEEDMQ_MANAGEMENT_ENABLED 取值非法: %q（应为 true/false）", v)
 		}
 		c.Management.Enabled = b
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_CLUSTER_ENABLED"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_CLUSTER_ENABLED"); ok && v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_CLUSTER_ENABLED 取值非法: %q（应为 true/false）", v)
+			return fmt.Errorf("SPEEDMQ_CLUSTER_ENABLED 取值非法: %q（应为 true/false）", v)
 		}
 		c.Cluster.Enabled = b
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_CLUSTER_JOIN"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_CLUSTER_JOIN"); ok && v != "" {
 		b, err := strconv.ParseBool(v)
 		if err != nil {
-			return fmt.Errorf("SWIFTMQ_CLUSTER_JOIN 取值非法: %q（应为 true/false）", v)
+			return fmt.Errorf("SPEEDMQ_CLUSTER_JOIN 取值非法: %q（应为 true/false）", v)
 		}
 		c.Cluster.Join = b
 	}
-	if v, ok := os.LookupEnv("SWIFTMQ_AMQP_ADDR"); ok && v != "" {
+	if v, ok := os.LookupEnv("SPEEDMQ_AMQP_ADDR"); ok && v != "" {
 		if c.Listeners == nil {
 			c.Listeners = map[string][]Listener{}
 		}
@@ -468,9 +468,9 @@ func normalizeCluster(c *Cluster) error {
 		if err != nil || host == "" {
 			return fmt.Errorf("cluster.node_id 为空且无法获取主机名，请显式配置")
 		}
-		// 与 swiftmqd 的节点名（swiftmq@<host>）保持同一口径：同一台机器上，
+		// 与 speedmqd 的节点名（speedmq@<host>）保持同一口径：同一台机器上，
 		// /api/cluster 的 node_id 与 /api/nodes 的 name 应当能对上。
-		c.NodeID = "swiftmq@" + host
+		c.NodeID = "speedmq@" + host
 	}
 	switch c.PartitionPolicy {
 	case "":

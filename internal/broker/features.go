@@ -3,8 +3,8 @@ package broker
 import (
 	"sort"
 
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件实现两类"能力开关"，字段与路径都对齐 RabbitMQ 的管理 API：
@@ -92,7 +92,7 @@ func (b *Broker) featureFlagSnapshot(f featureFlag) FeatureFlagSnapshot {
 	}
 	return FeatureFlagSnapshot{
 		Name: f.name, State: state, Stability: f.stability,
-		Desc: f.desc, DocURL: f.docURL, ProvidedBy: "swiftmq",
+		Desc: f.desc, DocURL: f.docURL, ProvidedBy: "speedmq",
 	}
 }
 
@@ -162,34 +162,34 @@ var deprecatedFeatureRegistry = []DeprecatedFeatureSnapshot{
 	{
 		Name: "queue_master_locator", State: "denied", DeprecationPhase: "denied_by_default",
 		Desc:       "不再支持 queue-master-locator（队列放置策略）：本实现的队列归属由声明节点与仲裁组决定",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 	{
 		Name: "global_qos", State: "denied", DeprecationPhase: "denied_by_default",
 		Desc:       "basic.qos 的 global 标志已移除，请改用 per-consumer prefetch",
 		DocURL:     "https://blog.rabbitmq.com/posts/2021/08/4.0-deprecation-announcements/#removal-of-global-qos",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 	{
 		Name: "transient_nonexcl_queues", State: "denied", DeprecationPhase: "denied_by_default",
 		Desc:       "不允许声明「非持久且非独占」的队列（RabbitMQ 4.x 语义）",
 		DocURL:     "https://blog.rabbitmq.com/posts/2021/08/4.0-deprecation-announcements/#removal-of-transient-non-exclusive-queues",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 	{
 		Name: "management_metrics_collection", State: "permitted", DeprecationPhase: "permitted_by_default",
 		Desc:       "管理 API（/api/overview、/api/nodes 等）与 /metrics 仍然提供运行指标",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 	{
 		Name: "classic_queue_mirroring", State: "denied", DeprecationPhase: "removed",
 		Desc:       "经典队列镜像已移除：需要副本请使用仲裁队列（x-queue-type=quorum）",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 	{
 		Name: "ram_node_type", State: "denied", DeprecationPhase: "removed",
 		Desc:       "RAM 节点已移除：本实现只有 disc 节点",
-		ProvidedBy: "swiftmq",
+		ProvidedBy: "speedmq",
 	},
 }
 

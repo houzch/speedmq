@@ -1,4 +1,4 @@
-// Command swiftmqctl 是 SwiftMQ 的运维命令行工具。
+// Command speedmqctl 是 SpeedMQ 的运维命令行工具。
 //
 // 它通过 RabbitMQ 兼容的管理 HTTP API（默认 :15672）操作 broker，是纯标准库实现的
 // 薄客户端：不依赖任何第三方库，也不 import 仓库的 internal/*。
@@ -20,7 +20,7 @@ func main() {
 
 // run 执行主流程并返回进程退出码：0 成功，1 运行期错误，2 用法错误。
 func run() int {
-	fs := flag.NewFlagSet("swiftmqctl", flag.ContinueOnError)
+	fs := flag.NewFlagSet("speedmqctl", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
 		baseURL = fs.String("url", "http://127.0.0.1:15672", "管理 API 基地址")
@@ -53,7 +53,7 @@ func run() int {
 		var ue usageError
 		if errors.As(err, &ue) {
 			fmt.Fprintln(os.Stderr, ue.Error())
-			fmt.Fprintln(os.Stderr, "运行 swiftmqctl -h 查看完整用法。")
+			fmt.Fprintln(os.Stderr, "运行 speedmqctl -h 查看完整用法。")
 			return 2
 		}
 		fmt.Fprintf(os.Stderr, "错误: %s\n", formatError(err))
@@ -75,10 +75,10 @@ type silentExit struct{ code int }
 func (silentExit) Error() string { return "silent exit" }
 
 func printUsage() {
-	fmt.Print(`swiftmqctl —— SwiftMQ 运维命令行工具（通过管理 HTTP API 操作）
+	fmt.Print(`speedmqctl —— SpeedMQ 运维命令行工具（通过管理 HTTP API 操作）
 
 用法:
-  swiftmqctl [全局参数] <命令> [参数...]
+  speedmqctl [全局参数] <命令> [参数...]
 
 全局参数:
   -url string        管理 API 基地址（默认 http://127.0.0.1:15672）
@@ -114,9 +114,9 @@ func printUsage() {
   plugins disable <name>                                     禁用插件
 
 示例:
-  swiftmqctl status
-  swiftmqctl -url http://10.0.0.5:15672 -user admin -pass s3cret list_queues /
-  swiftmqctl -json list_exchanges
+  speedmqctl status
+  speedmqctl -url http://10.0.0.5:15672 -user admin -pass s3cret list_queues /
+  speedmqctl -json list_exchanges
 
 提示: vhost 用 "/" 表示默认虚拟主机，命令行参数会自动做 URL 编码。
 `)

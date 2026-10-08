@@ -8,8 +8,8 @@ import (
 	"net"
 	"sync"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 // 本文件是"把 plugin.Session 桥成 RPC"的内核侧实现：插件进程经反向调用（插件 → 内核）

@@ -1,9 +1,9 @@
-# SwiftMQ 외부 프로세스 플러그인 개발 가이드 —— Python
+# SpeedMQ 외부 프로세스 플러그인 개발 가이드 —— Python
 
-> **대상**: Python으로 SwiftMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
+> **대상**: Python으로 SpeedMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
 > **먼저 읽기**: [외부 프로세스 플러그인(sidecar) 개발 가이드](plugin-development.md) —— 멘탈 모델, 설정 필드, 와이어 프로토콜 총표를 다룹니다;
 > 이 문서는 **Python에서 어떻게 구현하는지**와 로컬에서 실측한 단계 및 결과만 다룹니다.
-> **예제 프로젝트**: 작업 공간 `swiftmq-plugin/python/sidecar_plugin.py`(표준 라이브러리만, 서드파티 의존성 없음).
+> **예제 프로젝트**: 작업 공간 `speedmq-plugin/python/sidecar_plugin.py`(표준 라이브러리만, 서드파티 의존성 없음).
 
 ---
 
@@ -31,7 +31,7 @@
 
 ### 1단계: 설정에 플러그인 선언
 
-`swiftmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
+`speedmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
 
 ```json
 {
@@ -41,7 +41,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 4. 코드 훑어보기(예제 프로젝트)
 
-`swiftmq-plugin/python/sidecar_plugin.py`는 약 320줄이며, 주요 함수:
+`speedmq-plugin/python/sidecar_plugin.py`는 약 320줄이며, 주요 함수:
 
 | 위치 | 역할 |
 | --- | --- |
@@ -169,7 +169,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 5. 실측(로컬 재현)
 
-환경: Windows + Python 3.12; 커널은 Docker(`swiftmq:1.1.01`)에서 실행, 플러그인은 호스트에서 실행,
+환경: Windows + Python 3.12; 커널은 Docker(`speedmq:1.1.01`)에서 실행, 플러그인은 호스트에서 실행,
 커널이 `tcp://host.docker.internal:19001`로 연결.
 
 ```

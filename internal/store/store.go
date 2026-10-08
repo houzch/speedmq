@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // ErrClosed 表示存储已关闭。

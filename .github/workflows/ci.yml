@@ -1,7 +1,7 @@
 # 持续集成：push 到 master 或提 PR 时，在三个支持平台上跑格式化检查、vet 与编译。
 #
 # 为什么不在这里跑测试：本仓库**不存放测试代码** —— 内核单测与真实客户端探针
-# 全部放在独立的测试项目 swiftmq-test/ 下（见 AGENTS.md §10.1）。
+# 全部放在独立的测试项目 speedmq-test/ 下（见 AGENTS.md §10.1）。
 # 因此本仓库 CI 只保证内核自身“格式干净、静态检查通过、三平台都能编译”。
 #
 # 为什么要跨平台跑：项目承诺支持 Linux / Windows / macOS，其中平台相关代码
@@ -53,6 +53,6 @@ jobs:
       - name: go vet
         run: go vet ./...
 
-      # 本仓库无测试代码（测试在 swiftmq-test/），这里只保证三平台都能编译内核
+      # 本仓库无测试代码（测试在 speedmq-test/），这里只保证三平台都能编译内核
       - name: go build
         run: go build ./...

@@ -1,4 +1,4 @@
-# SwiftMQ Sao lưu và phục hồi
+# SpeedMQ Sao lưu và phục hồi
 
 > Các kết luận "đo thực tế" trong tài liệu này đều đến từ một buổi diễn tập thực tế trên **Windows + PowerShell 5.1** (dùng `data_dir` tạm và cổng tạm).
 > Các lệnh diễn tập và đầu ra quan trọng được dán nguyên văn ở §6. Phần **【chưa kiểm chứng】** sẽ được đánh dấu rõ ràng (sao lưu/phục hồi cluster, sao lưu volume Docker, v.v.).
@@ -55,15 +55,15 @@ Kho message là **hai tệp** (tệp phân đoạn `*.seg` và tệp chỉ mục
 
 ```powershell
 # 1) dừng tiến trình (foreground: Ctrl+C; background: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) sao chép toàn bộ data_dir (kèm dấu thời gian)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (tùy chọn) kiểm tra ảnh chụp siêu dữ liệu trong bản sao lưu có thể phân tích được
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 Cluster
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # sau khi dừng container, dùng container dùng một lần để đóng gói và sao chép nội dung volume ra ngoài
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【chưa kiểm chứng】** (máy cục bộ chưa chạy Docker).
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) xác nhận tiến trình đã dừng
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) di chuyển (hoặc xóa) data_dir hiện tại, tránh tệp cũ và mới lẫn lộn
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) phục hồi bằng bản sao lưu
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) khởi động
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 Điểm mấu chốt:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > Môi trường: `data_dir` ở thư mục tạm, AMQP `127.0.0.1:5676`, mặt quản trị `127.0.0.1:15677`, MQTT `127.0.0.1:1884`,
 > tài khoản mặc định `guest/guest`. Log khởi động:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

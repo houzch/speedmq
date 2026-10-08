@@ -1,10 +1,10 @@
-# SwiftMQ การมอนิเตอร์และการแจ้งเตือน
+# SpeedMQ การมอนิเตอร์และการแจ้งเตือน
 
 ไดเรกทอรีนี้มีเทมเพลตการมอนิเตอร์ที่ใช้ได้ทันที:
 
 | ไฟล์ | หน้าที่ |
 | --- | --- |
-| `prometheus-alerts.yml` | กฎการแจ้งเตือนของ Prometheus（`groups: - name: swiftmq`） |
+| `prometheus-alerts.yml` | กฎการแจ้งเตือนของ Prometheus（`groups: - name: speedmq`） |
 | `grafana-dashboard.json` | แดชบอร์ด Grafana ที่นำเข้าได้（แผงครอบคลุมสัญญาณสำคัญด้านล่าง） |
 | `README.md` | วิธีใช้、รายการเมตริก、ความหมายและการรับมือของแต่ละการแจ้งเตือน、ช่องว่างที่ทราบ |
 
@@ -19,7 +19,7 @@
 ```yaml
 # prometheus.yml
 scrape_configs:
-  - job_name: swiftmq
+  - job_name: speedmq
     metrics_path: /metrics
     basic_auth:
       username: guest
@@ -44,10 +44,10 @@ curl.exe -s -u guest:guest http://127.0.0.1:15672/metrics
 
 ```yaml
 rule_files:
-  - "rules/swiftmq-alerts.yml"
+  - "rules/speedmq-alerts.yml"
 ```
 
-ในกฎใช้ `job="swiftmq"` เป็นค่าเดียวกันทั้งหมด; ถ้าชื่อ job ของคุณต่างออกไป โปรดแทนทั้งไฟล์
+ในกฎใช้ `job="speedmq"` เป็นค่าเดียวกันทั้งหมด; ถ้าชื่อ job ของคุณต่างออกไป โปรดแทนทั้งไฟล์
 
 ### 1.3 แดชบอร์ด Grafana
 
@@ -64,80 +64,80 @@ rule_files:
 จึงมีเมตริกระดับ per-queue ที่มีป้าย `vhost`/`queue` ปรากฏขึ้น）:
 
 ```
-# HELP swiftmq_up 节点是否存活
-# TYPE swiftmq_up gauge
-swiftmq_up 1
-# HELP swiftmq_build_info 构建信息
-# TYPE swiftmq_build_info gauge
-swiftmq_build_info 1{version="1.0.0",node="swiftmq@DESKTOP-HBDCVPA"}
-# HELP swiftmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
-# TYPE swiftmq_resource_blocked gauge
-swiftmq_resource_blocked 0
-# HELP swiftmq_connections 当前连接数
-# TYPE swiftmq_connections gauge
-swiftmq_connections 0
-# HELP swiftmq_channels 当前通道数
-# TYPE swiftmq_channels gauge
-swiftmq_channels 0
-# HELP swiftmq_queues 当前队列数
-# TYPE swiftmq_queues gauge
-swiftmq_queues 0
-# HELP swiftmq_exchanges 当前交换机数
-# TYPE swiftmq_exchanges gauge
-swiftmq_exchanges 6
-# HELP swiftmq_consumers 当前消费者数
-# TYPE swiftmq_consumers gauge
-swiftmq_consumers 0
-# HELP swiftmq_queue_messages 就绪消息总数
-# TYPE swiftmq_queue_messages gauge
-swiftmq_queue_messages 0
-# HELP swiftmq_queue_messages_unacknowledged 未确认消息总数
-# TYPE swiftmq_queue_messages_unacknowledged gauge
-swiftmq_queue_messages_unacknowledged 0
-# HELP swiftmq_process_memory_bytes 本进程向操作系统申请的内存字节数
-# TYPE swiftmq_process_memory_bytes gauge
-swiftmq_process_memory_bytes 1564672
-# HELP swiftmq_memory_total_bytes 物理内存总量
-# TYPE swiftmq_memory_total_bytes gauge
-swiftmq_memory_total_bytes 34181279744
-# HELP swiftmq_disk_free_bytes 数据目录可用空间
-# TYPE swiftmq_disk_free_bytes gauge
-swiftmq_disk_free_bytes 240091688960
-# HELP swiftmq_memory_high_watermark 内存水位比例
-# TYPE swiftmq_memory_high_watermark gauge
-swiftmq_memory_high_watermark 0.4
-# HELP swiftmq_disk_free_limit_bytes 磁盘剩余空间下限
-# TYPE swiftmq_disk_free_limit_bytes gauge
-swiftmq_disk_free_limit_bytes 52428800
-# HELP swiftmq_queue_messages_ready 队列中的就绪消息数
-# TYPE swiftmq_queue_messages_ready gauge
-# HELP swiftmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE swiftmq_queue_messages_unacknowledged gauge
-# HELP swiftmq_queue_consumers 队列上的消费者数
-# TYPE swiftmq_queue_consumers gauge
-# HELP swiftmq_queue_memory_bytes 队列内存占用估算值
-# TYPE swiftmq_queue_memory_bytes gauge
-# HELP swiftmq_queue_messages_published_total 队列累计接收的消息数
-# TYPE swiftmq_queue_messages_published_total counter
-# HELP swiftmq_queue_messages_delivered_total 队列累计投递的消息数
-# TYPE swiftmq_queue_messages_delivered_total counter
-# HELP swiftmq_queue_messages_acked_total 队列累计确认的消息数
-# TYPE swiftmq_queue_messages_acked_total counter
-swiftmq_queue_messages_ready{vhost="/",queue="persist.q"} 5
-swiftmq_queue_messages_unacknowledged{vhost="/",queue="persist.q"} 0
-swiftmq_queue_consumers{vhost="/",queue="persist.q"} 0
-swiftmq_queue_memory_bytes{vhost="/",queue="persist.q"} 365
-swiftmq_queue_messages_published_total{vhost="/",queue="persist.q"} 5
-swiftmq_queue_messages_delivered_total{vhost="/",queue="persist.q"} 0
-swiftmq_queue_messages_acked_total{vhost="/",queue="persist.q"} 0
-# HELP swiftmq_plugin_info 插件元数据（value 恒为 1，状态见 state 标签）
-# TYPE swiftmq_plugin_info gauge
-# HELP swiftmq_plugin_up 插件是否在服务（1=enabled，0=其它状态：disabled/failed/down）
-# TYPE swiftmq_plugin_up gauge
-swiftmq_plugin_info{name="amqp091",version="0.1.0",api_version="v1",state="enabled"} 1
-swiftmq_plugin_up{name="amqp091",state="enabled"} 1
-swiftmq_plugin_info{name="mqtt",version="0.1.0",api_version="v1",state="enabled"} 1
-swiftmq_plugin_up{name="mqtt",state="enabled"} 1
+# HELP speedmq_up 节点是否存活
+# TYPE speedmq_up gauge
+speedmq_up 1
+# HELP speedmq_build_info 构建信息
+# TYPE speedmq_build_info gauge
+speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+# HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
+# TYPE speedmq_resource_blocked gauge
+speedmq_resource_blocked 0
+# HELP speedmq_connections 当前连接数
+# TYPE speedmq_connections gauge
+speedmq_connections 0
+# HELP speedmq_channels 当前通道数
+# TYPE speedmq_channels gauge
+speedmq_channels 0
+# HELP speedmq_queues 当前队列数
+# TYPE speedmq_queues gauge
+speedmq_queues 0
+# HELP speedmq_exchanges 当前交换机数
+# TYPE speedmq_exchanges gauge
+speedmq_exchanges 6
+# HELP speedmq_consumers 当前消费者数
+# TYPE speedmq_consumers gauge
+speedmq_consumers 0
+# HELP speedmq_queue_messages 就绪消息总数
+# TYPE speedmq_queue_messages gauge
+speedmq_queue_messages 0
+# HELP speedmq_queue_messages_unacknowledged 未确认消息总数
+# TYPE speedmq_queue_messages_unacknowledged gauge
+speedmq_queue_messages_unacknowledged 0
+# HELP speedmq_process_memory_bytes 本进程向操作系统申请的内存字节数
+# TYPE speedmq_process_memory_bytes gauge
+speedmq_process_memory_bytes 1564672
+# HELP speedmq_memory_total_bytes 物理内存总量
+# TYPE speedmq_memory_total_bytes gauge
+speedmq_memory_total_bytes 34181279744
+# HELP speedmq_disk_free_bytes 数据目录可用空间
+# TYPE speedmq_disk_free_bytes gauge
+speedmq_disk_free_bytes 240091688960
+# HELP speedmq_memory_high_watermark 内存水位比例
+# TYPE speedmq_memory_high_watermark gauge
+speedmq_memory_high_watermark 0.4
+# HELP speedmq_disk_free_limit_bytes 磁盘剩余空间下限
+# TYPE speedmq_disk_free_limit_bytes gauge
+speedmq_disk_free_limit_bytes 52428800
+# HELP speedmq_queue_messages_ready 队列中的就绪消息数
+# TYPE speedmq_queue_messages_ready gauge
+# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
+# TYPE speedmq_queue_messages_unacknowledged gauge
+# HELP speedmq_queue_consumers 队列上的消费者数
+# TYPE speedmq_queue_consumers gauge
+# HELP speedmq_queue_memory_bytes 队列内存占用估算值
+# TYPE speedmq_queue_memory_bytes gauge
+# HELP speedmq_queue_messages_published_total 队列累计接收的消息数
+# TYPE speedmq_queue_messages_published_total counter
+# HELP speedmq_queue_messages_delivered_total 队列累计投递的消息数
+# TYPE speedmq_queue_messages_delivered_total counter
+# HELP speedmq_queue_messages_acked_total 队列累计确认的消息数
+# TYPE speedmq_queue_messages_acked_total counter
+speedmq_queue_messages_ready{vhost="/",queue="persist.q"} 5
+speedmq_queue_messages_unacknowledged{vhost="/",queue="persist.q"} 0
+speedmq_queue_consumers{vhost="/",queue="persist.q"} 0
+speedmq_queue_memory_bytes{vhost="/",queue="persist.q"} 365
+speedmq_queue_messages_published_total{vhost="/",queue="persist.q"} 5
+speedmq_queue_messages_delivered_total{vhost="/",queue="persist.q"} 0
+speedmq_queue_messages_acked_total{vhost="/",queue="persist.q"} 0
+# HELP speedmq_plugin_info 插件元数据（value 恒为 1，状态见 state 标签）
+# TYPE speedmq_plugin_info gauge
+# HELP speedmq_plugin_up 插件是否在服务（1=enabled，0=其它状态：disabled/failed/down）
+# TYPE speedmq_plugin_up gauge
+speedmq_plugin_info{name="amqp091",version="0.1.0",api_version="v1",state="enabled"} 1
+speedmq_plugin_up{name="amqp091",state="enabled"} 1
+speedmq_plugin_info{name="mqtt",version="0.1.0",api_version="v1",state="enabled"} 1
+speedmq_plugin_up{name="mqtt",state="enabled"} 1
 ```
 
 ---
@@ -146,37 +146,37 @@ swiftmq_plugin_up{name="mqtt",state="enabled"} 1
 
 | เมตริก | ชนิด | ป้าย | ความหมาย |
 | --- | --- | --- | --- |
-| `swiftmq_up` | gauge | — | โปรเซสประกาศตัวเองว่ายังอยู่（ตอนนี้เป็น 1 เสมอ） |
-| `swiftmq_build_info` | gauge | `version`,`node` | ข้อมูลการ build ค่า value เป็น 1 เสมอ |
-| `swiftmq_resource_blocked` | gauge | — | ระดับทรัพยากรบล็อกผู้ผลิตหรือไม่（1=กำลังบล็อก） |
-| `swiftmq_connections` | gauge | — | จำนวนการเชื่อมต่อปัจจุบัน |
-| `swiftmq_channels` | gauge | — | จำนวนช่องทางปัจจุบัน |
-| `swiftmq_queues` | gauge | — | จำนวนคิวปัจจุบัน |
-| `swiftmq_exchanges` | gauge | — | จำนวนเอ็กซ์เชนจ์ปัจจุบัน |
-| `swiftmq_consumers` | gauge | — | จำนวนผู้บริโภคปัจจุบัน |
-| `swiftmq_queue_messages` | gauge | — | จำนวนข้อความพร้อมใช้**ทั่วทั้งระบบ** |
-| `swiftmq_queue_messages_unacknowledged` | gauge | — | จำนวนข้อความที่ยังไม่ confirm **ทั่วทั้งระบบ** |
-| `swiftmq_process_memory_bytes` | gauge | — | หน่วยความจำ**ที่กำลังใช้**ของโปรเซส（`HeapInuse+StackInuse`） |
-| `swiftmq_memory_total_bytes` | gauge | — | หน่วยความจำกายภาพทั้งหมด |
-| `swiftmq_disk_free_bytes` | gauge | — | พื้นที่ว่างของไดเรกทอรีข้อมูล |
-| `swiftmq_memory_high_watermark` | gauge | — | สัดส่วนระดับน้ำหน่วยความจำ |
-| `swiftmq_disk_free_limit_bytes` | gauge | — | ขีดจำกัดล่างของพื้นที่ดิสก์ที่เหลือ |
-| `swiftmq_queue_messages_ready` | gauge | `vhost`,`queue` | จำนวนข้อความพร้อมใช้ของคิวหนึ่ง |
-| `swiftmq_queue_messages_unacknowledged` | gauge | `vhost`,`queue` | จำนวนข้อความที่ยังไม่ confirm ของคิวหนึ่ง |
-| `swiftmq_queue_consumers` | gauge | `vhost`,`queue` | จำนวนผู้บริโภคของคิวหนึ่ง |
-| `swiftmq_queue_memory_bytes` | gauge | `vhost`,`queue` | ค่าประมาณหน่วยความจำของคิวหนึ่ง |
-| `swiftmq_queue_messages_published_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวรับมา |
-| `swiftmq_queue_messages_delivered_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวส่งมอบ |
-| `swiftmq_queue_messages_acked_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวยืนยัน |
-| `swiftmq_plugin_info` | gauge | `name`,`version`,`api_version`,`state` | ข้อมูลเมตาของปลั๊กอิน ค่า value เป็น 1 เสมอ |
-| `swiftmq_plugin_up` | gauge | `name`,`state` | ปลั๊กอินให้บริการอยู่หรือไม่（1=enabled，0=อื่น ๆ） |
+| `speedmq_up` | gauge | — | โปรเซสประกาศตัวเองว่ายังอยู่（ตอนนี้เป็น 1 เสมอ） |
+| `speedmq_build_info` | gauge | `version`,`node` | ข้อมูลการ build ค่า value เป็น 1 เสมอ |
+| `speedmq_resource_blocked` | gauge | — | ระดับทรัพยากรบล็อกผู้ผลิตหรือไม่（1=กำลังบล็อก） |
+| `speedmq_connections` | gauge | — | จำนวนการเชื่อมต่อปัจจุบัน |
+| `speedmq_channels` | gauge | — | จำนวนช่องทางปัจจุบัน |
+| `speedmq_queues` | gauge | — | จำนวนคิวปัจจุบัน |
+| `speedmq_exchanges` | gauge | — | จำนวนเอ็กซ์เชนจ์ปัจจุบัน |
+| `speedmq_consumers` | gauge | — | จำนวนผู้บริโภคปัจจุบัน |
+| `speedmq_queue_messages` | gauge | — | จำนวนข้อความพร้อมใช้**ทั่วทั้งระบบ** |
+| `speedmq_queue_messages_unacknowledged` | gauge | — | จำนวนข้อความที่ยังไม่ confirm **ทั่วทั้งระบบ** |
+| `speedmq_process_memory_bytes` | gauge | — | หน่วยความจำ**ที่กำลังใช้**ของโปรเซส（`HeapInuse+StackInuse`） |
+| `speedmq_memory_total_bytes` | gauge | — | หน่วยความจำกายภาพทั้งหมด |
+| `speedmq_disk_free_bytes` | gauge | — | พื้นที่ว่างของไดเรกทอรีข้อมูล |
+| `speedmq_memory_high_watermark` | gauge | — | สัดส่วนระดับน้ำหน่วยความจำ |
+| `speedmq_disk_free_limit_bytes` | gauge | — | ขีดจำกัดล่างของพื้นที่ดิสก์ที่เหลือ |
+| `speedmq_queue_messages_ready` | gauge | `vhost`,`queue` | จำนวนข้อความพร้อมใช้ของคิวหนึ่ง |
+| `speedmq_queue_messages_unacknowledged` | gauge | `vhost`,`queue` | จำนวนข้อความที่ยังไม่ confirm ของคิวหนึ่ง |
+| `speedmq_queue_consumers` | gauge | `vhost`,`queue` | จำนวนผู้บริโภคของคิวหนึ่ง |
+| `speedmq_queue_memory_bytes` | gauge | `vhost`,`queue` | ค่าประมาณหน่วยความจำของคิวหนึ่ง |
+| `speedmq_queue_messages_published_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวรับมา |
+| `speedmq_queue_messages_delivered_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวส่งมอบ |
+| `speedmq_queue_messages_acked_total` | counter | `vhost`,`queue` | จำนวนข้อความสะสมที่คิวยืนยัน |
+| `speedmq_plugin_info` | gauge | `name`,`version`,`api_version`,`state` | ข้อมูลเมตาของปลั๊กอิน ค่า value เป็น 1 เสมอ |
+| `speedmq_plugin_up` | gauge | `name`,`state` | ปลั๊กอินให้บริการอยู่หรือไม่（1=enabled，0=อื่น ๆ） |
 
 ### 3.1 ข้อควรระวังในการใช้（เพื่อไม่ให้เขียนผิด）
 
-- **สองตระกูลอนุกรมที่ชื่อเดียวกันแต่ความหลากหลายของป้ายต่างกัน**: `swiftmq_queue_messages_unacknowledged` **ทั้ง**มีอนุกรมทั่วทั้งระบบที่ไม่มีป้าย
-  **และ**มีอนุกรม per-queue ที่มีป้าย; ส่วนฝั่ง「พร้อมใช้」ทั่วทั้งระบบชื่อ `swiftmq_queue_messages`、per-queue ชื่อ
-  `swiftmq_queue_messages_ready`（ชื่อไม่สมมาตรกัน）เวลเขียนกฎให้ใช้ `{queue=~".+"}` ระบุให้ชัดว่าเอาเฉพาะตระกูล per-queue
-- **หลักเกณฑ์ของ `swiftmq_process_memory_bytes`**: การทำงานจริงคือ `MemStats.HeapInuse + StackInuse`（**หน่วยความจำที่กำลังใช้**）
+- **สองตระกูลอนุกรมที่ชื่อเดียวกันแต่ความหลากหลายของป้ายต่างกัน**: `speedmq_queue_messages_unacknowledged` **ทั้ง**มีอนุกรมทั่วทั้งระบบที่ไม่มีป้าย
+  **และ**มีอนุกรม per-queue ที่มีป้าย; ส่วนฝั่ง「พร้อมใช้」ทั่วทั้งระบบชื่อ `speedmq_queue_messages`、per-queue ชื่อ
+  `speedmq_queue_messages_ready`（ชื่อไม่สมมาตรกัน）เวลเขียนกฎให้ใช้ `{queue=~".+"}` ระบุให้ชัดว่าเอาเฉพาะตระกูล per-queue
+- **หลักเกณฑ์ของ `speedmq_process_memory_bytes`**: การทำงานจริงคือ `MemStats.HeapInuse + StackInuse`（**หน่วยความจำที่กำลังใช้**）
   ใช้หลักเกณฑ์เดียวกับการตัดสินระดับน้ำหน่วยความจำของ kernel; แต่ข้อความ `# HELP` ของมันเขียนว่า「ไบต์หน่วยความจำที่ร้องขอจากระบบปฏิบัติการ」**ข้อความไม่ตรงกับหลักเกณฑ์จริง**
   ให้ยึดเอกสารนี้เป็นหลัก
 - **อนุกรม per-queue ปรากฏเฉพาะเมื่อคิวมีอยู่**: หลังลบคิว อนุกรมนั้นจะหายไป（ฝั่ง Prometheus จะกลายเป็น stale）
@@ -191,16 +191,16 @@ swiftmq_plugin_up{name="mqtt",state="enabled"} 1
 
 | การแจ้งเตือน | เงื่อนไขที่ทริกเกอร์ | ความหมาย | ข้อเสนอการรับมือ |
 | --- | --- | --- | --- |
-| `SwiftMQScrapeDown` | `up{job="swiftmq"} == 0` 1m | เป้าหมายการดึงทั้งหมดเข้าถึงไม่ได้ | ตรวจโปรเซส/พอร์ต/เครือข่าย/การยืนยัน; รีสตาร์ทและดู log การสตาร์ท |
-| `SwiftMQProcessNotUp` | `swiftmq_up == 0` 1m | ดึงสำเร็จแต่โปรเซสประกาศว่าตัวเองไม่อยู่ | รายการสำรอง ดู log ที่ออกผิดปกติ |
-| `SwiftMQPluginDown` | `swiftmq_plugin_up == 0` 2m | ปลั๊กอิน disabled/failed/down | `swiftmqctl plugins show <name>` ดู `runtime_note`; ปลั๊กอินภายนอก `restart=always` มักหายเอง |
-| `SwiftMQResourceBlocked` | `swiftmq_resource_blocked == 1` 5m | ระดับน้ำหน่วยความจำ/ดิสก์ทริกเกอร์ ผู้ผลิตถูกบล็อก | ดูระดับน้ำหน่วยความจำและดิสก์ที่ว่าง; ยืนยันว่าผู้บริโภคเดินหน้าหรือไม่ |
-| `SwiftMQMemoryWatermarkHigh` | สัดส่วนหน่วยความจำที่ใช้ > 0.9×ระดับน้ำ 10m | ใกล้ระดับน้ำหน่วยความจำ | ลดการสะสม/เพิ่มความเร็วการบริโภค กันการทริกเกอร์บล็อก |
-| `SwiftMQDiskFreeLow` | ว่าง < 1.5×ขีดจำกัดล่างดิสก์ 10m | ไดเรกทอรีข้อมูลใกล้เต็ม | ขยาย/ล้าง; เมื่อถึงขีดจำกัดล่างจะบล็อกผู้ผลิต |
-| `SwiftMQQueueBacklogGrowing` | พร้อมใช้ >10000 และเพิ่มขึ้นแบบ monotonic 15m | คิวสะสมต่อเนื่อง | เพิ่มผู้บริโภค / ตรวจฝั่งผู้บริโภค; ตรวจ dead letter/TTL ที่ผิดปกติ |
-| `SwiftMQQueueNoConsumers` | ผู้บริโภค=0 และมีข้อความพร้อมใช้ 15m | ไม่มีใครบริโภค | ตรวจโปรเซสฝั่งผู้บริโภค; ยืนยันว่าผู้บริโภคไม่หลุด |
-| `SwiftMQUnackedPileUp` | ยังไม่ confirm >1000 15m | ผู้บริโภคค้าง/ไม่ ack | ตรวจตรรกะการประมวลผลของผู้บริโภคและ prefetch; ถ้าจำเป็นปิดการเชื่อมต่อแล้วส่งใหม่ |
-| `SwiftMQConnectionSpike` | การเชื่อมต่อ >10000 10m | จำนวนการเชื่อมต่อผิดปกติ | ตรวจการรั่วของการเชื่อมต่อ; ไคลเอนต์ควรใช้การเชื่อมต่อซ้ำ |
+| `SpeedMQScrapeDown` | `up{job="speedmq"} == 0` 1m | เป้าหมายการดึงทั้งหมดเข้าถึงไม่ได้ | ตรวจโปรเซส/พอร์ต/เครือข่าย/การยืนยัน; รีสตาร์ทและดู log การสตาร์ท |
+| `SpeedMQProcessNotUp` | `speedmq_up == 0` 1m | ดึงสำเร็จแต่โปรเซสประกาศว่าตัวเองไม่อยู่ | รายการสำรอง ดู log ที่ออกผิดปกติ |
+| `SpeedMQPluginDown` | `speedmq_plugin_up == 0` 2m | ปลั๊กอิน disabled/failed/down | `speedmqctl plugins show <name>` ดู `runtime_note`; ปลั๊กอินภายนอก `restart=always` มักหายเอง |
+| `SpeedMQResourceBlocked` | `speedmq_resource_blocked == 1` 5m | ระดับน้ำหน่วยความจำ/ดิสก์ทริกเกอร์ ผู้ผลิตถูกบล็อก | ดูระดับน้ำหน่วยความจำและดิสก์ที่ว่าง; ยืนยันว่าผู้บริโภคเดินหน้าหรือไม่ |
+| `SpeedMQMemoryWatermarkHigh` | สัดส่วนหน่วยความจำที่ใช้ > 0.9×ระดับน้ำ 10m | ใกล้ระดับน้ำหน่วยความจำ | ลดการสะสม/เพิ่มความเร็วการบริโภค กันการทริกเกอร์บล็อก |
+| `SpeedMQDiskFreeLow` | ว่าง < 1.5×ขีดจำกัดล่างดิสก์ 10m | ไดเรกทอรีข้อมูลใกล้เต็ม | ขยาย/ล้าง; เมื่อถึงขีดจำกัดล่างจะบล็อกผู้ผลิต |
+| `SpeedMQQueueBacklogGrowing` | พร้อมใช้ >10000 และเพิ่มขึ้นแบบ monotonic 15m | คิวสะสมต่อเนื่อง | เพิ่มผู้บริโภค / ตรวจฝั่งผู้บริโภค; ตรวจ dead letter/TTL ที่ผิดปกติ |
+| `SpeedMQQueueNoConsumers` | ผู้บริโภค=0 และมีข้อความพร้อมใช้ 15m | ไม่มีใครบริโภค | ตรวจโปรเซสฝั่งผู้บริโภค; ยืนยันว่าผู้บริโภคไม่หลุด |
+| `SpeedMQUnackedPileUp` | ยังไม่ confirm >1000 15m | ผู้บริโภคค้าง/ไม่ ack | ตรวจตรรกะการประมวลผลของผู้บริโภคและ prefetch; ถ้าจำเป็นปิดการเชื่อมต่อแล้วส่งใหม่ |
+| `SpeedMQConnectionSpike` | การเชื่อมต่อ >10000 10m | จำนวนการเชื่อมต่อผิดปกติ | ตรวจการรั่วของการเชื่อมต่อ; ไคลเอนต์ควรใช้การเชื่อมต่อซ้ำ |
 
 > threshold（10000 / 1000 เป็นต้น）เป็น**ค่าเริ่มต้น** โปรดปรับตามขนาดคิวและลักษณะธุรกิจของคุณ
 
@@ -208,12 +208,12 @@ swiftmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ## 5. ช่องว่างที่ทราบ: คลัสเตอร์「สูญเสียฝ่ายข้างมาก / ไม่มี leader」ตอนนี้ยังไม่มีเมตริก
 
-- **ข้อเท็จจริง**: `/metrics` **ไม่มี**เมตริกประเภทคลัสเตอร์ใด ๆ（ไม่มี `swiftmq_cluster_*`）สถานะคลัสเตอร์อยู่ใน JSON ของ `GET /api/cluster` เท่านั้น:
+- **ข้อเท็จจริง**: `/metrics` **ไม่มี**เมตริกประเภทคลัสเตอร์ใด ๆ（ไม่มี `speedmq_cluster_*`）สถานะคลัสเตอร์อยู่ใน JSON ของ `GET /api/cluster` เท่านั้น:
   `{"enabled":true,"mode":"raft","role":"leader","leader":"...","has_quorum":true,"paused":false,...}`
 - **ดังนั้น** `prometheus-alerts.yml` **เจตนาไม่เขียน**การแจ้งเตือนที่อิงเมตริกคลัสเตอร์——เขียนไปก็**จะไม่ทริกเกอร์ตลอดกาล**
   （Prometheus จะไม่ error เพราะชื่อเมตริกไม่มีอยู่）นั่นถือเป็นงานส่งมอบที่「ดูเหมือนถูก แต่จริง ๆ ใช้ไม่ได้」
-- **วิธีสร้างเอง**（เลือกหนึ่งในสอง ต้องสร้างนอก SwiftMQ ทั้งคู่ ไม่อยู่ในขอบเขตของ repository นี้）:
-  1. ใช้ JSON exporter ทั่วไปดึง `/api/cluster` แมปเป็นเมตริกที่กำหนดเอง（เช่น `swiftmq_cluster_has_quorum`）แล้วแจ้งเตือนกับเมตริกนั้น;
+- **วิธีสร้างเอง**（เลือกหนึ่งในสอง ต้องสร้างนอก SpeedMQ ทั้งคู่ ไม่อยู่ในขอบเขตของ repository นี้）:
+  1. ใช้ JSON exporter ทั่วไปดึง `/api/cluster` แมปเป็นเมตริกที่กำหนดเอง（เช่น `speedmq_cluster_has_quorum`）แล้วแจ้งเตือนกับเมตริกนั้น;
   2. ใช้สคริปต์โพรบเรียก `/api/cluster` เป็นระยะ เมื่อ `has_quorum=false` หรือ `paused=true` ก็ยิงการแจ้งเตือน
 - หลักเกณฑ์ threshold ที่เกี่ยวข้อง: `has_quorum=false` หมายความว่าขาดการติดต่อกับฝ่ายข้างมาก; ภายใต้ `pause_minority`（ค่าเริ่มต้น）ตอนนั้น**บริการจะหยุดและตัดการเชื่อมต่อ**
 

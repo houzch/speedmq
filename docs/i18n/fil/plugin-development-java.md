@@ -1,8 +1,8 @@
-# Gabay sa Pagbuo ng External-Process Plugin ng SwiftMQ —— Java
+# Gabay sa Pagbuo ng External-Process Plugin ng SpeedMQ —— Java
 
-> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SwiftMQ gamit ang Java.
+> **Para sa**: mga developer na magsusulat ng external-process plugin (sidecar) para sa SpeedMQ gamit ang Java.
 > **Basahin muna**: [Gabay sa Pagbuo ng External-Process Plugin (sidecar)](plugin-development.md) (mental model / config field / pangkalahatang talahanayan ng wire protocol).
-> **Halimbawang proyekto**: workspace na `swiftmq-plugin/java/SidecarPlugin.java` (single file, JDK standard library lamang, walang Maven/Gradle).
+> **Halimbawang proyekto**: workspace na `speedmq-plugin/java/SidecarPlugin.java` (single file, JDK standard library lamang, walang Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
 
 ### Unang hakbang: config
 
-`swiftmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
+`speedmqd.json` (**ang aktwal na config ay standard JSON, hindi maaaring maglaman ng comment**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tatlong pangunahing punto: **ang iyong process ay server** (naghihintay na kumon
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Ang delivery ay **itutulak pabalik nang forward** ng kernel (`method = "session.
 
 ## 4. Code Walkthrough (halimbawang proyekto)
 
-Ang `swiftmq-plugin/java/SidecarPlugin.java` ay humigit-kumulang 470 linya (may kasamang napakasimpleng JSON):
+Ang `speedmq-plugin/java/SidecarPlugin.java` ay humigit-kumulang 470 linya (may kasamang napakasimpleng JSON):
 
 | Lokasyon | Tungkulin |
 | --- | --- |
@@ -167,7 +167,7 @@ Ang `swiftmq-plugin/java/SidecarPlugin.java` ay humigit-kumulang 470 linya (may 
 
 ## 5. Aktwal na Pagsusubok (na-reproduce sa makinang ito)
 
-Windows + JDK 25; kernel sa Docker (`swiftmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; kernel sa Docker (`speedmq:1.1.01`), plugin sa host (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Nasakop: **handshake → auth → semantic bridge → pag-push pabalik ng delive
 ## 7. Advanced
 
 - I-package bilang executable jar (`Main-Class: SidecarPlugin`) o `jlink` para sa pinasimpleng runtime,
-  pagkatapos ay palitan ang `spawn` ng `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  pagkatapos ay palitan ang `spawn` ng `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Sariling admin UI ng plugin: magdagdag ng `console_url` sa config (pangunahing dokumento §5.8), at lalabas ang direktang entry sa "Plugin Management" page ng admin console.
 - Standalone deployment: `spawn: []` + `address: "tcp://<pangalan ng serbisyo>:19031"`, nakikinig sa `0.0.0.0` sa loob ng container.

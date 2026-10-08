@@ -1,4 +1,4 @@
-// Command swiftmqd 是 SwiftMQ 的 broker 进程入口。
+// Command speedmqd 是 SpeedMQ 的 broker 进程入口。
 //
 // 职责：加载配置 → 装配内核与插件运行时 → 起监听（按插件）→ 起管理面 → 优雅退出。
 package main
@@ -19,22 +19,22 @@ import (
 	// 与运行阶段"不执行 apk、不访问外部软件源"的镜像约束一致。
 	_ "time/tzdata"
 
-	"github.com/houzch/swiftmq/internal/broker"
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/management"
-	pluginkit "github.com/houzch/swiftmq/internal/plugin"
-	sidecarplugin "github.com/houzch/swiftmq/internal/plugin/sidecar"
-	"github.com/houzch/swiftmq/internal/protocol/amqp091"
-	"github.com/houzch/swiftmq/internal/protocol/mqtt"
-	"github.com/houzch/swiftmq/internal/protocol/spec"
-	"github.com/houzch/swiftmq/internal/transport"
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/web"
+	"github.com/houzch/speedmq/internal/broker"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/management"
+	pluginkit "github.com/houzch/speedmq/internal/plugin"
+	sidecarplugin "github.com/houzch/speedmq/internal/plugin/sidecar"
+	"github.com/houzch/speedmq/internal/protocol/amqp091"
+	"github.com/houzch/speedmq/internal/protocol/mqtt"
+	"github.com/houzch/speedmq/internal/protocol/spec"
+	"github.com/houzch/speedmq/internal/transport"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/web"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "swiftmqd 启动失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "speedmqd 启动失败: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -42,12 +42,12 @@ func main() {
 func run() error {
 	var (
 		configPath = flag.String("config", "", "配置文件路径（JSON，可选）")
-		logLevel   = flag.String("log-level", "", "日志级别：debug/info/warn/error（默认 info，可被 SWIFTMQ_LOG_LEVEL 覆盖）")
-		logFormat  = flag.String("log-format", "", "日志格式：text/json（默认 text，可被 SWIFTMQ_LOG_FORMAT 覆盖）")
+		logLevel   = flag.String("log-level", "", "日志级别：debug/info/warn/error（默认 info，可被 SPEEDMQ_LOG_LEVEL 覆盖）")
+		logFormat  = flag.String("log-format", "", "日志格式：text/json（默认 text，可被 SPEEDMQ_LOG_FORMAT 覆盖）")
 	)
 	flag.Parse()
 
-	log := newLogger(pick(*logLevel, "SWIFTMQ_LOG_LEVEL", "info"), pick(*logFormat, "SWIFTMQ_LOG_FORMAT", "text"))
+	log := newLogger(pick(*logLevel, "SPEEDMQ_LOG_LEVEL", "info"), pick(*logFormat, "SPEEDMQ_LOG_FORMAT", "text"))
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -64,7 +64,7 @@ func run() error {
 		// `/api/cluster`（cluster.node_id）与 `/api/nodes`（本机名派生）里两个名字下，运维对不上号。
 		nodeName = cfg.Cluster.NodeID
 	}
-	log.Info("SwiftMQ 启动中",
+	log.Info("SpeedMQ 启动中",
 		"version", broker.Version,
 		"node", nodeName,
 		"data_dir", cfg.DataDir,
@@ -154,13 +154,13 @@ func run() error {
 	return nil
 }
 
-// nodeName 生成节点名，形如 swiftmq@<hostname>（对齐 RabbitMQ 的 name@host）。
+// nodeName 生成节点名，形如 speedmq@<hostname>（对齐 RabbitMQ 的 name@host）。
 func nodeName() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {
 		host = "localhost"
 	}
-	return "swiftmq@" + host
+	return "speedmq@" + host
 }
 
 // pick 返回优先级最高的取值：命令行 > 环境变量 > 默认值。

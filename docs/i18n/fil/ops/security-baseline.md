@@ -1,4 +1,4 @@
-# Baseline ng Security Hardening ng SwiftMQ (checklist na maaaring tsekan)
+# Baseline ng Security Hardening ng SpeedMQ (checklist na maaaring tsekan)
 
 > Prinsipyo: **isulat lamang ang mga kakayahang tunay na mayroon ang repository na ito**. Ang bawat isa ay may "bakit kailangan gawin + paano i-verify na nagawa", at ang lahat ng verification command ay maaaring patakbuhin.
 > Ang nakamarkahan ng **【na-verify na】** ay nangangahulugang **talagang naisagawa** sa makinang ito (Windows + PowerShell 5.1, `1.0.0`);
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Bakit**: Naka-align sa RabbitMQ, ang built-in na `guest` ay pinapayagan lamang ang lokal na pag-login bilang default; sa deployment na nakaharap sa labas, dapat siguraduhing limitado ang pinagmulan ng privileged account.
 - **Paano / pagtrato (mahalagang limitasyon)**:
   - Ang `remote_access` ay maisusulat lamang sa **config file** sa ilalim ng `users.<name>.remote_access`, at **epektibo lamang sa unang bootstrap**;
-  - **Ang account na ginawa sa pamamagitan ng management API / `swiftmqctl` ay laging `remote_access=true`** (pinapayagan ang pag-login mula sa kahit anong pinagmulan)——
+  - **Ang account na ginawa sa pamamagitan ng management API / `speedmqctl` ay laging `remote_access=true`** (pinapayagan ang pag-login mula sa kahit anong pinagmulan)——
     base sa `UpsertUser` comment sa `internal/broker/observe.go` at sa aktwal na nasubok sa `meta/state.json` na
     `"remote_access":true`. Ibig sabihin, **sa kasalukuyan ay hindi kayang limitahan ng API ang isang account sa lokal lamang**.
 - **Paano i-verify**: Mula sa **ibang host** (hindi `127.0.0.1`), kumonekta gamit ang account na iyon; dapat makatanggap ng 403; ang lokal na koneksyon ay dapat magtagumpay.
@@ -96,9 +96,9 @@ Mga TLS config item (parehong **ginagamit** ng access layer at management plane 
   **【na-verify na】** Tatlong maling config ang aktwal na nasubok sa makinang ito, lahat `exit=1` at tinanggihan ang pag-start:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Paano i-verify (positibo/negatibo)**: Nakakakonekta ang TLS client, at ang plaintext client na kumokonekta sa TLS port ay tatanggihan.
   **【na-verify na】** Nagpatakbo ng TLS instance sa makinang ito (`amqp091` sa TLS), gamit ang tunay na client probe:
@@ -137,7 +137,7 @@ Mga TLS config item (parehong **ginagamit** ng access layer at management plane 
 
 - **Bakit**: Ang management plane ay default na `:15672` (lahat ng network interface). Sa deployment na nakaharap sa labas, dapat i-bind sa intranet/loopback address, o limitahan ang pinagmulan gamit ang firewall.
 - **Paano**: I-configure ang `management.addr` bilang `127.0.0.1:15672` o isang intranet address; o ganap na isara gamit ang `management.enabled=false`
-  (kapag isinara, walang management port, ngunit hindi na rin magagamit ang `swiftmqctl`).
+  (kapag isinara, walang management port, ngunit hindi na rin magagamit ang `speedmqctl`).
 - **Paano i-verify**:
   **【na-verify na】** Ni-configure ang management plane sa makinang ito bilang `127.0.0.1:15677`, at ang aktwal na listen address ay talagang loopback:
 
@@ -160,8 +160,8 @@ Mga TLS config item (parehong **ginagamit** ng access layer at management plane 
 
 ## D. Hardening ng pagtakbo ng container
 
-Mga katotohanan ng image ng repository (`Dockerfile`): statically linked binary + alpine, **tumatakbo bilang non-root (uid 10001, user na `swiftmq`)**,
-at ang data directory na `/var/lib/swiftmq` ay isang volume. Ang `docker-compose.yml` ay gumagamit ng **named volume** para sa persistence, **read-only mount** ng config, at log rotation.
+Mga katotohanan ng image ng repository (`Dockerfile`): statically linked binary + alpine, **tumatakbo bilang non-root (uid 10001, user na `speedmq`)**,
+at ang data directory na `/var/lib/speedmq` ay isang volume. Ang `docker-compose.yml` ay gumagamit ng **named volume** para sa persistence, **read-only mount** ng config, at log rotation.
 
 ### D-1. Pagtakbo bilang non-root 【hindi pa na-verify (hindi pinatakbo ang Docker sa makinang ito)】
 

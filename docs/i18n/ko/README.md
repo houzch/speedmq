@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | **한국어** | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Go로 작성된 **RabbitMQ 호환** 메시지 미들웨어입니다. 기존 RabbitMQ 클라이언트는 **코드 수정도, SDK 교체도 없이** 접속 주소만 바꾸면 바로 연결할 수 있습니다.
 
@@ -9,7 +9,7 @@ Go로 작성된 **RabbitMQ 호환** 메시지 미들웨어입니다. 기존 Rabb
 
 - **프로토콜 호환**: AMQP 0-9-1(RabbitMQ 확장 포함)과 MQTT 3.1.1이며, 호환 기준선은 **RabbitMQ 4.3 시맨틱**입니다.
 - **간단한 배포**: 바이너리 하나 / 컨테이너 하나면 되고, 관리 UI가 내장되어 있어 별도의 Nginx, 데이터베이스, Node 런타임이 필요 없습니다.
-- **충분한 운영 기능**: 관리 UI(큐 / 익스체인지 / 연결 / 계정 권한 / 가상 호스트 / 정책 / 제한 / 클러스터), Prometheus `/metrics`, 명령줄 `swiftmqctl`.
+- **충분한 운영 기능**: 관리 UI(큐 / 익스체인지 / 연결 / 계정 권한 / 가상 호스트 / 정책 / 제한 / 클러스터), Prometheus `/metrics`, 명령줄 `speedmqctl`.
 - **기본 포트**: `5672`(AMQP), `1883`(MQTT), `15672`(관리 UI / HTTP API / 지표).
 
 이미 갖춘 기능: 영속화(세그먼트 로그 + fsync 등급 + 크래시 복구), 발행 확인, TTL / 데드레터 / 길이 제한, 소비자 우선순위, Direct Reply-To, 클러스터(Raft 메타데이터 + 쿼럼 큐 + 노드 간 포워딩), 플러그인 핫 시작/정지.
@@ -23,39 +23,39 @@ Go로 작성된 **RabbitMQ 호환** 메시지 미들웨어입니다. 기존 Rabb
 **저장소를 clone하지 않고 이미지를 바로 받아 실행할 수 있습니다:**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-이미지는 두 곳에 동일하게 배포됩니다(더 빠른 쪽을 사용하세요): Docker Hub `houzch/swiftmq`, GitHub GHCR `ghcr.io/houzch/swiftmq`. 두 곳 모두 `linux/amd64`와 `linux/arm64`를 제공합니다.
+이미지는 두 곳에 동일하게 배포됩니다(더 빠른 쪽을 사용하세요): Docker Hub `houzch/speedmq`, GitHub GHCR `ghcr.io/houzch/speedmq`. 두 곳 모두 `linux/amd64`와 `linux/arm64`를 제공합니다.
 
-- 데이터는 이름 있는 볼륨 `swiftmq-data`에 저장되어 컨테이너를 다시 만들어도 유지됩니다.
-- 중지/삭제: `docker stop swiftmq`, `docker rm swiftmq`(데이터 볼륨은 유지됩니다).
+- 데이터는 이름 있는 볼륨 `speedmq-data`에 저장되어 컨테이너를 다시 만들어도 유지됩니다.
+- 중지/삭제: `docker stop speedmq`, `docker rm speedmq`(데이터 볼륨은 유지됩니다).
 
 **설정을 바꾸거나 compose로 운영하려면 저장소를 clone하세요:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # 게시된 이미지 사용. 로컬에서 빌드하려면 up -d --build 로 변경
 
 docker compose ps        # 상태가 Up (healthy) 여야 합니다
 docker compose logs -f   # 로그 따라가기
 ```
 
-- 설정은 `configs/swiftmqd.json`을 읽기 전용으로 마운트하며, 수정 후 `docker compose restart` 로 반영됩니다.
+- 설정은 `configs/speedmqd.json`을 읽기 전용으로 마운트하며, 수정 후 `docker compose restart` 로 반영됩니다.
 - 중지: `docker compose down`(데이터 유지), `docker compose down -v`(데이터까지 삭제).
 
 ### 방법 2: 로컬 바이너리(Go 1.24+ 필요)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > 관리 UI 빌드 산출물은 저장소에 포함되지 않습니다. UI를 사용하려면 먼저 `web/`에서 `npm ci && npm run build`를 실행하세요.
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | 관리 UI | <http://localhost:15672/>: 큐 / 익스체인지 / 연결 / 계정 권한 / 가상 호스트 / 정책 / 제한 / 기능 플래그 / 클러스터. 오른쪽 상단에서 자동 새로 고침과 **인터페이스 언어**를 설정할 수 있습니다 |
 | 모니터링 지표 | <http://localhost:15672/metrics>(Prometheus 텍스트, 인증 필요); 패널과 알림은 [모니터링](ops/monitoring/README.md) 참고 |
-| 명령줄 | `./bin/swiftmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091`(핫 비활성화, 포트 즉시 닫힘) |
+| 명령줄 | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091`(핫 비활성화, 포트 즉시 닫힘) |
 | 헬스 체크 | `nc -z 127.0.0.1 15672`(compose에 healthcheck 내장) |
 | 백업과 복구 | [백업 및 복구](ops/backup-restore.md) |
 | 업그레이드 | [업그레이드](ops/upgrade.md) |
 | 보안 기준선 | [보안 기준선](ops/security-baseline.md) |
 
-자주 쓰는 설정(전체 예시는 [configs/swiftmqd.json](../../../configs/swiftmqd.json) 참고, `SWIFTMQ_*` 환경 변수로 덮어쓸 수도 있음):
+자주 쓰는 설정(전체 예시는 [configs/speedmqd.json](../../../configs/speedmqd.json) 참고, `SPEEDMQ_*` 환경 변수로 덮어쓸 수도 있음):
 
 | 설정 항목 | 설명 | 기본값 |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | `storage.fsync` | 디스크 기록 등급 `none / os / batch / always`(confirm 시점도 함께 결정) | `os` |
 | `storage.memory_high_watermark`, `storage.disk_free_limit` | 리소스 워터마크: 도달 시 프로듀서를 차단하며, **메시지를 유실하지 않음** | `0.4` / 50 MiB |
 | `users` | 내장 사용자 테이블(비밀번호 + 태그 + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | 다중 노드 클러스터(기본 비활성), 멤버 변경은 `swiftmqctl add_member` 사용 | 비활성 |
+| `cluster.enabled` + `cluster.peers` | 다중 노드 클러스터(기본 비활성), 멤버 변경은 `speedmqctl add_member` 사용 | 비활성 |
 
 > 포트가 사용 중일 수 있습니다. `listeners` / `management.addr`로 다른 포트로 변경하면 됩니다.
 
@@ -142,10 +142,10 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 ## 프로젝트 구조
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # broker 프로세스 진입점(실행해야 하는 것)
-│   └── swiftmqctl/      # 운영 CLI(관리 HTTP API를 사용하며 커널 버전과 분리)
+│   ├── speedmqd/        # broker 프로세스 진입점(실행해야 하는 것)
+│   └── speedmqctl/      # 운영 CLI(관리 HTTP API를 사용하며 커널 버전과 분리)
 ├── internal/            # 커널 구현
 │   ├── protocol/        # 프로토콜 플러그인: amqp091, mqtt(인코딩/디코딩 / 메서드 / 세션)
 │   ├── broker/          # 커널: vhost, 익스체인지, 큐, 데드레터, 흐름 제어, 관리면 뷰
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # 예시 설정
 ├── docs/ops/            # 운영 문서: 백업 복구 / 업그레이드 / 보안 기준선 / 모니터링
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（交流群二维码）
+└── speedmq-logo.PNG、1280X1280.PNG（交流群二维码）
 ```
 
 ***
@@ -191,6 +191,6 @@ AMQP 0-9-1 프로토콜 규격과 [RabbitMQ](https://www.rabbitmq.com/)의 동�
 
 ## 교류 그룹 참여
 
-QR 코드를 스캔해 SwiftMQ 교류 그룹에 참여하세요. 궁금한 점이 있으면 그룹에서 바로 질문할 수 있습니다:
+QR 코드를 스캔해 SpeedMQ 교류 그룹에 참여하세요. 궁금한 점이 있으면 그룹에서 바로 질문할 수 있습니다:
 
-![SwiftMQ 교류 그룹](../../../1280X1280.PNG)
+![SpeedMQ 교류 그룹](../../../1280X1280.PNG)

@@ -3,8 +3,8 @@ package broker
 import (
 	"regexp"
 
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // permissionSet 是编译后的权限正则。

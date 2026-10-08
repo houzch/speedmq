@@ -1,4 +1,4 @@
-# SwiftMQ セキュリティ強化ベースライン（チェック可能なチェックリスト）
+# SpeedMQ セキュリティ強化ベースライン（チェック可能なチェックリスト）
 
 > 原則：**本リポジトリが実際に備えている能力のみを記載**します。各項目に「なぜ行うか + どうやって実施済みか検証するか」を示し、検証コマンドはすべて実行可能です。
 > **【検証済み】** と注記したものは本機（Windows + PowerShell 5.1、`1.0.0`）で**実際に実行済み**であることを示します；
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **なぜ**：RabbitMQ に合わせ、内蔵 `guest` はデフォルトで本機ログインのみ許可されます；外部デプロイ時は特権アカウントの来源を制限すべきです。
 - **どうする / 扱い（重要な制限）**：
   - `remote_access` は**設定ファイル**の `users.<name>.remote_access` にのみ記述でき、**初回ブートストラップ時のみ有効**；
-  - **管理 API / `swiftmqctl` で作成したアカウントは一律 `remote_access=true`**（任意の来源からのログインを許可）——
+  - **管理 API / `speedmqctl` で作成したアカウントは一律 `remote_access=true`**（任意の来源からのログインを許可）——
     根拠は `internal/broker/observe.go` の `UpsertUser` のコメントと、実測した `meta/state.json` の
     `"remote_access":true`。つまり **API では現時点で特定のアカウントを本機のみに制限できません**。
 - **どう検証する**：**別のホスト**（`127.0.0.1` 以外）からそのアカウントで接続すると 403 となるはずです；本機からの接続は成功するはずです。
@@ -96,9 +96,9 @@ TLS 設定項目（アクセス層と管理面で**同一の**フィールド群
   **【検証済み】** 本機で 3 種の誤設定を実測、すべて `exit=1`、起動拒否：
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **どう検証する（正/逆）**：TLS クライアントは接続でき、平文クライアントが TLS ポートに接続すると拒否されます。
   **【検証済み】** 本機で TLS インスタンスを起動（`amqp091` が TLS を使用）、実クライアントプローブで：
@@ -137,7 +137,7 @@ TLS 設定項目（アクセス層と管理面で**同一の**フィールド群
 
 - **なぜ**：管理面はデフォルトで `:15672`（すべての NIC）。対外デプロイでは内部/ループバックアドレスにバインドするか、ファイアウォールで来源を制限すべきです。
 - **どうする**：`management.addr` を `127.0.0.1:15672` または内部アドレスに設定；または `management.enabled=false` で完全に無効化
-  （無効化すると管理ポートがなくなり、`swiftmqctl` も使用できなくなります）。
+  （無効化すると管理ポートがなくなり、`speedmqctl` も使用できなくなります）。
 - **どう検証する**：
   **【検証済み】** 本機で管理面を `127.0.0.1:15677` に設定し、リスニングアドレスが確かにループバックであることを実測：
 
@@ -160,8 +160,8 @@ TLS 設定項目（アクセス層と管理面で**同一の**フィールド群
 
 ## D. コンテナ実行の強化
 
-リポジトリイメージの事実（`Dockerfile`）：静的リンクバイナリ + alpine、**非 root（uid 10001、ユーザー `swiftmq`）で実行**、
-データディレクトリ `/var/lib/swiftmq` はボリューム。`docker-compose.yml` は**名前付きボリューム**で永続化、設定は**読み取り専用マウント**、ログローテーション。
+リポジトリイメージの事実（`Dockerfile`）：静的リンクバイナリ + alpine、**非 root（uid 10001、ユーザー `speedmq`）で実行**、
+データディレクトリ `/var/lib/speedmq` はボリューム。`docker-compose.yml` は**名前付きボリューム**で永続化、設定は**読み取り専用マウント**、ログローテーション。
 
 ### D-1. 非 root 実行 【未検証（本機未 Docker 実行）】
 

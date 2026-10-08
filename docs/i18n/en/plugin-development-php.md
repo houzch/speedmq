@@ -1,8 +1,8 @@
-# SwiftMQ External-Process Plugin Development Guide — PHP
+# SpeedMQ External-Process Plugin Development Guide — PHP
 
-> **Audience**: developers writing external-process plugins (sidecars) for SwiftMQ in PHP.
+> **Audience**: developers writing external-process plugins (sidecars) for SpeedMQ in PHP.
 > **Read first**: [External-Process Plugin (sidecar) Development Guide](plugin-development.md) (mental model / configuration fields / full wire-protocol table).
-> **Example project**: workspace `swiftmq-plugin/php/sidecar_plugin.php` (standard library only, **no composer dependencies**).
+> **Example project**: workspace `speedmq-plugin/php/sidecar_plugin.php` (standard library only, **no composer dependencies**).
 
 ---
 
@@ -26,7 +26,7 @@ Three key points: **your process is the server** (it waits for the kernel to con
 
 ### Step 1: Configuration
 
-`swiftmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
+`speedmqd.json` (**the actual configuration is standard JSON and cannot contain comments**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Three key points: **your process is the server** (it waits for the kernel to con
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Deliveries are **pushed forward** by the kernel (`method = "session.deliver"`); 
 
 ## 4. Code Walkthrough (Example Project)
 
-`swiftmq-plugin/php/sidecar_plugin.php` is about 320 lines:
+`speedmq-plugin/php/sidecar_plugin.php` is about 320 lines:
 
 | Location | Purpose |
 | --- | --- |
@@ -171,7 +171,7 @@ Deliveries are **pushed forward** by the kernel (`method = "session.deliver"`); 
 
 ## 5. Empirical Test (Reproduced Locally)
 
-Windows + PHP 7.4; the kernel runs in Docker (`swiftmq:1.1.01`), the plugin runs on the host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; the kernel runs in Docker (`speedmq:1.1.01`), the plugin runs on the host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件是 MQTT 3.1.1 的连接状态机：握手、订阅、收发、QoS 结算、遗嘱与保留消息。
@@ -273,7 +273,7 @@ func (c *conn) handshake(ctx context.Context) error {
 	c.clientID = p.ClientID
 	if c.clientID == "" {
 		// 规范允许 Clean Session=1 时用空 Client ID，由服务端分配一个。
-		c.clientID = fmt.Sprintf("swiftmq-auto-%d-%d", time.Now().UnixNano(), autoClientSeq.Add(1))
+		c.clientID = fmt.Sprintf("speedmq-auto-%d-%d", time.Now().UnixNano(), autoClientSeq.Add(1))
 	}
 	c.cleanSession = p.CleanSession
 	c.keepAliveSec = p.KeepAlive

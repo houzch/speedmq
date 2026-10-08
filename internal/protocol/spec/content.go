@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/protocol/codec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 内容头（Content Header）承载 Basic 类的 14 个内容属性。

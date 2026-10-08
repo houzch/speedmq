@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/raft"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/raft"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件是 M6 的集群接线：把 meta.Store（Raft 复制的元数据层）与内核内存拓扑绑在一起。
@@ -1049,7 +1049,7 @@ const vhostSeedMark = "vhosts.seeded"
 // bootstrapVHosts 把配置里的初始 vhost 写进元数据，随后退出。
 //
 // 与账号、cluster.peers 同一约定：**配置文件只负责首次引导**，此后 vhost 集合以元数据为准。
-// 因此"给已有实例新增一个 vhost"要经管理 API / swiftmqctl 做，而不是改配置 —— 改配置不会生效，
+// 因此"给已有实例新增一个 vhost"要经管理 API / speedmqctl 做，而不是改配置 —— 改配置不会生效，
 // 这一点在 README 的 vhost 说明里写明。
 func (b *Broker) bootstrapVHosts(ctx context.Context) {
 	if b.meta == nil {

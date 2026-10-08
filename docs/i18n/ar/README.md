@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | **العربية** | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 برمجية وسيطة للرسائل **متوافقة مع RabbitMQ** مكتوبة بلغة Go. يمكن لعملاء RabbitMQ الحاليين الاتصال بها **دون تعديل الشيفرة ودون تبديل SDK**، بمجرد تغيير عنوان الاتصال.
 
@@ -9,7 +9,7 @@
 
 - **توافق البروتوكول**: AMQP 0-9-1 (مع امتدادات RabbitMQ) وMQTT 3.1.1؛ وخط أساس التوافق هو **دلالات RabbitMQ 4.3**.
 - **نشر بسيط**: ملف تنفيذي واحد / حاوية واحدة، وواجهة الإدارة مدمجة، دون حاجة إلى Nginx أو قاعدة بيانات أو بيئة تشغيل Node إضافية.
-- **كافٍ للعمليات**: واجهة الإدارة (الطوابير / المبادلات / الاتصالات / صلاحيات الحسابات / المضيفات الافتراضية / السياسات / الحدود / العنقود)، وPrometheus `/metrics`، وسطر أوامر `swiftmqctl`.
+- **كافٍ للعمليات**: واجهة الإدارة (الطوابير / المبادلات / الاتصالات / صلاحيات الحسابات / المضيفات الافتراضية / السياسات / الحدود / العنقود)، وPrometheus `/metrics`، وسطر أوامر `speedmqctl`.
 - **المنافذ الافتراضية**: `5672` (AMQP) و`1883` (MQTT) و`15672` (واجهة الإدارة / HTTP API / المقاييس).
 
 القدرات المتوفرة حاليًا: الاستدامة (سجل المقاطع + مستويات fsync + الاستعادة بعد الانهيار)، وتأكيدات النشر، وTTL / الرسائل الميتة / حدود الطول، وأولوية المستهلكين، وDirect Reply-To، والعنقود (بيانات وصفية بنظام Raft + طوابير النصاب + إعادة التوجيه بين العقد)، والتشغيل/الإيقاف الساخن للإضافات.
@@ -23,39 +23,39 @@
 **بدون استنساخ المستودع: اسحب الصورة وشغّلها مباشرة.**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-تُنشَر الصورة في مكانين بمحتوى متطابق (اختر الأسرع لديك): Docker Hub `houzch/swiftmq` وGitHub GHCR `ghcr.io/houzch/swiftmq`، وكلاهما يوفّر `linux/amd64` و`linux/arm64`.
+تُنشَر الصورة في مكانين بمحتوى متطابق (اختر الأسرع لديك): Docker Hub `houzch/speedmq` وGitHub GHCR `ghcr.io/houzch/speedmq`، وكلاهما يوفّر `linux/amd64` و`linux/arm64`.
 
-- تُحفظ البيانات في الحجم المسمّى `swiftmq-data` وتبقى حتى بعد إعادة إنشاء الحاوية.
-- الإيقاف / الحذف: `docker stop swiftmq` و`docker rm swiftmq` (يبقى حجم البيانات).
+- تُحفظ البيانات في الحجم المسمّى `speedmq-data` وتبقى حتى بعد إعادة إنشاء الحاوية.
+- الإيقاف / الحذف: `docker stop speedmq` و`docker rm speedmq` (يبقى حجم البيانات).
 
 **لتعديل الإعدادات أو للاستخدام مع compose، استنسخ المستودع:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # يستخدم الصورة المنشورة؛ غيّرها إلى up -d --build للبناء محليًا
 
 docker compose ps        # يجب أن تكون الحالة Up (healthy)
 docker compose logs -f   # متابعة السجلات
 ```
 
-- يُربَط ملف الإعدادات `configs/swiftmqd.json` للقراءة فقط، وتُطبَّق التعديلات بعد `docker compose restart`.
+- يُربَط ملف الإعدادات `configs/speedmqd.json` للقراءة فقط، وتُطبَّق التعديلات بعد `docker compose restart`.
 - الإيقاف: `docker compose down` (يحتفظ بالبيانات)؛ `docker compose down -v` (يحذف البيانات أيضًا).
 
 ### الطريقة 2: ملف تنفيذي محلي (يتطلب Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > ناتج بناء واجهة الإدارة لا يُودع في المستودع. إذا أردت استخدام الواجهة، نفِّذ أولًا `npm ci && npm run build` داخل `web/`؛
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | واجهة الإدارة | <http://localhost:15672/>: الطوابير / المبادلات / الاتصالات / صلاحيات الحسابات / المضيفات الافتراضية / السياسات / الحدود / مفاتيح الميزات / العنقود، ويمكن ضبط التحديث التلقائي و**لغة الواجهة** من الزاوية العلوية اليمنى |
 | مقاييس المراقبة | <http://localhost:15672/metrics> (نص Prometheus، يتطلب مصادقة)؛ انظر [docs/ops/monitoring](ops/monitoring/README.md) للوحات والتنبيهات |
-| سطر الأوامر | `./bin/swiftmqctl status` و`list_queues` و`plugins list` و`plugins disable amqp091` (إيقاف ساخن، ويُغلق المنفذ فورًا) |
+| سطر الأوامر | `./bin/speedmqctl status` و`list_queues` و`plugins list` و`plugins disable amqp091` (إيقاف ساخن، ويُغلق المنفذ فورًا) |
 | فحص السلامة | `nc -z 127.0.0.1 15672` (مدمج في compose عبر healthcheck) |
 | النسخ الاحتياطي والاستعادة | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | الترقية | [docs/ops/upgrade.md](ops/upgrade.md) |
 | خط أساس الأمان | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-الإعدادات الشائعة (المثال الكامل في [configs/swiftmqd.json](../../../configs/swiftmqd.json)، ويمكن أيضًا تجاوزها بمتغيرات البيئة `SWIFTMQ_*`):
+الإعدادات الشائعة (المثال الكامل في [configs/speedmqd.json](../../../configs/speedmqd.json)، ويمكن أيضًا تجاوزها بمتغيرات البيئة `SPEEDMQ_*`):
 
 | عنصر الإعداد | الوصف | الافتراضي |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | `storage.fsync` | مستوى الحفظ على القرص `none / os / batch / always` (ويحدد أيضًا توقيت confirm) | `os` |
 | `storage.memory_high_watermark` و`storage.disk_free_limit` | عتبات الموارد: عند بلوغها يُحظر المنتِج، **دون فقدان الرسائل** | `0.4` / 50 MiB |
 | `users` | جدول المستخدمين المدمجين (كلمة المرور + الوسوم + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | عنقود متعدد العقد (معطّل افتراضيًا)، وتغيير الأعضاء عبر `swiftmqctl add_member` | معطّل |
+| `cluster.enabled` + `cluster.peers` | عنقود متعدد العقد (معطّل افتراضيًا)، وتغيير الأعضاء عبر `speedmqctl add_member` | معطّل |
 
 > قد يكون المنفذ مُستخدَمًا: يكفي تغييره إلى منفذ آخر عبر `listeners` / `management.addr`.
 
@@ -142,10 +142,10 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 ## بنية المشروع
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # مدخل عملية broker (وهو ما يجب تشغيله)
-│   └── swiftmqctl/      # سطر أوامر العمليات (يمر عبر واجهة HTTP الإدارية، ومستقل عن نسخة النواة)
+│   ├── speedmqd/        # مدخل عملية broker (وهو ما يجب تشغيله)
+│   └── speedmqctl/      # سطر أوامر العمليات (يمر عبر واجهة HTTP الإدارية، ومستقل عن نسخة النواة)
 ├── internal/            # تنفيذ النواة
 │   ├── protocol/        # إضافات البروتوكول: amqp091 وmqtt (الترميز/فك الترميز / الطرق / الجلسات)
 │   ├── broker/          # النواة: vhost، المبادلات، الطوابير، الرسائل الميتة، التحكم في التدفق، عرض المستوى الإداري
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # إعدادات نموذجية
 ├── docs/ops/            # مستندات العمليات: النسخ الاحتياطي والاستعادة / الترقية / خط أساس الأمان / المراقبة
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（رمز QR لمجموعة الدردشة）
+└── speedmq-logo.PNG、1280X1280.PNG（رمز QR لمجموعة الدردشة）
 ```
 
 ***
@@ -191,6 +191,6 @@ Copyright 2026 houzch (انظر [NOTICE](../../../NOTICE))
 
 ## الانضمام إلى مجموعة الدردشة
 
-امسح رمز QR للانضمام إلى مجموعة دردشة SwiftMQ، ويمكنك طرح أسئلتك مباشرة في المجموعة:
+امسح رمز QR للانضمام إلى مجموعة دردشة SpeedMQ، ويمكنك طرح أسئلتك مباشرة في المجموعة:
 
-![مجموعة دردشة SwiftMQ](../../../1280X1280.PNG)
+![مجموعة دردشة SpeedMQ](../../../1280X1280.PNG)

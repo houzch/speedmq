@@ -1,5 +1,5 @@
 # ---- Go 构建产物 ----
-# 本地构建的二进制（swiftmqd、amqp091probe、测试二进制等）
+# 本地构建的二进制（speedmqd、amqp091probe、测试二进制等）
 /bin/
 *.exe
 *.exe~

@@ -1,7 +1,7 @@
 package spec
 
 import (
-	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/internal/protocol/codec"
 )
 
 // 本文件覆盖 M8 所需的方法：AMQP 事务（class 90）。

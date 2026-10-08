@@ -1,6 +1,6 @@
-# SwiftMQ 외부 프로세스 플러그인(sidecar) 개발 가이드
+# SpeedMQ 외부 프로세스 플러그인(sidecar) 개발 가이드
 
-> **대상**: 커널을 fork / 재컴파일하지 않고 **임의의 언어**로 SwiftMQ를 확장하려는 개발자.
+> **대상**: 커널을 fork / 재컴파일하지 않고 **임의의 언어**로 SpeedMQ를 확장하려는 개발자.
 > **범위**: 이 문서는 한 가지 플러그인 형태인 **외부 프로세스 플러그인**(커널 용어 `sidecar`)만 다룹니다. 커널 내장 프로토콜 플러그인(AMQP 0-9-1 / MQTT)은 이 문서의 범위가 아닙니다.
 > **읽는 법**: 1–2절에서 멘탈 모델을 세우고, 3절에서 코드를 작성하며, **5절은 "개발을 마친 뒤 어떻게 연결해 함께 실행하고 대외 서비스를 제공하는가"** 입니다;
 > **다른 언어(Python / Node.js / PHP / Java)는 §4의 언어별 가이드를 보세요** (각각 실측으로 검증된 완전한 예제 프로젝트를 포함합니다).
@@ -71,7 +71,7 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
      → Stop（内核退出）：断开连接、回收桥上会话与未结算投递、终止由内核拉起的子进程
 ```
 
-**상태 시맨틱**(`swiftmqctl plugins show`로 확인 가능):
+**상태 시맨틱**(`speedmqctl plugins show`로 확인 가능):
 
 | 상태 | 의미 | 운영 조치 |
 | --- | --- | --- |
@@ -88,21 +88,21 @@ Load → Init：spawn(可选) → dial(address) → 握手 → 按配置注册 p
 
 플러그인은 **독립 Go module**이며, 두 개의 대외 계약 패키지에만 의존합니다:
 
-- `github.com/houzch/swiftmq/pkg/sidecar` —— 와이어 프로토콜과 플러그인 측 구현(**필수**)
-- `github.com/houzch/swiftmq/pkg/plugin` —— `plugin.Message` / `plugin.Error` 같은 타입이 필요할 때만(선택)
+- `github.com/houzch/speedmq/pkg/sidecar` —— 와이어 프로토콜과 플러그인 측 구현(**필수**)
+- `github.com/houzch/speedmq/pkg/plugin` —— `plugin.Message` / `plugin.Error` 같은 타입이 필요할 때만(선택)
 
 ```
 my-sidecar/
-├── go.mod          # module my-sidecar；require github.com/houzch/swiftmq（或 replace 指到本地源码）
+├── go.mod          # module my-sidecar；require github.com/houzch/speedmq（或 replace 指到本地源码）
 ├── main.go         # 启动 sidecar.Server
 └── handler.go      # 实现 sidecar.Handler
 ```
 
 ```bash
 go mod init my-sidecar
-go get github.com/houzch/swiftmq@v1.1.03
+go get github.com/houzch/speedmq@v1.1.03
 # 本地联调时可改用 replace 指向源码：
-#   go mod edit -replace github.com/houzch/swiftmq=../swiftmq
+#   go mod edit -replace github.com/houzch/speedmq=../speedmq
 ```
 
 > `replace`로 연동 디버깅할 때는 플러그인과 커널이 **동일한 소스**여야 합니다. 그렇지 않으면 API 버전(`v1`)은 일치해도 타입은 다를 수 있습니다.
@@ -126,7 +126,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 const (
@@ -255,8 +255,8 @@ func (h *handler) serve(stream *sidecar.Stream) error {
 import (
 	"errors"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	"github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 func (h *handler) runDemo(ctx context.Context, stream *sidecar.Stream) error {
@@ -412,14 +412,14 @@ func TestHelloRejectsWrongName(t *testing.T) {
 
 > **완전한 예제 프로젝트가 포함된 언어별 가이드를 제공합니다**(예제는 모두 핸드셰이크 → 인증 → 시맨틱 브리지 → 전달/정산 → 바이트 스트림까지 실측 통과):
 >
-> | 언어 | 가이드 | 예제 프로젝트(작업 공간 `swiftmq-plugin/`) |
+> | 언어 | 가이드 | 예제 프로젝트(작업 공간 `speedmq-plugin/`) |
 > | --- | --- | --- |
 > | Python | [plugin-development-python.md](plugin-development-python.md) | `python/sidecar_plugin.py`(표준 라이브러리만) |
 > | Node.js | [plugin-development-nodejs.md](plugin-development-nodejs.md) | `nodejs/index.js`(표준 라이브러리만) |
 > | PHP | [plugin-development-php.md](plugin-development-php.md) | `php/sidecar_plugin.php`(표준 라이브러리만) |
 > | Java | [plugin-development-java.md](plugin-development-java.md) | `java/SidecarPlugin.java`(단일 파일, JDK만) |
 >
-> Go의 완전한 참조 구현은 독립 테스트 프로젝트 `swiftmq-test/test/integration/echosidecar/`를 참조하세요(이는 `pkg/sidecar.Server`를 직접 사용하므로
+> Go의 완전한 참조 구현은 독립 테스트 프로젝트 `speedmq-test/test/integration/echosidecar/`를 참조하세요(이는 `pkg/sidecar.Server`를 직접 사용하므로
 > 아래 바이트 계층 세부 사항을 신경 쓸 필요가 없습니다).
 
 **프레임 형식**(모든 프레임 공통):
@@ -450,7 +450,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 **컨트롤 플레인 JSON 구조**(필드 이름은 `proto.go`와 일치).
 
 > 이 단락은 **와이어 프로토콜 메시지 예시**입니다(한 블록에 여러 메시지를 순서대로 제시하므로 `//`로 설명을 구분),
-> **`swiftmqd.json`에 그대로 쓸 수 있는 설정이 아닙니다**.
+> **`speedmqd.json`에 그대로 쓸 수 있는 설정이 아닙니다**.
 
 ```jsonc
 // Hello（内核 → 插件）
@@ -483,11 +483,11 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ## 5. 함께 실행하기: 연동, 대외 서비스, 패키징 ★
 
-이 절은 "개발을 마친 뒤 어떻게 SwiftMQ에 연결하고, 어떻게 대외 서비스를 제공하는가"를 다룹니다.
+이 절은 "개발을 마친 뒤 어떻게 SpeedMQ에 연결하고, 어떻게 대외 서비스를 제공하는가"를 다룹니다.
 
 ### 5.1 설정에 플러그인 선언
 
-외부 플러그인은 **전적으로 설정으로 관리**되며, 커널은 이를 위해 어떤 코드도 바꿀 필요가 없습니다. `swiftmqd.json`의 `plugins` 섹션에 항목을 추가하세요
+외부 플러그인은 **전적으로 설정으로 관리**되며, 커널은 이를 위해 어떤 코드도 바꿀 필요가 없습니다. `speedmqd.json`의 `plugins` 섹션에 항목을 추가하세요
 (**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
 
 ```json
@@ -554,7 +554,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 주소 선택:
 
 - **동일 머신에서는 unix socket 권장**(`unix:///tmp/my-sidecar.sock`): TCP 포트를 차지하지 않고, 호스트 포트 점유 영향도 받지 않습니다.
-  단, socket 경로는 커널 프로세스(컨테이너에서는 비 root `swiftmq` 사용자)가 쓸 수 있어야 합니다.
+  단, socket 경로는 커널 프로세스(컨테이너에서는 비 root `speedmq` 사용자)가 쓸 수 있어야 합니다.
 - **크로스 컨테이너는 반드시 TCP**여야 하며, 플러그인 프로세스는 `0.0.0.0`을 리슨하고 `address`에는 **컨테이너 네트워크의 서비스 이름**을 사용합니다.
 
 > 방향을 헷갈리지 마세요: **플러그인이 리슨하는 주소** = `address`; **클라이언트에 개방하는 포트** = `protocols[].listeners`.
@@ -584,8 +584,8 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 "listeners": {
   "myproto": [
     { "addr": ":19002" },
-    { "addr": ":19003", "tls": { "cert_file": "/etc/swiftmq/tls/cert.pem",
-                                 "key_file":  "/etc/swiftmq/tls/key.pem" } }
+    { "addr": ":19003", "tls": { "cert_file": "/etc/speedmq/tls/cert.pem",
+                                 "key_file":  "/etc/speedmq/tls/key.pem" } }
   ]
 }
 ```
@@ -594,7 +594,7 @@ len = 1 + len(payload)，即长度字段**包含** kind 字节；单帧上限 16
 
 ### 5.5 패키징: 플러그인을 커널과 함께 실행
 
-**방법 A —— 같은 이미지에 넣기**("커널과 함께 릴리스"하는 플러그인에 권장): `swiftmq/Dockerfile`의 런타임 스테이지에 한 줄을 추가:
+**방법 A —— 같은 이미지에 넣기**("커널과 함께 릴리스"하는 플러그인에 권장): `speedmq/Dockerfile`의 런타임 스테이지에 한 줄을 추가:
 
 ```dockerfile
 COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-sidecar
@@ -609,11 +609,11 @@ COPY --from=<构建你的插件的 stage> /out/my-sidecar /usr/local/bin/my-side
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "info"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "info"]
     volumes:
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       - ./bin/my-sidecar:/usr/local/bin/my-sidecar:ro   # 插件二进制
     ports:
       - "5672:5672"        # AMQP（内置）
@@ -636,9 +636,9 @@ services:
 
 ```yaml
 services:
-  swiftmq:
-    image: houzch/swiftmq:1.1.03
-    volumes: ["./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro"]
+  speedmq:
+    image: houzch/speedmq:1.1.03
+    volumes: ["./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro"]
     ports: ["5672:5672", "15672:15672", "19002:19002"]
     depends_on: [my-sidecar]
 
@@ -653,11 +653,11 @@ services:
 
 ```bash
 # 1) 内核日志里应能看到握手与接入
-docker compose logs swiftmq | grep -E "外部插件已接入|外部插件进程"
+docker compose logs speedmq | grep -E "外部插件已接入|外部插件进程"
 
 # 2) 经 CLI 看插件状态（state=enabled 且 RuntimeNote 为空）
-./bin/swiftmqctl plugins list
-./bin/swiftmqctl plugins show my-sidecar
+./bin/speedmqctl plugins list
+./bin/speedmqctl plugins show my-sidecar
 
 # 3) 经管理 API 看（等价入口）
 curl -u guest:guest http://127.0.0.1:15672/api/plugins/my-sidecar
@@ -674,9 +674,9 @@ printf 'hello\n' | nc 127.0.0.1 19002
 
 | 작업 | 명령 / 인터페이스 | 효과 |
 | --- | --- | --- |
-| 핫 비활성화 | `swiftmqctl plugins disable my-sidecar` 또는 `PUT /api/plugins/my-sidecar/disable` | **해당 플러그인의 대외 리스너 닫기**(능력 수준 비활성화); 커널과 다른 플러그인은 영향 없음 |
-| 핫 활성화 | `swiftmqctl plugins enable my-sidecar` | 리스너 다시 열기; 이전 기동이 실패했다면 한 번 재시도 |
-| 상태 보기 | `swiftmqctl plugins list/show` | 상태 + 실패/연결 끊김 사유 |
+| 핫 비활성화 | `speedmqctl plugins disable my-sidecar` 또는 `PUT /api/plugins/my-sidecar/disable` | **해당 플러그인의 대외 리스너 닫기**(능력 수준 비활성화); 커널과 다른 플러그인은 영향 없음 |
+| 핫 활성화 | `speedmqctl plugins enable my-sidecar` | 리스너 다시 열기; 이전 기동이 실패했다면 한 번 재시도 |
+| 상태 보기 | `speedmqctl plugins list/show` | 상태 + 실패/연결 끊김 사유 |
 | 커널 종료 | — | 플러그인 연결 끊기, 브리지 세션 회수, **커널이 `spawn`한 자식 프로세스 종료** |
 
 > 핫 비활성화는 "능력"(리스닝 포트)만 닫고, `spawn`으로 띄운 플러그인 프로세스를 **죽이지 않습니다**; 프로세스 회수는 커널 종료 시 발생합니다.
@@ -751,7 +751,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 상태 `failed`, 사유에 "플러그인 이름 불일치" | 설정의 플러그인 이름 ≠ `HelloAck.name`; 일치시키세요 |
 | 상태 `failed`, 사유에 "API 버전 불일치" | `HelloAck.api_version` ≠ 커널 `APIVersion`; 일치시키세요 |
 | 상태 `failed`, 사유에 "핸드셰이크 거부" | 플러그인 `Hello`가 error를 반환(`deny`); 커널 로그에 포워딩된 플러그인 출력을 확인하세요 |
-| 상태 `failed`, 사유에 "외부 플러그인 연결 실패" | 프로세스가 안 뜸 / `address` 오타 / socket 경로 쓰기 불가(컨테이너에서는 `swiftmq` 사용자 권한 주의) |
+| 상태 `failed`, 사유에 "외부 플러그인 연결 실패" | 프로세스가 안 뜸 / `address` 오타 / socket 경로 쓰기 불가(컨테이너에서는 `speedmq` 사용자 권한 주의) |
 | 상태 `down` | 플러그인 프로세스 크래시 또는 연결 끊김; `restart=always`는 자동 재연결, `never`는 수동 기동 필요 |
 | 포트가 안 열림 / 클라이언트 연결 불가 | `protocols[].listeners` 미설정 또는 주소가 `listeners.<프로토콜 이름>`에 덮임; 두 곳을 대조하세요 |
 | 클라이언트가 다른 포트에 연결 후 즉시 끊김 | 그 포트가 프로토콜과 매칭되지 않음(`prefix`가 비었거나 프리픽스 불일치); 프로토콜에 비어 있지 않은 `prefix` 설정(§5.3 참조) |
@@ -772,7 +772,7 @@ printf 'hello\n' | nc 127.0.0.1 19002
 | 커널 세션 조작면 타입(`Message` / `Delivery` / `ErrorKind`) | [`pkg/plugin/session.go`](../../../pkg/plugin/session.go) |
 | 리스닝, 스니핑, 플러그인별 핫 기동·정지 | [`internal/transport/server.go`](../../../internal/transport/server.go) |
 | 플러그인 수명 주기와 거버넌스(격리/상태/감사) | [`internal/plugin/manager.go`](../../../internal/plugin/manager.go), [`registry.go`](../../../internal/plugin/registry.go) |
-| 설정 항목과 예시(sidecar 섹션 포함) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/swiftmqd.json`](../../../configs/swiftmqd.json) |
-| 프로세스 조립(sidecar가 커널에 어떻게 조립되는지) | [`cmd/swiftmqd/main.go`](../../../cmd/swiftmqd/main.go) |
-| Go 참조 구현(`pkg/sidecar.Server` 사용, `session.*` 브리지와 `core.authenticate` 포함) | 독립 테스트 프로젝트 `swiftmq-test/test/integration/echosidecar/` |
-| **언어별 가이드 + 예제 프로젝트** | 이 디렉터리의 `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; 예제는 **작업 공간** `swiftmq-plugin/{python,nodejs,php,java}/` |
+| 설정 항목과 예시(sidecar 섹션 포함) | [`internal/config/config.go`](../../../internal/config/config.go), [`configs/speedmqd.json`](../../../configs/speedmqd.json) |
+| 프로세스 조립(sidecar가 커널에 어떻게 조립되는지) | [`cmd/speedmqd/main.go`](../../../cmd/speedmqd/main.go) |
+| Go 참조 구현(`pkg/sidecar.Server` 사용, `session.*` 브리지와 `core.authenticate` 포함) | 독립 테스트 프로젝트 `speedmq-test/test/integration/echosidecar/` |
+| **언어별 가이드 + 예제 프로젝트** | 이 디렉터리의 `plugin-development-python.md` / `-nodejs.md` / `-php.md` / `-java.md`; 예제는 **작업 공간** `speedmq-plugin/{python,nodejs,php,java}/` |

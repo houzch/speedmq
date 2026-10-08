@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sort"
 
-	"github.com/houzch/swiftmq/internal/meta"
+	"github.com/houzch/speedmq/internal/meta"
 )
 
 // 本文件实现 RabbitMQ 的 policy（策略）：把一组配置按**名称匹配**统一施加到一批队列/交换机上。

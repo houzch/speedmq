@@ -1,9 +1,9 @@
-# دليل تطوير المكوّن الإضافي كعملية خارجية في SwiftMQ —— Python
+# دليل تطوير المكوّن الإضافي كعملية خارجية في SpeedMQ —— Python
 
-> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSwiftMQ بلغة Python.
+> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSpeedMQ بلغة Python.
 > **اقرأ أولًا**: [دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar)](plugin-development.md) —— فهناك شُرح النموذج الذهني وحقول الإعداد والجدول الكامل لبروتوكول السلك؛
 > أما هذا المستند فيشرح فقط **كيفية التنفيذ بلغة Python**، والخطوات والنتائج المُختبَرة محليًا.
-> **المشروع النموذجي**: في مساحة العمل `swiftmq-plugin/python/sidecar_plugin.py` (المكتبة القياسية فقط، بلا أي اعتماديات خارجية).
+> **المشروع النموذجي**: في مساحة العمل `speedmq-plugin/python/sidecar_plugin.py` (المكتبة القياسية فقط، بلا أي اعتماديات خارجية).
 
 ---
 
@@ -31,7 +31,7 @@
 
 ### الخطوة الأولى: الإعلان عن المكوّن الإضافي في الإعداد
 
-`swiftmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
+`speedmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
 
 ```json
 {
@@ -41,7 +41,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -153,7 +153,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 4. قراءة الشيفرة (المشروع النموذجي)
 
-يبلغ `swiftmq-plugin/python/sidecar_plugin.py` نحو 320 سطرًا، والدوال المهمة:
+يبلغ `speedmq-plugin/python/sidecar_plugin.py` نحو 320 سطرًا، والدوال المهمة:
 
 | الموضع | الوظيفة |
 | --- | --- |
@@ -169,7 +169,7 @@ call("session.consume", {"stream": stream_id, "queue": q["name"], "prefetch": 32
 
 ## 5. اختبار فعلي (إعادة الإنتاج محليًا)
 
-البيئة: Windows + Python 3.12؛ والنواة تعمل في Docker (`swiftmq:1.1.01`)، والمكوّن الإضافي يعمل على المضيف،
+البيئة: Windows + Python 3.12؛ والنواة تعمل في Docker (`speedmq:1.1.01`)، والمكوّن الإضافي يعمل على المضيف،
 وتتصل به النواة عبر `tcp://host.docker.internal:19001`.
 
 ```

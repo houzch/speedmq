@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | [日本語](../ja/README.md) | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | **Русский** | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Промежуточное ПО обмена сообщениями, **совместимое с RabbitMQ**, написанное на Go. Существующие клиенты RabbitMQ подключаются **без изменения кода и без смены SDK** — достаточно изменить адрес подключения.
 
@@ -9,7 +9,7 @@
 
 - **Совместимость протоколов**: AMQP 0-9-1 (включая расширения RabbitMQ) и MQTT 3.1.1; базовая линия совместимости — **семантика RabbitMQ 4.3**.
 - **Простое развёртывание**: один бинарный файл / один контейнер, панель управления уже встроена, не нужны дополнительный Nginx, база данных или среда выполнения Node.
-- **Достаточно для эксплуатации**: панель управления (очереди / обменники / подключения / права учётных записей / виртуальные хосты / политики / лимиты / кластер), Prometheus `/metrics`, командная строка `swiftmqctl`.
+- **Достаточно для эксплуатации**: панель управления (очереди / обменники / подключения / права учётных записей / виртуальные хосты / политики / лимиты / кластер), Prometheus `/metrics`, командная строка `speedmqctl`.
 - **Порты по умолчанию**: `5672` (AMQP), `1883` (MQTT), `15672` (панель управления / HTTP API / метрики).
 
 Уже имеющиеся возможности: персистентность (сегментный журнал + режимы fsync + восстановление после сбоев), подтверждения публикации, TTL / dead-letter / ограничение длины, приоритет потребителей, Direct Reply-To, кластер (метаданные Raft + кворумные очереди + пересылка между узлами), горячий запуск и остановка плагинов.
@@ -23,39 +23,39 @@
 **Клонировать репозиторий не нужно — просто заберите образ и запустите:**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-Образ публикуется в двух местах с одинаковым содержимым (выбирайте, где быстрее): Docker Hub `houzch/swiftmq` и GitHub GHCR `ghcr.io/houzch/swiftmq`; оба дают `linux/amd64` и `linux/arm64`.
+Образ публикуется в двух местах с одинаковым содержимым (выбирайте, где быстрее): Docker Hub `houzch/speedmq` и GitHub GHCR `ghcr.io/houzch/speedmq`; оба дают `linux/amd64` и `linux/arm64`.
 
-- Данные попадают в именованный том `swiftmq-data` и сохраняются при пересоздании контейнера.
-- Остановка / удаление: `docker stop swiftmq`, `docker rm swiftmq` (том с данными остаётся).
+- Данные попадают в именованный том `speedmq-data` и сохраняются при пересоздании контейнера.
+- Остановка / удаление: `docker stop speedmq`, `docker rm speedmq` (том с данными остаётся).
 
 **Чтобы изменить конфигурацию или использовать compose, клонируйте репозиторий:**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # Использует опубликованный образ; замените на up -d --build для локальной сборки
 
 docker compose ps        # Статус должен быть Up (healthy)
 docker compose logs -f   # Следить за логами
 ```
 
-- Конфигурация монтируется только для чтения из `configs/swiftmqd.json`; изменения применяются после `docker compose restart`.
+- Конфигурация монтируется только для чтения из `configs/speedmqd.json`; изменения применяются после `docker compose restart`.
 - Остановка: `docker compose down` (данные сохраняются); `docker compose down -v` (удаляет и данные).
 
 ### Способ второй: локальный бинарный файл (требуется Go 1.24+)
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > Артефакты сборки панели управления не хранятся в репозитории. Если нужна панель, сначала выполните в `web/` `npm ci && npm run build`;
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | Панель управления | <http://localhost:15672/>: очереди / обменники / подключения / права учётных записей / виртуальные хосты / политики / лимиты / переключатели функций / кластер; в правом верхнем углу можно настроить автообновление и **язык интерфейса** |
 | Метрики мониторинга | <http://localhost:15672/metrics> (текстовый формат Prometheus, требуется аутентификация); панели и оповещения см. [docs/ops/monitoring](ops/monitoring/README.md) |
-| Командная строка | `./bin/swiftmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (горячее отключение, порт немедленно закрывается) |
+| Командная строка | `./bin/speedmqctl status`, `list_queues`, `plugins list`, `plugins disable amqp091` (горячее отключение, порт немедленно закрывается) |
 | Проверка работоспособности | `nc -z 127.0.0.1 15672` (в compose уже встроен healthcheck) |
 | Резервное копирование и восстановление | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | Обновление | [docs/ops/upgrade.md](ops/upgrade.md) |
 | Базовая линия безопасности | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-Часто используемые настройки (полный пример см. [configs/swiftmqd.json](../../../configs/swiftmqd.json), также можно переопределить переменными окружения `SWIFTMQ_*`):
+Часто используемые настройки (полный пример см. [configs/speedmqd.json](../../../configs/speedmqd.json), также можно переопределить переменными окружения `SPEEDMQ_*`):
 
 | Настройка | Описание | По умолчанию |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | `storage.fsync` | Режим сброса на диск `none / os / batch / always` (одновременно определяет момент confirm) | `os` |
 | `storage.memory_high_watermark`, `storage.disk_free_limit` | Пороги ресурсов: при срабатывании блокируются производители, **сообщения не теряются** | `0.4` / 50 MiB |
 | `users` | Таблица встроенных пользователей (пароль + теги + `remote_access`) | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | Многоузловой кластер (по умолчанию выключен), изменение состава через `swiftmqctl add_member` | Выключен |
+| `cluster.enabled` + `cluster.peers` | Многоузловой кластер (по умолчанию выключен), изменение состава через `speedmqctl add_member` | Выключен |
 
 > Порт может быть занят: просто замените его на другой через `listeners` / `management.addr`.
 
@@ -142,10 +142,10 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 ## Структура проекта
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # точка входа процесса broker (запускать нужно именно его)
-│   └── swiftmqctl/      # CLI для эксплуатации (работает через управляющий HTTP API, развязан с версией ядра)
+│   ├── speedmqd/        # точка входа процесса broker (запускать нужно именно его)
+│   └── speedmqctl/      # CLI для эксплуатации (работает через управляющий HTTP API, развязан с версией ядра)
 ├── internal/            # реализация ядра
 │   ├── protocol/        # плагины протоколов: amqp091, mqtt (кодирование/декодирование / методы / сессии)
 │   ├── broker/          # ядро: vhost, обменники, очереди, dead-letter, управление потоком, представление управляющего слоя
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # примеры конфигурации
 ├── docs/ops/            # документация по эксплуатации: резервное копирование и восстановление / обновление / базовая линия безопасности / мониторинг
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（交流群二维码）
+└── speedmq-logo.PNG、1280X1280.PNG（交流群二维码）
 ```
 
 ***
@@ -191,6 +191,6 @@ Copyright 2026 houzch（см. [NOTICE](../../../NOTICE)）
 
 ## Присоединиться к группе общения
 
-Отсканируйте QR-код, чтобы присоединиться к группе общения SwiftMQ; при возникновении вопросов можно задать их прямо в группе:
+Отсканируйте QR-код, чтобы присоединиться к группе общения SpeedMQ; при возникновении вопросов можно задать их прямо в группе:
 
-![Группа общения SwiftMQ](../../../1280X1280.PNG)
+![Группа общения SpeedMQ](../../../1280X1280.PNG)

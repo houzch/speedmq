@@ -1,8 +1,8 @@
-# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SwiftMQ —— Java
+# คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก SpeedMQ —— Java
 
-> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SwiftMQ ด้วย Java
+> **กลุ่มเป้าหมาย**: นักพัฒนาที่เขียนปลั๊กอินโปรเซสภายนอก (sidecar) ให้ SpeedMQ ด้วย Java
 > **อ่านก่อน**: [คู่มือการพัฒนา ปลั๊กอินโปรเซสภายนอก (sidecar)](plugin-development.md) (แบบจำลองทางความคิด / ฟิลด์คอนฟิก / ตารางสรุปโปรโตคอลสาย)
-> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `swiftmq-plugin/java/SidecarPlugin.java` (ไฟล์เดียว เฉพาะไลบรารีมาตรฐาน JDK ไม่ต้องใช้ Maven/Gradle)
+> **โปรเจกต์ตัวอย่าง**: เวิร์กสเปซ `speedmq-plugin/java/SidecarPlugin.java` (ไฟล์เดียว เฉพาะไลบรารีมาตรฐาน JDK ไม่ต้องใช้ Maven/Gradle)
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### ขั้นที่หนึ่ง: คอนฟิก
 
-`swiftmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
+`speedmqd.json` (**คอนฟิกจริงเป็น JSON มาตรฐาน ใส่คอมเมนต์ไม่ได้**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. อ่านโค้ด (โปรเจกต์ตัวอย่าง)
 
-`swiftmq-plugin/java/SidecarPlugin.java` ประมาณ 470 บรรทัด (รวม JSON แบบมินิมอล):
+`speedmq-plugin/java/SidecarPlugin.java` ประมาณ 470 บรรทัด (รวม JSON แบบมินิมอล):
 
 | ตำแหน่ง | หน้าที่ |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. การทดสอบจริง (จำลองบนเครื่องนี้)
 
-Windows + JDK 25; เคอร์เนลบน Docker (`swiftmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19031`)
+Windows + JDK 25; เคอร์เนลบน Docker (`speedmq:1.1.01`) ปลั๊กอินบนโฮสต์ (`tcp://host.docker.internal:19031`)
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. ขั้นสูง
 
 - แพ็กเกจเป็น jar ที่รันได้ (`Main-Class: SidecarPlugin`) หรือ `jlink` ย่อรันไทม์
-  แล้วเปลี่ยน `spawn` เป็น `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`
+  แล้วเปลี่ยน `spawn` เป็น `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`
 - ปลั๊กอินมีหน้าจอจัดการในตัว: เพิ่ม `console_url` ในคอนฟิก (เอกสารหลัก §5.8) หน้า「การจัดการปลั๊กอิน」ของแบ็กเอนด์จัดการจะมีทางเข้าตรง
 - ดีพลอยแยกส่วน: `spawn: []` + `address: "tcp://<ชื่อบริการ>:19031"` รับฟัง `0.0.0.0` ในคอนเทนเนอร์

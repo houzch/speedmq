@@ -1,8 +1,8 @@
-# SwiftMQ 외부 프로세스 플러그인 개발 가이드 —— Java
+# SpeedMQ 외부 프로세스 플러그인 개발 가이드 —— Java
 
-> **대상**: Java로 SwiftMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
+> **대상**: Java로 SpeedMQ 외부 프로세스 플러그인(sidecar)을 작성하는 개발자.
 > **먼저 읽기**: [외부 프로세스 플러그인(sidecar) 개발 가이드](plugin-development.md)(멘탈 모델 / 설정 필드 / 와이어 프로토콜 총표).
-> **예제 프로젝트**: 작업 공간 `swiftmq-plugin/java/SidecarPlugin.java`(단일 파일, JDK 표준 라이브러리만, Maven/Gradle 불필요).
+> **예제 프로젝트**: 작업 공간 `speedmq-plugin/java/SidecarPlugin.java`(단일 파일, JDK 표준 라이브러리만, Maven/Gradle 불필요).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 1단계: 설정
 
-`swiftmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
+`speedmqd.json`(**실제 설정은 표준 JSON이며 주석을 넣을 수 없습니다**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. 코드 훑어보기(예제 프로젝트)
 
-`swiftmq-plugin/java/SidecarPlugin.java`는 약 470줄(초경량 JSON 포함):
+`speedmq-plugin/java/SidecarPlugin.java`는 약 470줄(초경량 JSON 포함):
 
 | 위치 | 역할 |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. 실측(로컬 재현)
 
-Windows + JDK 25; 커널은 Docker(`swiftmq:1.1.01`), 플러그인은 호스트(`tcp://host.docker.internal:19031`).
+Windows + JDK 25; 커널은 Docker(`speedmq:1.1.01`), 플러그인은 호스트(`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. 심화
 
 - 실행 가능 jar(`Main-Class: SidecarPlugin`) 또는 `jlink`로 경량 런타임으로 패키징한 뒤,
-  `spawn`을 `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`로 바꿉니다.
+  `spawn`을 `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`로 바꿉니다.
 - 플러그인 자체 관리 UI: 설정에 `console_url` 추가(메인 문서 §5.8), 관리 콘솔 "플러그인 관리" 페이지에 바로가기 진입점이 나타납니다.
 - 독립 배포: `spawn: []` + `address: "tcp://<서비스 이름>:19031"`, 컨테이너 안에서 `0.0.0.0` 리슨.

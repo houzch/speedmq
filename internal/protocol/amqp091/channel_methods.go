@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/protocol/codec"
-	"github.com/houzch/swiftmq/internal/protocol/spec"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/internal/protocol/spec"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // handle 分发本通道收到的方法。

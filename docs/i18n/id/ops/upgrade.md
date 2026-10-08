@@ -1,12 +1,12 @@
-# SwiftMQ Peningkatan Versi dan Rencana Migrasi
+# SpeedMQ Peningkatan Versi dan Rencana Migrasi
 
-> Versi yang berlaku: `1.0.0` (`broker.Version`, lihat `swiftmq_build_info` di `/metrics`).
+> Versi yang berlaku: `1.0.0` (`broker.Version`, lihat `speedmq_build_info` di `/metrics`).
 > Semua kesimpulan "hasil uji nyata" dalam dokumen ini berasal dari operasi nyata di mesin lokal; yang belum diuji nyata semuanya ditandai secara eksplisit **【Belum Diverifikasi】**.
 > Lingkungan mesin lokal: Windows + PowerShell 5.1, Go 1.27.1 windows/386, `data_dir` sementara + port non-default.
 
 ---
 
-## 1. Migrasi (beralih dari RabbitMQ ke SwiftMQ)
+## 1. Migrasi (beralih dari RabbitMQ ke SpeedMQ)
 
 Posisi proyek ini adalah **kompatibel pada level protokol AMQP 0-9-1**, sehingga "migrasi" sebagian besar adalah **mengubah alamat koneksi**:
 
@@ -16,7 +16,7 @@ Posisi proyek ini adalah **kompatibel pada level protokol AMQP 0-9-1**, sehingga
 
 **Perbedaan semantik yang perlu diperiksa sendiri sebelum migrasi** (semuanya disengaja oleh repositori ini, berdasarkan README / dokumen desain):
 
-| Item | Perilaku SwiftMQ | Dampak migrasi |
+| Item | Perilaku SpeedMQ | Dampak migrasi |
 | --- | --- | --- |
 | Antrean sementara (non-persistent dan non-exclusive) | **Menolak deklarasi** (541), `auto_delete` tidak dikecualikan | Klien lama yang bergantung pada antrean jenis ini akan gagal, perlu diubah menjadi durable atau exclusive |
 | vhost default `/` | **Tidak dapat dihapus** (400), RabbitMQ mengizinkan | Skrip otomasi yang menghapus vhost default akan gagal (ini satu-satunya batasan keamanan aktif) |
@@ -24,8 +24,8 @@ Posisi proyek ini adalah **kompatibel pada level protokol AMQP 0-9-1**, sehingga
 | Antrean quorum | Mendukung penambahan replika, **tidak mendukung pengurangan** | Rencanakan sekali dengan tepat |
 | Plugin | Tidak ada ekosistem plugin Erlang, AMQP 1.0 / STOMP belum diimplementasikan | Skenario yang menggunakan protokol ini belum dapat dimigrasikan |
 
-**Migrasi data**: format penyimpanan SwiftMQ dan RabbitMQ tidak kompatibel, **tidak menyediakan alat pemindahan data online/offline**.
-Cara migrasi adalah "buat SwiftMQ kosong baru → jalankan ganda untuk verifikasi → alihkan aliran secara bertahap". **【Belum Diverifikasi】** Dokumen ini tidak memuat latihan pemindahan data RabbitMQ yang nyata.
+**Migrasi data**: format penyimpanan SpeedMQ dan RabbitMQ tidak kompatibel, **tidak menyediakan alat pemindahan data online/offline**.
+Cara migrasi adalah "buat SpeedMQ kosong baru → jalankan ganda untuk verifikasi → alihkan aliran secara bertahap". **【Belum Diverifikasi】** Dokumen ini tidak memuat latihan pemindahan data RabbitMQ yang nyata.
 
 ---
 
@@ -84,7 +84,7 @@ data/
 - Keduanya **hanya berlaku saat bootstrap pertama**: startup pertama akan menulis vhosts/users di konfigurasi ke metadata dan meninggalkan file penanda
   `meta/vhosts.seeded` / `meta/users.seeded`; **setelah itu metadata yang menjadi acuan**.
 - Karena itu **saat peningkatan/mengganti konfigurasi, jangan berharap dapat menambah/menghapus akun atau vhost melalui perubahan file konfigurasi** — perubahan tidak akan berlaku;
-  gunakan API manajemen atau `swiftmqctl`.
+  gunakan API manajemen atau `speedmqctl`.
 - Sebaliknya, peningkatan **tidak akan** menimpa akun yang sudah ada dengan konfigurasi: kata sandi yang diubah saat runtime tidak akan dikembalikan ke nilai lama di konfigurasi oleh restart,
   akun yang dihapus saat runtime juga tidak akan hidup kembali. Dasar: logika penanda seeding di `cluster.go`; README M8-4 / M8-7.
 
@@ -102,22 +102,22 @@ data/
 ### 5.1 Langkah-langkah
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) Hentikan proses (keluar graceful akan melakukan flush penutup; lihat §4 "konsistensi")
 #    Jika dijalankan sebagai foreground: Ctrl+C; jika sebagai layanan: Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Cadangkan direktori data (harus setelah proses berhenti)
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) Ganti biner (letakkan swiftmqd.exe / swiftmqctl.exe versi baru di path semula)
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) Ganti biner (letakkan speedmqd.exe / speedmqctl.exe versi baru di path semula)
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) Jalankan
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) Verifikasi: proses hidup + API manajemen dapat dibaca
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -127,22 +127,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 Daftar periksa setelah peningkatan
 
-- Log startup memunculkan `SwiftMQ 启动中 ... version=<新版本>` dan `管理面已启动`;
+- Log startup memunculkan `SpeedMQ 启动中 ... version=<新版本>` dan `管理面已启动`;
 - `object_totals` / `queue_totals` di `/api/overview` sama dengan sebelum pencadangan (bandingkan `backup-restore.md` §5);
 - `messages` / `messages_ready` setiap antrean durable di `/api/queues` sama dengan sebelum pencadangan;
-- `/metrics` dapat di-scrape dan `swiftmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
+- `/metrics` dapat di-scrape dan `speedmq_plugin_up{name="amqp091"} 1`, `{name="mqtt"} 1`.
 
 ---
 
 ## 6. Peningkatan image (kontainer)
 
-Image berukuran sekitar 13 MB (biner statis + alpine), **berjalan sebagai non-root (uid 10001)**, direktori data dipasang di `/var/lib/swiftmq`.
+Image berukuran sekitar 13 MB (biner statis + alpine), **berjalan sebagai non-root (uid 10001)**, direktori data dipasang di `/var/lib/speedmq`.
 
 ```powershell
 # 1) Tarik/build image baru (gunakan nomor versi baru sebagai tag, hindari kebingungan old/new)
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) Hentikan kontainer lama (compose akan mempertahankan named volume swiftmq-data)
+# 2) Hentikan kontainer lama (compose akan mempertahankan named volume speedmq-data)
 docker compose down
 
 # 3) Jalankan versi baru (ubah image di file compose ke tag baru)
@@ -153,14 +153,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **Tugas sekali jalan di dalam kontainer** (misalnya menjalankan `swiftmqctl` di dalam kontainer): `run` pada `docker compose ...` di lingkungan non-interaktif harus menambahkan `-T`,
+> **Tugas sekali jalan di dalam kontainer** (misalnya menjalankan `speedmqctl` di dalam kontainer): `run` pada `docker compose ...` di lingkungan non-interaktif harus menambahkan `-T`,
 > jika tidak akan gagal karena meminta TTY:
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-Persistensi data bergantung pada **named volume** `swiftmq-data` di compose, data tidak hilang saat kontainer dibuat ulang (sejak M4 benar-benar ditulis ke disk).
-Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangkan `/var/lib/swiftmq` (lihat `backup-restore.md` §3.2). **【Peningkatan image belum diuji】** (mesin lokal tidak menjalankan Docker).
+Persistensi data bergantung pada **named volume** `speedmq-data` di compose, data tidak hilang saat kontainer dibuat ulang (sejak M4 benar-benar ditulis ke disk).
+Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangkan `/var/lib/speedmq` (lihat `backup-restore.md` §3.2). **【Peningkatan image belum diuji】** (mesin lokal tidak menjalankan Docker).
 
 ---
 
@@ -168,7 +168,7 @@ Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangk
 
 ### 7.1 Mandiri
 
-- **Canary**: SwiftMQ mandiri tidak memiliki kemampuan bawaan "dua versi baru/lama dalam satu proses". Canary yang layak adalah **bayangan di jalur samping**:
+- **Canary**: SpeedMQ mandiri tidak memiliki kemampuan bawaan "dua versi baru/lama dalam satu proses". Canary yang layak adalah **bayangan di jalur samping**:
   instans versi baru terlebih dahulu dipasang pada aliran upstream yang sama dengan **konsumsi baca-saja/antrean bayangan** untuk diamati, setelah dipastikan benar baru alihkan sisi penulis.
 - **Rollback**:
   1. Hentikan proses versi baru;
@@ -181,7 +181,7 @@ Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangk
 Sisi platform tidak menyediakan "peningkatan bergulir sekali klik", perlu dioperasikan manual per node dalam urutan berikut:
 
 1. **Hanya tingkatkan satu node dalam satu waktu**: hentikan node tersebut → cadangkan `data_dir`-nya → ganti biner → jalankan → tunggu sampai ia bergabung kembali dan mengejar
-   (`swiftmqctl cluster_status` / `GET /api/cluster` lihat `role`, `commit_index`/`last_applied`).
+   (`speedmqctl cluster_status` / `GET /api/cluster` lihat `role`, `commit_index`/`last_applied`).
 2. **Saran urutan**: tingkatkan dulu **learner / anggota non-voting** (tidak berpengaruh pada mayoritas), lalu **follower**, terakhir **leader**
    (peningkatan leader akan memicu pemilihan pemimpin, selama itu ada waktu singkat tidak dapat menulis).
 3. **Dampak penghentian terhadap mayoritas** (kunci):
@@ -201,10 +201,10 @@ Sisi platform tidak menyediakan "peningkatan bergulir sekali klik", perlu dioper
 
 - **Penurunan antar-versi mayor: tidak didukung, belum diverifikasi**. Jika versi baru sudah menulis data dengan format/semantik baru, **tidak ada** jaminan "kembali ke biner lama dan membaca apa adanya";
   rollback hanya bisa mengandalkan cadangan sebelum peningkatan.
-- **Format konfigurasi tidak berubah**: tetap JSON + variabel lingkungan `SWIFTMQ_*`. **Konfigurasi YAML belum didukung** (perlu menambahkan dependensi parser, M8-17 menunggu evaluasi),
+- **Format konfigurasi tidak berubah**: tetap JSON + variabel lingkungan `SPEEDMQ_*`. **Konfigurasi YAML belum didukung** (perlu menambahkan dependensi parser, M8-17 menunggu evaluasi),
   peningkatan tidak akan menghadirkan YAML.
 - **Hot upgrade plugin/protokol online**: plugin dikompilasi menyatu dengan kernel (bentuk A) atau dinaikkan sesuai konfigurasi `spawn` (bentuk B),
   peningkatan kernel = restart proses; **tidak ada** mekanisme penggantian biner secara hot di tempat.
 - **Migrasi mesin penyimpanan di tempat**: rotasi segmen/kompresi indeks adalah perilaku latar belakang saat runtime, **tidak ada** perintah "migrasi/kompresi data" yang berdiri sendiri.
 - **Peningkatan klaster di jaringan sungguhan**: repositori ini hanya melakukan chaos yang diperkecil (kill di level proses), **belum melakukan** latihan peningkatan di bawah partisi jaringan atau disk penuh.
-- Dokumen ini **tidak memuat** verifikasi pemindahan data apa pun antara SwiftMQ dan broker lain (RabbitMQ).
+- Dokumen ini **tidak memuat** verifikasi pemindahan data apa pun antara SpeedMQ dan broker lain (RabbitMQ).

@@ -6,7 +6,7 @@ import "time"
 // plugin.Session（队列 / 交换机 / 绑定 / 发布 / 消费 / 权限），而不只是拿原始字节流。
 //
 // 边界：本包只依赖标准库，因此这里只出现 JSON DTO 与方法名，**不**引用 pkg/plugin ——
-// 类型化的友好封装留给插件自己（示例见 swiftmq-test/test/integration/echosidecar）。
+// 类型化的友好封装留给插件自己（示例见 speedmq-test/test/integration/echosidecar）。
 //
 // 设计要点：
 //   - 每条反向调用都带 stream（由内核在建流时分配），内核据此定位到该连接对应的会话；

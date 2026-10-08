@@ -1,4 +1,4 @@
-# النسخ الاحتياطي والاستعادة في SwiftMQ
+# النسخ الاحتياطي والاستعادة في SpeedMQ
 
 > استنتاجات «الاختبار الفعلي» في هذا المستند مستمدة كلها من تمرين حقيقي على **Windows + PowerShell 5.1** (دليل `data_dir` مؤقت ومنافذ مؤقتة).
 > أوامر التمرين ومخرجاته الأساسية مُلصَقة كما هي في §6. وسيُشار صراحةً إلى الأجزاء **【غير مُتحقَّق منها】** (النسخ الاحتياطي/الاستعادة للعنقود، النسخ الاحتياطي لحجم Docker، إلخ).
@@ -55,15 +55,15 @@
 
 ```powershell
 # 1) إيقاف العملية (في المقدمة: Ctrl+C؛ في الخلفية: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) نسخ كامل data_dir (مع طابع زمني)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (اختياري) التحقق من إمكانية تحليل لقطة البيانات الوصفية في النسخة الاحتياطية
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 العنقود
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # بعد إيقاف الحاوية، حزّم محتوى الحجم وانسخه باستخدام حاوية مؤقتة لمرة واحدة
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【غير مُتحقَّق منه】** (لم يُشغَّل Docker على هذا الجهاز).
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) التأكد من أن العملية متوقفة
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) نقل (أو حذف) data_dir الحالي لتجنّب اختلاط الملفات القديمة بالجديدة
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) الاستعادة من النسخة الاحتياطية
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) التشغيل
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 نقاط مهمة:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > البيئة: `data_dir` في دليل مؤقت، AMQP `127.0.0.1:5676`، والواجهة الإدارية `127.0.0.1:15677`، وMQTT `127.0.0.1:1884`،
 > والحساب الافتراضي `guest/guest`. سجل بدء التشغيل:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

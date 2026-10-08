@@ -1,4 +1,4 @@
-# SwiftMQ Sicherheits-Hardening-Baseline (Checkliste zum Abhaken)
+# SpeedMQ Sicherheits-Hardening-Baseline (Checkliste zum Abhaken)
 
 > Prinzip: **Es werden nur Fähigkeiten beschrieben, die dieses Repository tatsächlich besitzt**. Zu jedem Punkt wird angegeben, „warum man es tun sollte + wie man verifiziert, dass es getan wurde“; alle Verifikationsbefehle sind ausführbar.
 > Mit **【Verifiziert】** gekennzeichnete Punkte bedeuten, dass sie auf diesem Rechner (Windows + PowerShell 5.1, `1.0.0`) **tatsächlich ausgeführt wurden**;
@@ -74,7 +74,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
 - **Warum**: An RabbitMQ angeglichen; das integrierte `guest` erlaubt standardmäßig nur die lokale Anmeldung; bei externer Bereitstellung sollte die Quelle privilegierter Konten eingeschränkt werden.
 - **Vorgehen / Handhabung (wichtige Einschränkung)**:
   - `remote_access` kann nur in der **Konfigurationsdatei** unter `users.<name>.remote_access` gesetzt werden und **wird nur beim ersten Bootstrap wirksam**;
-  - **Über die Management-API / `swiftmqctl` erstellte Konten haben grundsätzlich `remote_access=true`** (Anmeldung von beliebiger Quelle erlaubt) –
+  - **Über die Management-API / `speedmqctl` erstellte Konten haben grundsätzlich `remote_access=true`** (Anmeldung von beliebiger Quelle erlaubt) –
     Beleg: der `UpsertUser`-Kommentar in `internal/broker/observe.go` und die Messung in `meta/state.json` von
     `"remote_access":true`. Mit anderen Worten: **Die API kann derzeit ein Konto nicht auf „nur lokal“ beschränken**.
 - **Verifikation**: Von **einem anderen Host** (nicht `127.0.0.1`) aus mit diesem Konto verbinden; es sollte 403 liefern; die lokale Verbindung sollte erfolgreich sein.
@@ -96,9 +96,9 @@ TLS-Konfigurationsschlüssel (die Zugriffsebene und die Management-Ebene **teile
   **【Verifiziert】** Messung mit drei fehlerhaften Konfigurationen auf diesem Rechner, alle `exit=1`, Start abgelehnt:
 
   ```
-  badtls1: swiftmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
-  badtls2: swiftmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
-  badtls3: swiftmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
+  badtls1: speedmqd 启动失败: listeners.amqp091[0].tls 需要同时提供 cert_file 与 key_file
+  badtls2: speedmqd 启动失败: listeners.amqp091[0].tls.min_version 取值非法: "1.0"（可选 1.2 / 1.3）
+  badtls3: speedmqd 启动失败: listeners.amqp091[0].tls 无效: 加载服务端证书失败（cert=... key=...）: open ...: The system cannot find the path specified.
   ```
 - **Verifikation (positiv/negativ)**: Ein TLS-Client kann sich verbinden, ein Klartext-Client wird beim Verbinden mit dem TLS-Port abgelehnt.
   **【Verifiziert】** Auf diesem Rechner wurde eine TLS-Instanz gestartet (`amqp091` über TLS) und mit einer echten Client-Probe getestet:
@@ -137,7 +137,7 @@ TLS-Konfigurationsschlüssel (die Zugriffsebene und die Management-Ebene **teile
 
 - **Warum**: Die Management-Ebene lauscht standardmäßig auf `:15672` (alle Netzwerkkarten). Bei externer Bereitstellung sollte sie an eine interne/Loopback-Adresse gebunden oder die Quelle per Firewall eingeschränkt werden.
 - **Vorgehen**: `management.addr` auf `127.0.0.1:15672` oder eine interne Adresse setzen; oder `management.enabled=false`, um sie vollständig zu deaktivieren
-  (danach gibt es keinen Management-Port, aber `swiftmqctl` ist dann ebenfalls nicht verfügbar).
+  (danach gibt es keinen Management-Port, aber `speedmqctl` ist dann ebenfalls nicht verfügbar).
 - **Verifikation**:
   **【Verifiziert】** Auf diesem Rechner wurde die Management-Ebene auf `127.0.0.1:15677` konfiguriert; die gemessene Lauschadresse ist tatsächlich Loopback:
 
@@ -160,8 +160,8 @@ TLS-Konfigurationsschlüssel (die Zugriffsebene und die Management-Ebene **teile
 
 ## D. Hardening des Containerbetriebs
 
-Fakten zum Image dieses Repositories (`Dockerfile`): statisch gelinktes Binary + alpine, **läuft als Nicht-root (uid 10001, Benutzer `swiftmq`)**,
-das Datenverzeichnis `/var/lib/swiftmq` ist ein Volume. `docker-compose.yml` verwendet **benannte Volumes** zur Persistenz, **schreibgeschütztes Mounten** der Konfiguration und Log-Rotation.
+Fakten zum Image dieses Repositories (`Dockerfile`): statisch gelinktes Binary + alpine, **läuft als Nicht-root (uid 10001, Benutzer `speedmq`)**,
+das Datenverzeichnis `/var/lib/speedmq` ist ein Volume. `docker-compose.yml` verwendet **benannte Volumes** zur Persistenz, **schreibgeschütztes Mounten** der Konfiguration und Log-Rotation.
 
 ### D-1. Betrieb als Nicht-root 【Nicht verifiziert (Docker wurde auf diesem Rechner nicht ausgeführt)】
 

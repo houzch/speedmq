@@ -1,8 +1,8 @@
-# Panduan Pembangunan Pemalam Proses Luaran SwiftMQ —— Java
+# Panduan Pembangunan Pemalam Proses Luaran SpeedMQ —— Java
 
-> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SwiftMQ dengan Java.
+> **Sasaran**: pembangun yang menulis pemalam proses luaran (sidecar) untuk SpeedMQ dengan Java.
 > **Baca dahulu**: [Panduan Pembangunan Pemalam Proses Luaran (sidecar)](plugin-development.md) (model mental / medan konfigurasi / jadual penuh protokol wayar).
-> **Projek contoh**: ruang kerja `swiftmq-plugin/java/SidecarPlugin.java` (fail tunggal, hanya pustaka piawai JDK, tanpa Maven/Gradle).
+> **Projek contoh**: ruang kerja `speedmq-plugin/java/SidecarPlugin.java` (fail tunggal, hanya pustaka piawai JDK, tanpa Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
 
 ### Langkah pertama: konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
+`speedmqd.json` (**konfigurasi sebenar ialah JSON standard, tidak boleh mengandungi komen**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga perkara penting: **proses anda ialah pelayan** (menunggu kernel datang meny
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 4. Walkthrough kod (projek contoh)
 
-`swiftmq-plugin/java/SidecarPlugin.java` kira-kira 470 baris (termasuk JSON minimum):
+`speedmq-plugin/java/SidecarPlugin.java` kira-kira 470 baris (termasuk JSON minimum):
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -167,7 +167,7 @@ Penghantaran ditolak balik oleh kernel secara **hadapan** (`method = "session.de
 
 ## 5. Ujian sebenar (reproduksi setempat)
 
-Windows + JDK 25; kernel dalam Docker (`swiftmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; kernel dalam Docker (`speedmq:1.1.01`), pemalam pada hos (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Diliputi: **jabat tangan -> pengesahan -> jambatan semantik -> penghantaran dito
 ## 7. Lanjutan
 
 - Bungkus menjadi jar boleh laksana (`Main-Class: SidecarPlugin`) atau `jlink` masa jalan yang diringkaskan,
-  kemudian tukar `spawn` kepada `["java", "-jar", "/opt/swiftmq/sidecar.jar", ...]`.
+  kemudian tukar `spawn` kepada `["java", "-jar", "/opt/speedmq/sidecar.jar", ...]`.
 - Pemalam membawa antara muka pengurusan sendiri: tambah `console_url` dalam konfigurasi (dokumen utama §5.8), halaman "pengurusan pemalam" backend pengurusan akan memaparkan pintu masuk terus.
 - Penggunaan bebas: `spawn: []` + `address: "tcp://<nama perkhidmatan>:19031"`, dalam kontena mendengar `0.0.0.0`.

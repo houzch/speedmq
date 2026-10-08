@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // takeoverTimeout 是接管同 Client ID 旧连接时，等待其收尾（取消消费者、释放独占队列）的上限。

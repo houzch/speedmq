@@ -1,10 +1,10 @@
-# SwiftMQ 外部进程插件开发指南 —— PHP
+# SpeedMQ 外部进程插件开发指南 —— PHP
 
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
-> **面向**：用 PHP 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
+> **面向**：用 PHP 给 SpeedMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md)（心智模型 / 配置字段 / 线协议总表）。
-> **示例工程**：工作区 `swiftmq-plugin/php/sidecar_plugin.php`（仅标准库，**无需 composer 依赖**）。
+> **示例工程**：工作区 `speedmq-plugin/php/sidecar_plugin.php`（仅标准库，**无需 composer 依赖**）。
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### 第一步：配置
 
-`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
+`speedmqd.json`（**实际配置是标准 JSON，不能带注释**）：
 
 ```json
 {
@@ -38,7 +38,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -157,7 +157,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. 代码走读（示例工程）
 
-`swiftmq-plugin/php/sidecar_plugin.php` 约 320 行：
+`speedmq-plugin/php/sidecar_plugin.php` 约 320 行：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -173,7 +173,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. 实测（本机复现）
 
-Windows + PHP 7.4；内核在 Docker（`swiftmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19021`）。
+Windows + PHP 7.4；内核在 Docker（`speedmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19021`）。
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

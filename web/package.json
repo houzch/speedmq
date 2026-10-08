@@ -1,9 +1,9 @@
 {
-  "name": "swiftmq-web",
+  "name": "speedmq-web",
   "private": true,
   "version": "1.1.03",
   "type": "module",
-  "description": "SwiftMQ 管理后台前端（Vue 3 + Vite + TypeScript + Element Plus）",
+  "description": "SpeedMQ 管理后台前端（Vue 3 + Vite + TypeScript + Element Plus）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

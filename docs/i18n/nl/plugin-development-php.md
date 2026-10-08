@@ -1,8 +1,8 @@
-# Ontwikkelgids voor SwiftMQ externe-procesplugins —— PHP
+# Ontwikkelgids voor SpeedMQ externe-procesplugins —— PHP
 
-> **Doelgroep**: ontwikkelaars die met PHP externe-procesplugins (sidecar) voor SwiftMQ schrijven.
+> **Doelgroep**: ontwikkelaars die met PHP externe-procesplugins (sidecar) voor SpeedMQ schrijven.
 > **Eerst lezen**: [Ontwikkelgids voor externe-procesplugins (sidecar)](plugin-development.md) (mentaal model / configuratievelden / wire-protocoltabel).
-> **Voorbeeldproject**: workspace `swiftmq-plugin/php/sidecar_plugin.php` (alleen de standaardbibliotheek, **geen composer-afhankelijkheden**).
+> **Voorbeeldproject**: workspace `speedmq-plugin/php/sidecar_plugin.php` (alleen de standaardbibliotheek, **geen composer-afhankelijkheden**).
 
 ---
 
@@ -26,7 +26,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
 
 ### Stap één: configuratie
 
-`swiftmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
+`speedmqd.json` (**de feitelijke configuratie is standaard JSON en mag geen commentaar bevatten**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Drie kernpunten: **je proces is de server** (wacht tot de kernel verbinding maak
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 4. Codewandeling (voorbeeldproject)
 
-`swiftmq-plugin/php/sidecar_plugin.php` is ongeveer 320 regels:
+`speedmq-plugin/php/sidecar_plugin.php` is ongeveer 320 regels:
 
 | Locatie | Functie |
 | --- | --- |
@@ -171,7 +171,7 @@ Bezorgingen worden door de kernel **in voorwaartse richting teruggeduwd** (`meth
 
 ## 5. Meting (lokaal gereproduceerd)
 
-Windows + PHP 7.4; de kernel draait in Docker (`swiftmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4; de kernel draait in Docker (`speedmq:1.1.01`), de plugin op de host (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

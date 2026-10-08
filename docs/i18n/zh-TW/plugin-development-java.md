@@ -1,8 +1,8 @@
-# SwiftMQ 外部行程外掛開發指南 —— Java
+# SpeedMQ 外部行程外掛開發指南 —— Java
 
-> **適用對象**：用 Java 為 SwiftMQ 撰寫外部行程外掛（sidecar）的開發者。
+> **適用對象**：用 Java 為 SpeedMQ 撰寫外部行程外掛（sidecar）的開發者。
 > **先讀**：[外部行程外掛（sidecar）開發指南](plugin-development.md)（心智模型 / 設定欄位 / 線路協定總表）。
-> **範例專案**：工作區 `swiftmq-plugin/java/SidecarPlugin.java`（單一檔案、僅 JDK 標準函式庫，無需 Maven/Gradle）。
+> **範例專案**：工作區 `speedmq-plugin/java/SidecarPlugin.java`（單一檔案、僅 JDK 標準函式庫，無需 Maven/Gradle）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第一步：設定
 
-`swiftmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
+`speedmqd.json`（**實際設定是標準 JSON，不能帶註解**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. 程式碼走讀（範例專案）
 
-`swiftmq-plugin/java/SidecarPlugin.java` 約 470 行（含極簡 JSON）：
+`speedmq-plugin/java/SidecarPlugin.java` 約 470 行（含極簡 JSON）：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. 實測（本機重現）
 
-Windows + JDK 25；核心在 Docker（`swiftmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19031`）。
+Windows + JDK 25；核心在 Docker（`speedmq:1.1.01`），外掛在宿主機（`tcp://host.docker.internal:19031`）。
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. 進階
 
 - 打包成可執行 jar（`Main-Class: SidecarPlugin`）或 `jlink` 精簡執行環境，
-  再把 `spawn` 改成 `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`。
+  再把 `spawn` 改成 `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`。
 - 外掛自帶管理介面：設定裡加 `console_url`（主文件 §5.8），管理後台「外掛管理」頁會出現直達入口。
 - 獨立部署：`spawn: []` + `address: "tcp://<服務名稱>:19031"`，容器內監聽 `0.0.0.0`。

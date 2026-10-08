@@ -1,4 +1,4 @@
-# SwiftMQ Pencadangan dan Pemulihan
+# SpeedMQ Pencadangan dan Pemulihan
 
 > Kesimpulan "hasil uji nyata" dalam dokumen ini seluruhnya berasal dari satu latihan nyata di **Windows + PowerShell 5.1** (dengan `data_dir` sementara dan port sementara).
 > Perintah latihan dan keluaran pentingnya ditempel apa adanya di §6. Bagian yang **【Belum Diverifikasi】** ditandai secara eksplisit (pencadangan/pemulihan klaster, pencadangan volume Docker, dan lain-lain).
@@ -55,15 +55,15 @@ Penyimpanan pesan terdiri dari **dua file** (file segmen `*.seg` dan file indeks
 
 ```powershell
 # 1) Hentikan proses (foreground: Ctrl+C; background: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Salin seluruh data_dir (dengan stempel waktu)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (opsional) Verifikasi bahwa snapshot metadata di cadangan dapat diparsing
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 Klaster
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # Setelah menghentikan kontainer, gunakan kontainer sekali pakai untuk mengemas dan menyalin isi volume keluar
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【Belum Diverifikasi】** (mesin lokal tidak menjalankan Docker).
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) Pastikan proses sudah berhenti
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) Pindahkan (atau hapus) data_dir saat ini, agar file lama dan baru tidak tercampur
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) Pulihkan menggunakan cadangan
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) Jalankan
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 Poin penting:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > Lingkungan: `data_dir` di direktori sementara, AMQP `127.0.0.1:5676`, bidang manajemen `127.0.0.1:15677`, MQTT `127.0.0.1:1884`,
 > akun default `guest/guest`. Log startup:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

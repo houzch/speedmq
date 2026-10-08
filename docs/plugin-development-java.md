@@ -1,10 +1,10 @@
-# SwiftMQ 外部进程插件开发指南 —— Java
+# SpeedMQ 外部进程插件开发指南 —— Java
 
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
-> **面向**：用 Java 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
+> **面向**：用 Java 给 SpeedMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md)（心智模型 / 配置字段 / 线协议总表）。
-> **示例工程**：工作区 `swiftmq-plugin/java/SidecarPlugin.java`（单文件、仅 JDK 标准库，无需 Maven/Gradle）。
+> **示例工程**：工作区 `speedmq-plugin/java/SidecarPlugin.java`（单文件、仅 JDK 标准库，无需 Maven/Gradle）。
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### 第一步：配置
 
-`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
+`speedmqd.json`（**实际配置是标准 JSON，不能带注释**）：
 
 ```json
 {
@@ -38,7 +38,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -149,7 +149,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. 代码走读（示例工程）
 
-`swiftmq-plugin/java/SidecarPlugin.java` 约 470 行（含极简 JSON）：
+`speedmq-plugin/java/SidecarPlugin.java` 约 470 行（含极简 JSON）：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -169,7 +169,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. 实测（本机复现）
 
-Windows + JDK 25；内核在 Docker（`swiftmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19031`）。
+Windows + JDK 25；内核在 Docker（`speedmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19031`）。
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -209,6 +209,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. 进阶
 
 - 打包成可执行 jar（`Main-Class: SidecarPlugin`）或 `jlink` 精简运行时，
-  再把 `spawn` 改成 `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`。
+  再把 `spawn` 改成 `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`。
 - 插件自带管理界面：配置里加 `console_url`（主文档 §5.8），管理后台「插件管理」页会出现直达入口。
 - 独立部署：`spawn: []` + `address: "tcp://<服务名>:19031"`，容器内监听 `0.0.0.0`。

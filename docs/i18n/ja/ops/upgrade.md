@@ -1,12 +1,12 @@
-# SwiftMQ アップグレードと移行計画
+# SpeedMQ アップグレードと移行計画
 
-> 適用バージョン：`1.0.0`（`broker.Version`、`/metrics` の `swiftmq_build_info` を参照）。
+> 適用バージョン：`1.0.0`（`broker.Version`、`/metrics` の `speedmq_build_info` を参照）。
 > 本書のすべての「実測」結論は本機での実際の実行によるものです。実測していないものはすべて **【未検証】** と明示します。
 > 本機環境：Windows + PowerShell 5.1、Go 1.27.1 windows/386、一時 `data_dir` + 非デフォルトポート。
 
 ---
 
-## 1. 移行（RabbitMQ から SwiftMQ へ）
+## 1. 移行（RabbitMQ から SpeedMQ へ）
 
 本プロジェクトの位置付けは **AMQP 0-9-1 プロトコルレベルの互換**であるため、「移行」は主に**接続先アドレスの変更**です：
 
@@ -16,7 +16,7 @@
 
 **移行前に自己確認すべきセマンティクスの差異**（いずれも本リポジトリの意図的なもので、README / 設計文書に基づく）：
 
-| 項目 | SwiftMQ の挙動 | 移行への影響 |
+| 項目 | SpeedMQ の挙動 | 移行への影響 |
 | --- | --- | --- |
 | 一時（非永続かつ非排他）キュー | **宣言を拒否**（541）、`auto_delete` でも免除されない | この種のキューに依存する古いクライアントは失敗するため、durable または exclusive に変更が必要 |
 | デフォルト vhost `/` | **削除不可**（400）、RabbitMQ は許可 | デフォルト vhost を削除する自動化スクリプトは失敗する（唯一の能動的な安全制約） |
@@ -24,8 +24,8 @@
 | クォーラムキュー | レプリカ拡張をサポート、**縮小は非サポート** | 計画時に一度で確定させる |
 | プラグイン | Erlang プラグインエコシステムなし、AMQP 1.0 / STOMP は未実装 | これらのプロトコルを使うシーンは現時点では移行不可 |
 
-**データ移行**：SwiftMQ と RabbitMQ はストレージ形式が非互換で、**オンライン/オフラインのデータ移送ツールを提供しません**。
-移行方法は「空の SwiftMQ を新規作成 → 二重運用で検証 → グレーリリースで切り替え」。**【未検証】** 本書には実際の RabbitMQ データ移送ドリルは含まれません。
+**データ移行**：SpeedMQ と RabbitMQ はストレージ形式が非互換で、**オンライン/オフラインのデータ移送ツールを提供しません**。
+移行方法は「空の SpeedMQ を新規作成 → 二重運用で検証 → グレーリリースで切り替え」。**【未検証】** 本書には実際の RabbitMQ データ移送ドリルは含まれません。
 
 ---
 
@@ -84,7 +84,7 @@ data/
 - 両者は**初回ブートストラップ時のみ有効**：初回起動時に設定の vhosts/users をメタデータに書き込み、マーカーファイル
   `meta/vhosts.seeded` / `meta/users.seeded` を残します；**以降はメタデータを基準**とします。
 - したがって**アップグレード/設定変更時に、設定ファイルを変更してアカウントや vhost を追加/削除しようと期待しないでください**——変更しても有効になりません；
-  管理 API または `swiftmqctl` を使用してください。
+  管理 API または `speedmqctl` を使用してください。
 - 逆に、アップグレードが設定で既存アカウントを上書きすることは**ありません**：実行時に変更したパスワードが再起動で設定の旧値に戻ることはなく、
   実行時に削除したアカウントが復活することもありません。根拠：`cluster.go` のシードマーカーロジック；README M8-4 / M8-7。
 
@@ -102,22 +102,22 @@ data/
 ### 5.1 手順
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) プロセスを停止（正常終了時に最終フラッシュ；§4「一貫性」を参照）
 #    フォアグラウンドで実行中：Ctrl+C；サービスとして実行中：Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) データディレクトリをバックアップ（必ずプロセス停止後）
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) バイナリを置換（新バージョンの swiftmqd.exe / swiftmqctl.exe を元のパスに配置）
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) バイナリを置換（新バージョンの speedmqd.exe / speedmqctl.exe を元のパスに配置）
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) 起動
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) 検証：プロセスの生存 + 管理 API が読める
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -127,22 +127,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 アップグレード後のチェックリスト
 
-- 起動ログに `SwiftMQ 启动中 ... version=<新版本>` と `管理面已启动` が出現；
+- 起動ログに `SpeedMQ 启动中 ... version=<新版本>` と `管理面已启动` が出現；
 - `/api/overview` の `object_totals` / `queue_totals` がバックアップ前と一致（`backup-restore.md` §5 と照合）；
 - `/api/queues` の各 durable キューの `messages` / `messages_ready` がバックアップ前と一致；
-- `/metrics` が取得でき、`swiftmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
+- `/metrics` が取得でき、`speedmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
 
 ---
 
 ## 6. イメージアップグレード（コンテナ）
 
-イメージは約 13 MB（静的リンクバイナリ + alpine）、**非 root（uid 10001）で実行**、データディレクトリは `/var/lib/swiftmq` にマウントされます。
+イメージは約 13 MB（静的リンクバイナリ + alpine）、**非 root（uid 10001）で実行**、データディレクトリは `/var/lib/speedmq` にマウントされます。
 
 ```powershell
 # 1) 新しいイメージを取得/ビルド（タグは新バージョン番号を使い、old/new の混同を避ける）
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) 旧コンテナを停止（compose は名前付きボリューム swiftmq-data を保持）
+# 2) 旧コンテナを停止（compose は名前付きボリューム speedmq-data を保持）
 docker compose down
 
 # 3) 新バージョンを起動（compose ファイルの image を新タグに変更）
@@ -153,14 +153,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **コンテナ内のワンショットタスク**（例：コンテナ内で `swiftmqctl` を実行）：`docker compose ...` の `run` は非対話環境では必ず `-T` を付ける必要があり、
+> **コンテナ内のワンショットタスク**（例：コンテナ内で `speedmqctl` を実行）：`docker compose ...` の `run` は非対話環境では必ず `-T` を付ける必要があり、
 > そうしないと TTY 確保に失敗します：
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-データの永続化は compose の**名前付きボリューム** `swiftmq-data` に依存し、コンテナを再作成してもデータは失われません（M4 から実際にディスクへ書き込み）。
-アップグレード前にボリューム内容をバックアップする必要がある場合、`/var/lib/swiftmq` のバックアップと等価です（`backup-restore.md` §3.2 を参照）。**【イメージアップグレードは未実測】**（本機では Docker を実行していません）。
+データの永続化は compose の**名前付きボリューム** `speedmq-data` に依存し、コンテナを再作成してもデータは失われません（M4 から実際にディスクへ書き込み）。
+アップグレード前にボリューム内容をバックアップする必要がある場合、`/var/lib/speedmq` のバックアップと等価です（`backup-restore.md` §3.2 を参照）。**【イメージアップグレードは未実測】**（本機では Docker を実行していません）。
 
 ---
 
@@ -168,7 +168,7 @@ docker compose logs -f --tail 100
 
 ### 7.1 単機
 
-- **グレーリリース**：SwiftMQ 単機には「新旧同プロセスの二重バージョン」能力は内蔵されていません。実現可能なグレーリリースは**バイパスシャドウ**です：
+- **グレーリリース**：SpeedMQ 単機には「新旧同プロセスの二重バージョン」能力は内蔵されていません。実現可能なグレーリリースは**バイパスシャドウ**です：
   新バージョンのインスタンスをまず**読み取り専用消費/シャドウキュー**で同じ上流トラフィックに接続して観察し、問題がないことを確認してから書き込み側を切り替えます。
 - **ロールバック**：
   1. 新バージョンのプロセスを停止；
@@ -181,7 +181,7 @@ docker compose logs -f --tail 100
 プラットフォーム側は「ワンクリックのローリングアップグレード」を提供せず、以下の順序で手動でノードごとに操作する必要があります：
 
 1. **一度に 1 ノードのみアップグレード**：そのノードを停止 → `data_dir` をバックアップ → バイナリを交換 → 起動 → 再参加して追いつくのを待つ
-   （`swiftmqctl cluster_status` / `GET /api/cluster` で `role`、`commit_index`/`last_applied` を確認）。
+   （`speedmqctl cluster_status` / `GET /api/cluster` で `role`、`commit_index`/`last_applied` を確認）。
 2. **順序の推奨**：まず **learner / 非投票メンバー**（多数派に影響なし）をアップグレードし、次に **follower**、最後に **leader**
    （leader のアップグレードは選主を 1 回トリガーし、その間は短時間書き込み不可）。
 3. **停止が多数派に与える影響**（重要）：
@@ -201,10 +201,10 @@ docker compose logs -f --tail 100
 
 - **メジャーバージョン間のダウングレード：非サポート、未検証**。新バージョンが新形式/新セマンティクスでデータを書き込んでいた場合、「旧バイナリに戻してそのまま読む」保証は**ありません**；
   ロールバックはアップグレード前のバックアップに頼るしかありません。
-- **設定形式は不変**：引き続き JSON + `SWIFTMQ_*` 環境変数。**YAML 設定は未サポート**（パース依存の導入が必要、M8-17 で評価待ち）、
+- **設定形式は不変**：引き続き JSON + `SPEEDMQ_*` 環境変数。**YAML 設定は未サポート**（パース依存の導入が必要、M8-17 で評価待ち）、
   アップグレードで YAML がもたらされることはありません。
 - **オンラインのプラグイン/プロトコルホットアップグレード**：プラグインはカーネルにコンパイルして組み込む（A 形態）か、設定に従い `spawn` で起動する（B 形態）ため、
   カーネルのアップグレード = プロセスの再起動；バイナリをインプレースでホット置換する仕組みは**ありません**。
 - **ストレージエンジンのインプレース移行**：セグメントローテーション/インデックス圧縮は実行期のバックグラウンド挙動で、独立した「データ移行/圧縮」コマンドは**ありません**。
 - **実ネットワーク下のクラスタアップグレード**：本リポジトリは縮小版カオス（プロセスレベルの kill）のみを行い、ネットワーク分断、ディスク満杯下でのアップグレードドリルは**行っていません**。
-- 本書は SwiftMQ と他の broker（RabbitMQ）間のデータ移送検証を**含みません**。
+- 本書は SpeedMQ と他の broker（RabbitMQ）間のデータ移送検証を**含みません**。

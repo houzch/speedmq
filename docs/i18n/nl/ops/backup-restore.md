@@ -1,4 +1,4 @@
-# SwiftMQ back-up en herstel
+# SpeedMQ back-up en herstel
 
 > Alle "in de praktijk geteste" conclusies in dit document komen uit één echte oefening op **Windows + PowerShell 5.1** (tijdelijke `data_dir` en tijdelijke poorten).
 > De oefenopdrachten en belangrijke uitvoer staan ongewijzigd in §6. Delen die **【niet geverifieerd】** zijn, worden expliciet gemarkeerd (clusterback-up/-herstel, back-up van Docker-volumes, enz.).
@@ -55,15 +55,15 @@ De berichtopslag bestaat uit **twee bestanden** (het segmentbestand `*.seg` en h
 
 ```powershell
 # 1) Stop het proces (voorgrond: Ctrl+C; achtergrond: Stop-Process)
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) Kopieer de volledige data_dir (met tijdstempel)
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) (optioneel) Controleer of de metadatasnapshot in de back-up parseerbaar is
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 Cluster
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # Stop de container en pak de inhoud van het volume uit en kopieer die eruit met een eenmalige container
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【niet geverifieerd】** (Docker is op deze machine niet uitgevoerd).
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) Controleer dat het proces is gestopt
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) Verplaats (of verwijder) de huidige data_dir om te voorkomen dat oude en nieuwe bestanden door elkaar raken
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) Herstel met de back-up
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) Starten
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 Belangrijke punten:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > Omgeving: `data_dir` in een tijdelijke map, AMQP `127.0.0.1:5676`, beheervlak `127.0.0.1:15677`, MQTT `127.0.0.1:1884`,
 > standaardaccount `guest/guest`. Opstartlog:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

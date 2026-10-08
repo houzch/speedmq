@@ -1,4 +1,4 @@
-// 本文件实现 swiftmqctl 的管理 API HTTP 客户端。
+// 本文件实现 speedmqctl 的管理 API HTTP 客户端。
 //
 // 设计决策：为什么走 HTTP 管理 API 而不是直连内核？
 //  1. 管理 API 是运行态的唯一事实来源，CLI 只做薄客户端，不 import 仓库的
@@ -81,7 +81,7 @@ func (c *client) do(method, path string, q url.Values, body any) ([]byte, error)
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.SetBasicAuth(c.user, c.pass)
-	req.Header.Set("User-Agent", "swiftmqctl")
+	req.Header.Set("User-Agent", "speedmqctl")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -151,7 +151,7 @@ type connError struct {
 }
 
 func (e *connError) Error() string {
-	return fmt.Sprintf("无法连接管理 API（%s %s）：%v；请确认 swiftmqd 正在运行，且 -url 指向正确的管理地址",
+	return fmt.Sprintf("无法连接管理 API（%s %s）：%v；请确认 speedmqd 正在运行，且 -url 指向正确的管理地址",
 		e.method, e.target, e.err)
 }
 

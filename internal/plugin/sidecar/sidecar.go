@@ -28,10 +28,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/speedmq/internal/config"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
-	"github.com/houzch/swiftmq/pkg/sidecar"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
+	"github.com/houzch/speedmq/pkg/sidecar"
 )
 
 // 常量：重连与启动窗口。

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/transport"
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/transport"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // listenerController 把插件运行时的"启用/停用"决策落到接入层的真实端口上。

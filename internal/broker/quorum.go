@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/raft"
-	"github.com/houzch/swiftmq/internal/store"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/raft"
+	"github.com/houzch/speedmq/internal/store"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // 本文件是仲裁队列（Quorum Queue）：**每条队列一个独立的 Raft 组**，

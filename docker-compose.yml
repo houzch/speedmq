@@ -1,4 +1,4 @@
-# SwiftMQ 本地编排
+# SpeedMQ 本地编排
 #
 #   docker compose up -d --build      # 本地构建并启动
 #   docker compose pull && docker compose up -d   # 直接用已发布的镜像，不本地构建
@@ -16,7 +16,7 @@
 #   - 管理 UI 已内嵌在二进制里（无额外静态服务）：浏览器打开 http://localhost:15672/
 #     账号口令同 AMQP（默认 guest/guest）
 
-name: swiftmq
+name: speedmq
 
 services:
   broker:
@@ -25,8 +25,8 @@ services:
       dockerfile: Dockerfile
     # 指向已发布的镜像，这样 `docker compose pull` 能直接拉到；
     # 本地开发用 `docker compose up -d --build` 时会用同名 tag 覆盖它（两个仓库都发布同一份镜像）
-    image: houzch/swiftmq:1.1.03
-    container_name: swiftmq
+    image: houzch/speedmq:1.1.03
+    container_name: speedmq
 
     # 开发环境：异常退出后自动拉起，手动 stop 后不再自动启动
     restart: unless-stopped
@@ -40,12 +40,12 @@ services:
 
     volumes:
       # 配置文件（只读挂载，便于本地修改调试）
-      - ./configs/swiftmqd.json:/etc/swiftmq/swiftmqd.json:ro
+      - ./configs/speedmqd.json:/etc/speedmq/speedmqd.json:ro
       # 数据目录（命名卷，避免污染工作区）
-      - swiftmq-data:/var/lib/swiftmq
+      - speedmq-data:/var/lib/speedmq
 
     # CMD 覆盖：把日志级别调到 debug，便于观察握手与错误路径
-    command: ["-config", "/etc/swiftmq/swiftmqd.json", "-log-level", "debug"]
+    command: ["-config", "/etc/speedmq/speedmqd.json", "-log-level", "debug"]
 
     healthcheck:
       # 用 busybox nc 探测管理端口：能连上说明内核与监听都就绪
@@ -63,4 +63,4 @@ services:
         max-file: "3"
 
 volumes:
-  swiftmq-data:
+  speedmq-data:

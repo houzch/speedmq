@@ -49,7 +49,7 @@ import ms from './ms.json'
 import fil from './fil.json'
 
 /** 用户在浏览器里手动选择的语言（localStorage 键） */
-const STORAGE_KEY = 'swiftmq.locale'
+const STORAGE_KEY = 'speedmq.locale'
 
 /** 兜底语言：任何解析失败都落回它 */
 export const FALLBACK_LOCALE = 'en'
@@ -223,7 +223,7 @@ export function setLocale(code: string, persist = true): void {
   document.documentElement.setAttribute('lang', code)
   document.documentElement.setAttribute('dir', meta.dir)
   // 标签页标题跟随语言：产品名 + 本地化的"管理后台"
-  document.title = `SwiftMQ ${i18n.global.t('app.subtitle')}`
+  document.title = `SpeedMQ ${i18n.global.t('app.subtitle')}`
   if (persist) localStorage.setItem(STORAGE_KEY, code)
 }
 

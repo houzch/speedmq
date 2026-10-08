@@ -1,4 +1,4 @@
-// 本文件实现 swiftmqctl 的全部子命令与输出渲染。
+// 本文件实现 speedmqctl 的全部子命令与输出渲染。
 package main
 
 import (

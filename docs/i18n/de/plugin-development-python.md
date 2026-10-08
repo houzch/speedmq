@@ -1,9 +1,9 @@
-# SwiftMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — Python
+# SpeedMQ – Leitfaden zur Entwicklung externer Prozess-Plugins — Python
 
-> **Zielgruppe**: Entwickler, die SwiftMQ mit Python um externe Prozess-Plugins (Sidecars) erweitern möchten.
+> **Zielgruppe**: Entwickler, die SpeedMQ mit Python um externe Prozess-Plugins (Sidecars) erweitern möchten.
 > **Zuerst lesen**: [Leitfaden zur Entwicklung externer Prozess-Plugins (Sidecar)](plugin-development.md) — dort werden das mentale Modell, die Konfigurationsfelder und die vollständige Wire-Protokoll-Tabelle beschrieben;
 > dieses Dokument behandelt nur, **wie man das in Python umsetzt**, sowie die lokal verifizierten Schritte und Ergebnisse.
-> **Beispielprojekt**: Workspace `swiftmq-plugin/python/sidecar_plugin.py` (nur Standardbibliothek, keinerlei Abhängigkeiten von Drittanbietern).
+> **Beispielprojekt**: Workspace `speedmq-plugin/python/sidecar_plugin.py` (nur Standardbibliothek, keinerlei Abhängigkeiten von Drittanbietern).
 
 ---
 
@@ -30,7 +30,7 @@ Drei Kernpunkte (leicht zu verwechseln, daher gut einprägen):
 
 ### Erster Schritt: Plugin in der Konfiguration deklarieren
 
-`swiftmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
+`speedmqd.json` (**die tatsächliche Konfiguration ist Standard-JSON und darf keine Kommentare enthalten**):
 
 ```json
 {
@@ -40,7 +40,7 @@ Drei Kernpunkte (leicht zu verwechseln, daher gut einprägen):
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19001",
-        "spawn": ["python", "/opt/swiftmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
+        "spawn": ["python", "/opt/speedmq/sidecar_plugin.py", "-addr", "0.0.0.0:19001"],
         "protocols": [
           { "name": "pyecho", "prefix": "PY",
             "listeners": [{ "name": "pyecho", "addr": ":19002" }] }
@@ -151,7 +151,7 @@ müssen an einen eigenen Thread übergeben werden, da sie während der Verarbeit
 
 ## 4. Code-Durchgang (Beispielprojekt)
 
-`swiftmq-plugin/python/sidecar_plugin.py` umfasst etwa 320 Zeilen; die wichtigsten Funktionen:
+`speedmq-plugin/python/sidecar_plugin.py` umfasst etwa 320 Zeilen; die wichtigsten Funktionen:
 
 | Position | Zweck |
 | --- | --- |
@@ -167,7 +167,7 @@ müssen an einen eigenen Thread übergeben werden, da sie während der Verarbeit
 
 ## 5. Praxistest (lokal reproduziert)
 
-Umgebung: Windows + Python 3.12; der Kernel läuft in Docker (`swiftmq:1.1.01`), das Plugin läuft auf dem Host,
+Umgebung: Windows + Python 3.12; der Kernel läuft in Docker (`speedmq:1.1.01`), das Plugin läuft auf dem Host,
 und der Kernel verbindet sich über `tcp://host.docker.internal:19001` damit.
 
 ```

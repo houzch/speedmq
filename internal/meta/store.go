@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/raft"
+	"github.com/houzch/speedmq/internal/raft"
 )
 
 // methodMetaPropose 是 follower 把写请求转发给 leader 用的 RPC 方法名。

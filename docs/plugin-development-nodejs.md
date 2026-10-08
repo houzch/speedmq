@@ -1,10 +1,10 @@
-# SwiftMQ 外部进程插件开发指南 —— Node.js
+# SpeedMQ 外部进程插件开发指南 —— Node.js
 
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
-> **面向**：用 Node.js 给 SwiftMQ 写外部进程插件（sidecar）的开发者。
+> **面向**：用 Node.js 给 SpeedMQ 写外部进程插件（sidecar）的开发者。
 > **先读**：[外部进程插件（sidecar）开发指南](plugin-development.md)（心智模型 / 配置字段 / 线协议总表）。
-> **示例工程**：工作区 `swiftmq-plugin/nodejs/index.js`（仅 Node 标准库，**无需 npm 依赖**）。
+> **示例工程**：工作区 `speedmq-plugin/nodejs/index.js`（仅 Node 标准库，**无需 npm 依赖**）。
 
 ---
 
@@ -28,7 +28,7 @@
 
 ### 第一步：配置
 
-`swiftmqd.json`（**实际配置是标准 JSON，不能带注释**）：
+`speedmqd.json`（**实际配置是标准 JSON，不能带注释**）：
 
 ```json
 {
@@ -38,7 +38,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -138,7 +138,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. 代码走读（示例工程）
 
-`swiftmq-plugin/nodejs/index.js` 约 330 行：
+`speedmq-plugin/nodejs/index.js` 约 330 行：
 
 | 位置 | 作用 |
 | --- | --- |
@@ -154,7 +154,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. 实测（本机复现）
 
-Windows + Node v24；内核在 Docker（`swiftmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19011`）。
+Windows + Node v24；内核在 Docker（`speedmq:1.1.01`），插件在宿主机（`tcp://host.docker.internal:19011`）。
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

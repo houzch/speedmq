@@ -1,8 +1,8 @@
-# Panduan Pengembangan Plugin Proses Eksternal SwiftMQ — Java
+# Panduan Pengembangan Plugin Proses Eksternal SpeedMQ — Java
 
-> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SwiftMQ dengan Java.
+> **Untuk**: pengembang yang menulis plugin proses eksternal (sidecar) untuk SpeedMQ dengan Java.
 > **Baca dulu**: [Panduan Pengembangan Plugin Proses Eksternal (sidecar)](plugin-development.md) (model mental / field konfigurasi / tabel lengkap protokol kabel).
-> **Proyek contoh**: workspace `swiftmq-plugin/java/SidecarPlugin.java` (satu file, hanya pustaka standar JDK, tanpa Maven/Gradle).
+> **Proyek contoh**: workspace `speedmq-plugin/java/SidecarPlugin.java` (satu file, hanya pustaka standar JDK, tanpa Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
 
 ### Langkah 1: Konfigurasi
 
-`swiftmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
+`speedmqd.json` (**konfigurasi sebenarnya adalah JSON standar dan tidak boleh berisi komentar**):
 
 ```json
 {
@@ -36,7 +36,7 @@ Tiga poin penting: **proses Anda adalah server** (menunggu kernel tersambung); *
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 4. Penelusuran Kode (Proyek Contoh)
 
-`swiftmq-plugin/java/SidecarPlugin.java` sekitar 470 baris (termasuk JSON minimal):
+`speedmq-plugin/java/SidecarPlugin.java` sekitar 470 baris (termasuk JSON minimal):
 
 | Lokasi | Fungsi |
 | --- | --- |
@@ -167,7 +167,7 @@ Pengiriman **didorong kembali secara forward** oleh kernel (`method = "session.d
 
 ## 5. Uji Empiris (Direproduksi Lokal)
 
-Windows + JDK 25; kernel di Docker (`swiftmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; kernel di Docker (`speedmq:1.1.01`), plugin di host (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ Cakupan: **handshake → autentikasi → jembatan semantik → dorong-balik peng
 ## 7. Tingkat Lanjut
 
 - Kemas menjadi jar yang dapat dieksekusi (`Main-Class: SidecarPlugin`) atau runtime yang dipangkas dengan `jlink`,
-  lalu ubah `spawn` menjadi `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  lalu ubah `spawn` menjadi `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Plugin dengan antarmuka admin sendiri: tambahkan `console_url` di konfigurasi (dokumen utama §5.8), halaman "Manajemen Plugin" di konsol admin akan menampilkan entri langsung.
 - Deployment mandiri: `spawn: []` + `address: "tcp://<nama layanan>:19031"`, di dalam kontainer mendengarkan `0.0.0.0`.

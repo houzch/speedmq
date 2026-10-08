@@ -1,8 +1,8 @@
-# SwiftMQ 外部プロセスプラグイン開発ガイド —— Node.js
+# SpeedMQ 外部プロセスプラグイン開発ガイド —— Node.js
 
-> **対象読者**：Node.js で SwiftMQ の外部プロセスプラグイン（sidecar）を書く開発者。
+> **対象読者**：Node.js で SpeedMQ の外部プロセスプラグイン（sidecar）を書く開発者。
 > **先に読む**：[外部プロセスプラグイン（sidecar）開発ガイド](plugin-development.md)（メンタルモデル / 設定フィールド / ワイヤプロトコル総表）。
-> **サンプルプロジェクト**：ワークスペース `swiftmq-plugin/nodejs/index.js`（Node 標準ライブラリのみ、**npm 依存不要**）。
+> **サンプルプロジェクト**：ワークスペース `speedmq-plugin/nodejs/index.js`（Node 標準ライブラリのみ、**npm 依存不要**）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### 第 1 ステップ：設定
 
-`swiftmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
+`speedmqd.json`（**実際の設定は標準 JSON、コメント不可**）：
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19011",
-        "spawn": ["node", "/opt/swiftmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
+        "spawn": ["node", "/opt/speedmq/index.js", "--addr", "0.0.0.0:19011", "--name", "node-sidecar"],
         "protocols": [
           { "name": "nodeecho", "prefix": "ND",
             "listeners": [{ "name": "nodeecho", "addr": ":19012" }] }
@@ -136,7 +136,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 4. コードウォークスルー（サンプルプロジェクト）
 
-`swiftmq-plugin/nodejs/index.js` は約 330 行：
+`speedmq-plugin/nodejs/index.js` は約 330 行：
 
 | 位置 | 役割 |
 | --- | --- |
@@ -152,7 +152,7 @@ await call('session.consume', { stream, queue: q.name, prefetch: 32 })
 
 ## 5. 実測（本機で再現）
 
-Windows + Node v24；カーネルは Docker（`swiftmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19011`）。
+Windows + Node v24；カーネルは Docker（`speedmq:1.1.01`）、プラグインはホストマシン（`tcp://host.docker.internal:19011`）。
 
 ```
 plugin=node-sidecar state=enabled         # /api/plugins

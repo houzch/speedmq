@@ -1,3 +1,3 @@
-module github.com/houzch/swiftmq
+module github.com/houzch/speedmq
 
 go 1.24

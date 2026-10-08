@@ -1,8 +1,8 @@
-# Guide de développement des plugins en processus externe pour SwiftMQ —— PHP
+# Guide de développement des plugins en processus externe pour SpeedMQ —— PHP
 
-> **Public** : développeurs qui écrivent en PHP des plugins en processus externe (sidecar) pour SwiftMQ.
+> **Public** : développeurs qui écrivent en PHP des plugins en processus externe (sidecar) pour SpeedMQ.
 > **À lire d'abord** : [Guide de développement des plugins en processus externe (sidecar)](plugin-development.md) (modèle mental / champs de configuration / tableau complet du protocole filaire).
-> **Projet d'exemple** : espace de travail `swiftmq-plugin/php/sidecar_plugin.php` (bibliothèque standard uniquement, **aucune dépendance composer**).
+> **Projet d'exemple** : espace de travail `speedmq-plugin/php/sidecar_plugin.php` (bibliothèque standard uniquement, **aucune dépendance composer**).
 
 ---
 
@@ -26,7 +26,7 @@ Trois points essentiels : **votre processus est le serveur** (il attend que le n
 
 ### Étape 1 : configuration
 
-`swiftmqd.json` (**la configuration réelle est du JSON standard, sans commentaires possibles**) :
+`speedmqd.json` (**la configuration réelle est du JSON standard, sans commentaires possibles**) :
 
 ```json
 {
@@ -36,7 +36,7 @@ Trois points essentiels : **votre processus est le serveur** (il attend que le n
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ Les livraisons sont **renvoyées en sens direct** par le noyau (`method = "sessi
 
 ## 4. Lecture guidée du code (projet d'exemple)
 
-`swiftmq-plugin/php/sidecar_plugin.php` compte environ 320 lignes :
+`speedmq-plugin/php/sidecar_plugin.php` compte environ 320 lignes :
 
 | Emplacement | Rôle |
 | --- | --- |
@@ -171,7 +171,7 @@ Les livraisons sont **renvoyées en sens direct** par le noyau (`method = "sessi
 
 ## 5. Mesures réelles (reproduction locale)
 
-Windows + PHP 7.4 ; le noyau dans Docker (`swiftmq:1.1.01`), le plugin sur la machine hôte (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4 ; le noyau dans Docker (`speedmq:1.1.01`), le plugin sur la machine hôte (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

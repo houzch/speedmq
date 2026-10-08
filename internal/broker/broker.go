@@ -16,12 +16,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/houzch/swiftmq/internal/auth"
-	"github.com/houzch/swiftmq/internal/config"
-	"github.com/houzch/swiftmq/internal/meta"
-	"github.com/houzch/swiftmq/internal/raft"
-	"github.com/houzch/swiftmq/internal/store"
-	"github.com/houzch/swiftmq/pkg/plugin"
+	"github.com/houzch/speedmq/internal/auth"
+	"github.com/houzch/speedmq/internal/config"
+	"github.com/houzch/speedmq/internal/meta"
+	"github.com/houzch/speedmq/internal/raft"
+	"github.com/houzch/speedmq/internal/store"
+	"github.com/houzch/speedmq/pkg/plugin"
 )
 
 // Version 是内核版本，也是管理 UI、/api/overview 与 /metrics 上显示的版本号来源。
@@ -767,10 +767,10 @@ func (s *session) ServerProperties() map[string]any {
 	// 否则客户端看到 true 会继续走那条命令，然后收到一堆意料之外的错误。
 	exchangeBindings := s.broker.featureEnabled(flagExchangeExchangeBindings)
 	return map[string]any{
-		"product":     "SwiftMQ",
+		"product":     "SpeedMQ",
 		"version":     Version,
 		"platform":    "Go",
-		"information": "https://github.com/houzch/swiftmq",
+		"information": "https://github.com/houzch/speedmq",
 		"capabilities": map[string]any{
 			// 认证失败时用 Connection.Close 明确告知原因，而不是直接断开连接
 			"authentication_failure_close": true,

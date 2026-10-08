@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/houzch/swiftmq/internal/raft"
+	"github.com/houzch/speedmq/internal/raft"
 )
 
 // stateFileName 是单机模式快照的文件名（<Dir>/state.json）。

@@ -1,12 +1,12 @@
-# SwiftMQ 升級與移轉方案
+# SpeedMQ 升級與移轉方案
 
-> 適用版本：`1.0.0`（`broker.Version`，見 `/metrics` 的 `swiftmq_build_info`）。
+> 適用版本：`1.0.0`（`broker.Version`，見 `/metrics` 的 `speedmq_build_info`）。
 > 本文所有「實測」結論均來自本機真實執行；凡未實測的，均明確標註 **【未驗證】**。
 > 本機環境：Windows + PowerShell 5.1，Go 1.27.1 windows/386，臨時 `data_dir` + 非預設連接埠。
 
 ---
 
-## 1. 移轉（從 RabbitMQ 切換到 SwiftMQ）
+## 1. 移轉（從 RabbitMQ 切換到 SpeedMQ）
 
 本專案定位是 **AMQP 0-9-1 協定級相容**，因此「移轉」以**修改連線位址**為主：
 
@@ -16,7 +16,7 @@
 
 **移轉前需自行檢查的語意差異**（均為本儲存庫刻意為之，依據 README / 設計文件）：
 
-| 項目 | SwiftMQ 行為 | 移轉影響 |
+| 項目 | SpeedMQ 行為 | 移轉影響 |
 | --- | --- | --- |
 | 瞬時（非持久且非獨佔）佇列 | **拒絕宣告**（541），`auto_delete` 不豁免 | 舊用戶端若依賴該類佇列會失敗，需改為 durable 或 exclusive |
 | 預設 vhost `/` | **不可刪除**（400），RabbitMQ 允許 | 自動化指令碼若刪除預設 vhost 會失敗（這是唯一主動安全限制） |
@@ -24,8 +24,8 @@
 | 仲裁佇列 | 支援擴充副本，**不支援縮容** | 規劃時一次到位 |
 | 外掛 | 無 Erlang 外掛生態，AMQP 1.0 / STOMP 未實作 | 用到這些協定的情境暫不可移轉 |
 
-**資料移轉**：SwiftMQ 與 RabbitMQ 儲存格式不相容，**不提供線上/離線資料搬運工具**。
-移轉方式為「新建空 SwiftMQ → 雙跑驗證 → 灰度切流」。**【未驗證】** 本文不含任何真實 RabbitMQ 資料搬運演練。
+**資料移轉**：SpeedMQ 與 RabbitMQ 儲存格式不相容，**不提供線上/離線資料搬運工具**。
+移轉方式為「新建空 SpeedMQ → 雙跑驗證 → 灰度切流」。**【未驗證】** 本文不含任何真實 RabbitMQ 資料搬運演練。
 
 ---
 
@@ -84,7 +84,7 @@ data/
 - 二者**只在首次引導時生效**：首次啟動會把設定裡的 vhosts/users 寫進中繼資料並落下標記檔案
   `meta/vhosts.seeded` / `meta/users.seeded`；**此後以中繼資料為準**。
 - 因此**升級/更換設定時，不要指望透過修改設定檔來增刪帳號或 vhost**——修改了也不生效；
-  請使用管理 API 或 `swiftmqctl`。
+  請使用管理 API 或 `speedmqctl`。
 - 反過來說，升級**不會**用設定覆蓋既有帳號：執行期改過的密碼不會因重新啟動而被改回設定裡的舊值，
   執行期刪除的帳號也不會復活。依據：`cluster.go` 的播種標記邏輯；README M8-4 / M8-7。
 
@@ -102,22 +102,22 @@ data/
 ### 5.1 步驟
 
 ```powershell
-$base = "C:\swiftmq"
+$base = "C:\speedmq"
 $data = "$base\data"
 
 # 1) 停止處理程序（優雅退出會收尾刷盤；見 §4「一致性」）
 #    若以前景方式執行：Ctrl+C；若以服務方式：Stop-Service / Stop-Process
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) 備份資料目錄（務必在處理程序停止後）
 Copy-Item -Recurse -Force $data "$base\backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
-# 3) 替換二進位檔（把新版本 swiftmqd.exe / swiftmqctl.exe 放到原路徑）
-#    Copy-Item .\new\swiftmqd.exe $base\swiftmqd.exe -Force
+# 3) 替換二進位檔（把新版本 speedmqd.exe / speedmqctl.exe 放到原路徑）
+#    Copy-Item .\new\speedmqd.exe $base\speedmqd.exe -Force
 
 # 4) 啟動
-& "$base\swiftmqd.exe" -config "$base\configs\swiftmqd.json" -log-level info
+& "$base\speedmqd.exe" -config "$base\configs\speedmqd.json" -log-level info
 
 # 5) 驗證：處理程序存活 + 管理 API 能讀取
 $pair = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('guest:guest'))
@@ -127,22 +127,22 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/overview' -Headers $H -UseBas
 
 ### 5.2 升級後驗證清單
 
-- 啟動日誌出現 `SwiftMQ 启动中 ... version=<新版本>` 與 `管理面已启动`；
+- 啟動日誌出現 `SpeedMQ 启动中 ... version=<新版本>` 與 `管理面已启动`；
 - `/api/overview` 的 `object_totals` / `queue_totals` 與備份前一致（對照 `backup-restore.md` §5）；
 - `/api/queues` 中每筆 durable 佇列的 `messages` / `messages_ready` 與備份前一致；
-- `/metrics` 可抓取且 `swiftmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
+- `/metrics` 可抓取且 `speedmq_plugin_up{name="amqp091"} 1`、`{name="mqtt"} 1`。
 
 ---
 
 ## 6. 映像檔升級（容器）
 
-映像檔約 13 MB（靜態連結二進位檔 + alpine），**以非 root（uid 10001）執行**，資料目錄掛載在 `/var/lib/swiftmq`。
+映像檔約 13 MB（靜態連結二進位檔 + alpine），**以非 root（uid 10001）執行**，資料目錄掛載在 `/var/lib/speedmq`。
 
 ```powershell
 # 1) 拉取/建置新映像檔（tag 用新版本號，避免 old/new 混淆）
-docker build -t swiftmq:1.0.0 .
+docker build -t speedmq:1.0.0 .
 
-# 2) 停止舊容器（compose 會保留具名磁碟區 swiftmq-data）
+# 2) 停止舊容器（compose 會保留具名磁碟區 speedmq-data）
 docker compose down
 
 # 3) 啟動新版本（compose 檔案裡把 image 改成新 tag）
@@ -153,14 +153,14 @@ docker compose ps
 docker compose logs -f --tail 100
 ```
 
-> **容器內一次性任務**（例如在容器內執行 `swiftmqctl`）：`docker compose ...` 的 `run` 在非互動環境必須加上 `-T`，
+> **容器內一次性任務**（例如在容器內執行 `speedmqctl`）：`docker compose ...` 的 `run` 在非互動環境必須加上 `-T`，
 > 否則會因申請 TTY 失敗：
 > ```powershell
-> docker compose run -T --rm broker swiftmqctl -user guest -pass guest status
+> docker compose run -T --rm broker speedmqctl -user guest -pass guest status
 > ```
 
-資料持久化依賴 compose 的**具名磁碟區** `swiftmq-data`，容器重建不會遺失資料（M4 起真正落盤）。
-升級前若需備份磁碟區內容，等效於備份 `/var/lib/swiftmq`（見 `backup-restore.md` §3.2）。**【映像檔升級未實測】**（本機未執行 Docker）。
+資料持久化依賴 compose 的**具名磁碟區** `speedmq-data`，容器重建不會遺失資料（M4 起真正落盤）。
+升級前若需備份磁碟區內容，等效於備份 `/var/lib/speedmq`（見 `backup-restore.md` §3.2）。**【映像檔升級未實測】**（本機未執行 Docker）。
 
 ---
 
@@ -168,7 +168,7 @@ docker compose logs -f --tail 100
 
 ### 7.1 單機
 
-- **灰度**：SwiftMQ 單機沒有內建「新舊同處理程序雙版本」能力。可行的灰度是**旁路影子**：
+- **灰度**：SpeedMQ 單機沒有內建「新舊同處理程序雙版本」能力。可行的灰度是**旁路影子**：
   新版本執行個體先用**唯讀消費/影子佇列**掛到同一份上游流量上觀察，確認無誤後再切換寫入方。
 - **回滾**：
   1. 停止新版本處理程序；
@@ -181,7 +181,7 @@ docker compose logs -f --tail 100
 平台端不提供「一鍵滾動升級」，需依下列順序人工逐個節點操作：
 
 1. **一次只升級一個節點**：停止該節點 → 備份其 `data_dir` → 換二進位檔 → 啟動 → 等待它重新加入並追上
-   （`swiftmqctl cluster_status` / `GET /api/cluster` 查看 `role`、`commit_index`/`last_applied`）。
+   （`speedmqctl cluster_status` / `GET /api/cluster` 查看 `role`、`commit_index`/`last_applied`）。
 2. **順序建議**：先升級 **learner / 非投票成員**（對多數派無影響），再升級 **follower**，最後升級 **leader**
    （升級 leader 會觸發一次選主，期間有短暫不可寫入）。
 3. **停機對多數派的影響**（關鍵）：
@@ -201,10 +201,10 @@ docker compose logs -f --tail 100
 
 - **跨大版本降級：不支援、未驗證**。若新版本已用新格式/新語意寫入資料，**沒有**「回退到舊二進位檔照讀」的保證；
   回滾只能靠升級前備份。
-- **設定格式不變**：仍為 JSON + `SWIFTMQ_*` 環境變數。**YAML 設定尚未支援**（需引入解析相依性，M8-17 待評估），
+- **設定格式不變**：仍為 JSON + `SPEEDMQ_*` 環境變數。**YAML 設定尚未支援**（需引入解析相依性，M8-17 待評估），
   升級不會帶來 YAML。
 - **線上外掛/協定熱升級**：外掛隨核心編譯進來（A 形態）或依設定 `spawn` 拉起（B 形態），
   升級核心 = 重新啟動處理程序；**沒有**原地熱替換二進位檔的機制。
 - **儲存引擎原地移轉**：段輪替/索引壓縮是執行期背景行為，**沒有**獨立的「資料移轉/壓縮」命令。
 - **真實網路下的叢集升級**：本儲存庫只做了縮比混沌（處理程序級 kill），**未做**網路分割、磁碟寫滿下的升級演練。
-- 本文檔**未包含**任何 SwiftMQ 與其他 broker（RabbitMQ）之間的資料搬運驗證。
+- 本文檔**未包含**任何 SpeedMQ 與其他 broker（RabbitMQ）之間的資料搬運驗證。

@@ -70,7 +70,7 @@ type StateReporter interface {
 
 // Info 是插件元数据与运行状态的快照。
 //
-// 它同时服务于两处：`swiftmqctl plugins list/show` 与管理面 `GET /api/plugins`，
+// 它同时服务于两处：`speedmqctl plugins list/show` 与管理面 `GET /api/plugins`，
 // 因此定义在对外插件 API 包里，避免内核与管理面各写一份。
 type Info struct {
 	// Name 是插件名，如 "amqp091"。

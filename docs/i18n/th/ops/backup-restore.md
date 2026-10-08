@@ -1,4 +1,4 @@
-# SwiftMQ การสำรองและการกู้คืน
+# SpeedMQ การสำรองและการกู้คืน
 
 > ข้อสรุปจาก「การทดสอบจริง」ในเอกสารนี้ทั้งหมดมาจากการซ้อมจริงหนึ่งครั้งบน **Windows + PowerShell 5.1**（`data_dir` ชั่วคราวและพอร์ตชั่วคราว）
 > คำสั่งและ output สำคัญของการซ้อมถูกคัดลอกมาใน §6 ส่วนที่**【ยังไม่ได้ยืนยัน】**จะถูกระบุอย่างชัดเจน（การสำรอง/กู้คืนคลัสเตอร์、การสำรอง Docker volume เป็นต้น）
@@ -55,15 +55,15 @@
 
 ```powershell
 # 1) หยุดโปรเซส（foreground: Ctrl+C; background: Stop-Process）
-Stop-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Stop-Process -Name speedmqd -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
 # 2) คัดลอก data_dir ทั้งหมด（พร้อม timestamp）
-$data = "C:\swiftmq\data"
-Copy-Item -Recurse -Force $data "C:\backup\swiftmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$data = "C:\speedmq\data"
+Copy-Item -Recurse -Force $data "C:\backup\speedmq-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 # 3) （ทางเลือก）ตรวจว่า snapshot metadata ในไฟล์สำรองแยกวิเคราะห์ได้
-Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
+Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Select-Object -ExpandProperty VHosts
 ```
 
 ### 3.2 คลัสเตอร์
@@ -78,8 +78,8 @@ Get-Content "C:\backup\swiftmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 ```powershell
 # หลังหยุดคอนเทนเนอร์ ใช้คอนเทนเนอร์ครั้งเดียวบรรจุเนื้อหาของ volume แล้วคัดลอกออกมา
 docker compose down
-docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
-  tar czf /backup/swiftmq-data.tar.gz -C /data .
+docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
+  tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
 > **【ยังไม่ได้ยืนยัน】**（เครื่องนี้ยังไม่ได้รัน Docker）。
 
@@ -91,16 +91,16 @@ docker run --rm -v swiftmq-data:/data -v ${PWD}:/backup alpine `
 
 ```powershell
 # 1) ยืนยันว่าโปรเซสถูกหยุดแล้ว
-Get-Process -Name swiftmqd -ErrorAction SilentlyContinue
+Get-Process -Name speedmqd -ErrorAction SilentlyContinue
 
 # 2) ย้ายออก（หรือลบ）data_dir ปัจจุบัน เพื่อไม่ให้ไฟล์ใหม่และเก่าปนกัน
-Move-Item "C:\swiftmq\data" "C:\swiftmq\data.broken"
+Move-Item "C:\speedmq\data" "C:\speedmq\data.broken"
 
 # 3) กู้คืนด้วยไฟล์สำรอง
-Copy-Item -Recurse -Force "C:\backup\swiftmq-YYYYMMDD-HHMMSS" "C:\swiftmq\data"
+Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 # 4) สตาร์ท
-& "C:\swiftmq\swiftmqd.exe" -config "C:\swiftmq\configs\swiftmqd.json" -log-level info
+& "C:\speedmq\speedmqd.exe" -config "C:\speedmq\configs\speedmqd.json" -log-level info
 ```
 
 ประเด็นสำคัญ:
@@ -152,7 +152,7 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:15672/api/cluster' -Headers $H -UseBasi
 > สภาพแวดล้อม: `data_dir` อยู่ในไดเรกทอรีชั่วคราว, AMQP `127.0.0.1:5676`、ฝ่ายจัดการ `127.0.0.1:15677`、MQTT `127.0.0.1:1884`,
 > บัญชีเริ่มต้น `guest/guest`。log การสตาร์ท:
 > ```
-> level=INFO msg="SwiftMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
+> level=INFO msg="SpeedMQ 启动中" version=1.0.0 ... data_dir=...\data ... fsync=os
 > level=INFO msg=管理面已启动 component=management addr=127.0.0.1:15677
 > ```
 

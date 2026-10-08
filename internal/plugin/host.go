@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/houzch/swiftmq/internal/config"
+	"github.com/houzch/speedmq/internal/config"
 
-	sdk "github.com/houzch/swiftmq/pkg/plugin"
+	sdk "github.com/houzch/speedmq/pkg/plugin"
 )
 
 // host 是 sdk.Host 的内核侧实现，绑定到单个插件。

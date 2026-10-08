@@ -1,7 +1,7 @@
 <!-- i18n-switcher -->
 [简体中文](../../../README.md) | [繁體中文](../zh-TW/README.md) | [English](../en/README.md) | **日本語** | [한국어](../ko/README.md) | [Español](../es/README.md) | [Deutsch](../de/README.md) | [Français](../fr/README.md) | [العربية](../ar/README.md) | [Русский](../ru/README.md) | [Italiano](../it/README.md) | [Nederlands](../nl/README.md) | [Português](../pt/README.md) | [Bahasa Indonesia](../id/README.md) | [ไทย](../th/README.md) | [Tiếng Việt](../vi/README.md) | [Bahasa Melayu](../ms/README.md) | [Filipino](../fil/README.md)
 
-# SwiftMQ
+# SpeedMQ
 
 Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです。既存の RabbitMQ クライアントは**コードを変更せず、SDK も差し替えず**、接続先アドレスを変えるだけで接続できます。
 
@@ -9,7 +9,7 @@ Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです
 
 - **プロトコル互換**：AMQP 0-9-1（RabbitMQ 拡張を含む）と MQTT 3.1.1。互換のベースラインは **RabbitMQ 4.3 のセマンティクス**です。
 - **導入が簡単**：バイナリ 1 個 / コンテナ 1 個で、管理 UI も内蔵済み。追加の Nginx、データベース、Node ランタイムは不要です。
-- **運用に十分**：管理 UI（キュー / エクスチェンジ / 接続 / アカウント権限 / 仮想ホスト / ポリシー / 制限 / クラスタ）、Prometheus `/metrics`、コマンドライン `swiftmqctl`。
+- **運用に十分**：管理 UI（キュー / エクスチェンジ / 接続 / アカウント権限 / 仮想ホスト / ポリシー / 制限 / クラスタ）、Prometheus `/metrics`、コマンドライン `speedmqctl`。
 - **デフォルトポート**：`5672`（AMQP）、`1883`（MQTT）、`15672`（管理 UI / HTTP API / メトリクス）。
 
 既に備えている機能：永続化（セグメントログ + fsync 段階 + クラッシュリカバリ）、パブリッシュ確認、TTL / デッドレター / 長さ制限、コンシューマ優先度、Direct Reply-To、クラスタ（Raft メタデータ + クォーラムキュー + ノード間転送）、プラグインのホットスタート/ストップ。
@@ -23,39 +23,39 @@ Go で書かれた **RabbitMQ 互換**のメッセージミドルウェアです
 **リポジトリを clone せず、イメージをそのまま取得して起動できます：**
 
 ```bash
-docker run -d --name swiftmq \
+docker run -d --name speedmq \
   -p 5672:5672 -p 1883:1883 -p 15672:15672 \
-  -v swiftmq-data:/var/lib/swiftmq \
-  houzch/swiftmq:1.1.03
+  -v speedmq-data:/var/lib/speedmq \
+  houzch/speedmq:1.1.03
 ```
 
-イメージは 2 か所に同一内容で公開しています（速い方をお使いください）：Docker Hub `houzch/swiftmq`、GitHub GHCR `ghcr.io/houzch/swiftmq`。どちらも `linux/amd64` と `linux/arm64` を提供します。
+イメージは 2 か所に同一内容で公開しています（速い方をお使いください）：Docker Hub `houzch/speedmq`、GitHub GHCR `ghcr.io/houzch/speedmq`。どちらも `linux/amd64` と `linux/arm64` を提供します。
 
-- データは名前付きボリューム `swiftmq-data` に保存され、コンテナを作り直しても失われません。
-- 停止／削除：`docker stop swiftmq`、`docker rm swiftmq`（データボリュームは残ります）。
+- データは名前付きボリューム `speedmq-data` に保存され、コンテナを作り直しても失われません。
+- 停止／削除：`docker stop speedmq`、`docker rm speedmq`（データボリュームは残ります）。
 
 **設定を変更したり compose で運用したりする場合は、リポジトリを clone してください：**
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
 docker compose pull && docker compose up -d   # 公開済みイメージを使用。ローカルでビルドするなら up -d --build に変更
 
 docker compose ps        # ステータスは Up (healthy) になるはず
 docker compose logs -f   # ログを追う
 ```
 
-- 設定は `configs/swiftmqd.json` から読み取り専用でマウントされ、変更後は `docker compose restart` で反映されます。
+- 設定は `configs/speedmqd.json` から読み取り専用でマウントされ、変更後は `docker compose restart` で反映されます。
 - 停止：`docker compose down`（データは保持）；`docker compose down -v`（データも削除）。
 
 ### 方法 2：ローカルバイナリ（Go 1.24+ が必要）
 
 ```bash
-git clone https://github.com/houzch/swiftmq.git
-cd swiftmq
-go build -o bin/swiftmqd ./cmd/swiftmqd
-go build -o bin/swiftmqctl ./cmd/swiftmqctl
-./bin/swiftmqd -config configs/swiftmqd.json
+git clone https://github.com/houzch/speedmq.git
+cd speedmq
+go build -o bin/speedmqd ./cmd/speedmqd
+go build -o bin/speedmqctl ./cmd/speedmqctl
+./bin/speedmqd -config configs/speedmqd.json
 ```
 
 > 管理 UI のビルド成果物はリポジトリに含まれません。UI を使う場合は、先に `web/` で `npm ci && npm run build` を実行してください；
@@ -116,13 +116,13 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | --- | --- |
 | 管理 UI | <http://localhost:15672/>：キュー / エクスチェンジ / 接続 / アカウント権限 / 仮想ホスト / ポリシー / 制限 / フィーチャーフラグ / クラスタ。右上で自動更新と**画面言語**を設定できます |
 | 監視メトリクス | <http://localhost:15672/metrics>（Prometheus テキスト、認証が必要）；ダッシュボードとアラートは [docs/ops/monitoring](ops/monitoring/README.md) を参照 |
-| コマンドライン | `./bin/swiftmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（ホット停止、ポートは即座に閉じられる） |
+| コマンドライン | `./bin/speedmqctl status`、`list_queues`、`plugins list`、`plugins disable amqp091`（ホット停止、ポートは即座に閉じられる） |
 | ヘルスチェック | `nc -z 127.0.0.1 15672`（compose に healthcheck を内蔵済み） |
 | バックアップと復元 | [docs/ops/backup-restore.md](ops/backup-restore.md) |
 | アップグレード | [docs/ops/upgrade.md](ops/upgrade.md) |
 | セキュリティベースライン | [docs/ops/security-baseline.md](ops/security-baseline.md) |
 
-よく使う設定（完全なサンプルは [configs/swiftmqd.json](../../../configs/swiftmqd.json) を参照。`SWIFTMQ_*` 環境変数で上書きも可能）：
+よく使う設定（完全なサンプルは [configs/speedmqd.json](../../../configs/speedmqd.json) を参照。`SPEEDMQ_*` 環境変数で上書きも可能）：
 
 | 設定項目 | 説明 | デフォルト |
 | --- | --- | --- |
@@ -133,7 +133,7 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 | `storage.fsync` | ディスク書き込み段階 `none / os / batch / always`（confirm のタイミングも同時に決まる） | `os` |
 | `storage.memory_high_watermark`、`storage.disk_free_limit` | リソース水位：達すると生産者がブロックされ、**メッセージは失われない** | `0.4` / 50 MiB |
 | `users` | 内蔵ユーザーテーブル（パスワード + タグ + `remote_access`） | `guest/guest` |
-| `cluster.enabled` + `cluster.peers` | マルチノードクラスタ（デフォルトは無効）、メンバー変更は `swiftmqctl add_member` | 無効 |
+| `cluster.enabled` + `cluster.peers` | マルチノードクラスタ（デフォルトは無効）、メンバー変更は `speedmqctl add_member` | 無効 |
 
 > ポートが使用中の可能性があります：`listeners` / `management.addr` を他のポートに変えれば済みます。
 
@@ -142,10 +142,10 @@ curl -u guest:guest -X PUT -H 'Content-Type: application/json' \
 ## プロジェクト構成
 
 ```
-swiftmq/
+speedmq/
 ├── cmd/
-│   ├── swiftmqd/        # broker プロセスエントリ（実行するのはこれ）
-│   └── swiftmqctl/      # 運用 CLI（管理 HTTP API 経由、カーネル版とは分離）
+│   ├── speedmqd/        # broker プロセスエントリ（実行するのはこれ）
+│   └── speedmqctl/      # 運用 CLI（管理 HTTP API 経由、カーネル版とは分離）
 ├── internal/            # カーネル実装
 │   ├── protocol/        # プロトコルプラグイン：amqp091、mqtt（エンコード/デコード / メソッド / セッション）
 │   ├── broker/          # カーネル：vhost、エクスチェンジ、キュー、デッドレター、フロー制御、管理面ビュー
@@ -158,7 +158,7 @@ swiftmq/
 ├── configs/             # サンプル設定
 ├── docs/ops/            # 運用ドキュメント：バックアップ復元 / アップグレード / セキュリティベースライン / 監視
 ├── Dockerfile、docker-compose.yml
-└── swiftmq-logo.PNG、1280X1280.PNG（交流グループの QR コード）
+└── speedmq-logo.PNG、1280X1280.PNG（交流グループの QR コード）
 ```
 
 ***
@@ -191,6 +191,6 @@ AMQP 0-9-1 プロトコル仕様と [RabbitMQ](https://www.rabbitmq.com/) の挙
 
 ## 交流グループへの参加
 
-QR コードをスキャンして SwiftMQ 交流グループに参加してください。質問があればグループで直接聞けます：
+QR コードをスキャンして SpeedMQ 交流グループに参加してください。質問があればグループで直接聞けます：
 
-![SwiftMQ 交流グループ](../../../1280X1280.PNG)
+![SpeedMQ 交流グループ](../../../1280X1280.PNG)

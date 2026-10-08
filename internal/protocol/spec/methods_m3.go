@@ -1,7 +1,7 @@
 package spec
 
 import (
-	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/internal/protocol/codec"
 )
 
 // 本文件覆盖 M3 所需的方法：发布确认（class 85）与内核回给生产者的 Basic.Ack / Basic.Nack。

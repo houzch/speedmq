@@ -1,8 +1,8 @@
-# Руководство по разработке внешних процессных плагинов (sidecar) для SwiftMQ — Java
+# Руководство по разработке внешних процессных плагинов (sidecar) для SpeedMQ — Java
 
-> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SwiftMQ на Java.
+> **Для кого**: для разработчиков, пишущих внешние процессные плагины (sidecar) для SpeedMQ на Java.
 > **Сначала прочитайте**: [Руководство по разработке внешних процессных плагинов (sidecar)](plugin-development.md) (ментальная модель / поля конфигурации / сводная таблица проводного протокола).
-> **Пример проекта**: рабочая область `swiftmq-plugin/java/SidecarPlugin.java` (один файл, только стандартная библиотека JDK, без Maven/Gradle).
+> **Пример проекта**: рабочая область `speedmq-plugin/java/SidecarPlugin.java` (один файл, только стандартная библиотека JDK, без Maven/Gradle).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### Шаг первый: конфигурация
 
-`swiftmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
+`speedmqd.json` (**реальная конфигурация — стандартный JSON, комментарии недопустимы**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19031",
-        "spawn": ["java", "-cp", "/opt/swiftmq/classes", "SidecarPlugin",
+        "spawn": ["java", "-cp", "/opt/speedmq/classes", "SidecarPlugin",
                   "--addr", "0.0.0.0:19031", "--name", "java-sidecar"],
         "protocols": [
           { "name": "javaecho", "prefix": "JV",
@@ -147,7 +147,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 4. Разбор кода (пример проекта)
 
-`swiftmq-plugin/java/SidecarPlugin.java` — около 470 строк (включая минимальный JSON):
+`speedmq-plugin/java/SidecarPlugin.java` — около 470 строк (включая минимальный JSON):
 
 | Место | Назначение |
 | --- | --- |
@@ -167,7 +167,7 @@ call("session.consume", Map.of("stream", streamId, "queue", q.get("name"), "pref
 
 ## 5. Практическая проверка (воспроизведено на локальной машине)
 
-Windows + JDK 25; ядро в Docker (`swiftmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19031`).
+Windows + JDK 25; ядро в Docker (`speedmq:1.1.01`), плагин на хост-машине (`tcp://host.docker.internal:19031`).
 
 ```
 javac -encoding UTF-8 -d classes SidecarPlugin.java   → 退出码 0
@@ -207,6 +207,6 @@ session 演示完成 queue=amq.gen-4ce088d93638eafe830191
 ## 7. Дополнительно
 
 - Соберите исполняемый jar (`Main-Class: SidecarPlugin`) или используйте `jlink` для компактной среды выполнения,
-  а затем измените `spawn` на `["java", "-jar", "/opt/swiftmq/sidecar.jar", …]`.
+  а затем измените `spawn` на `["java", "-jar", "/opt/speedmq/sidecar.jar", …]`.
 - Собственный интерфейс управления плагина: добавьте в конфигурацию `console_url` (§5.8 основного документа), и на странице "управление плагинами" в панели управления появится прямая ссылка.
 - Независимое развёртывание: `spawn: []` + `address: "tcp://<имя сервиса>:19031"`, внутри контейнера слушать `0.0.0.0`.

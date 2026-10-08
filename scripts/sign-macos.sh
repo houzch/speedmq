@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# 为 SwiftMQ 的 macOS 二进制签名（codesign）并公证（notarytool），最后自检。
+# 为 SpeedMQ 的 macOS 二进制签名（codesign）并公证（notarytool），最后自检。
 #
 # 为什么需要两步：
 #   - codesign 用「Developer ID Application」证书签名，并开启 hardened runtime；
@@ -10,7 +10,7 @@
 #
 # 用法（本地）：
 #   ./scripts/sign-macos.sh \
-#     --files dist/swiftmqd dist/swiftmqctl \
+#     --files dist/speedmqd dist/speedmqctl \
 #     --p12 ~/certs/developer-id.p12 --p12-password '***' \
 #     --notary-key ~/keys/AuthKey_ABC12345.p8 --notary-key-id ABC12345 \
 #     --notary-issuer 69a6de70-0000-0000-0000-000000000000 \
@@ -105,7 +105,7 @@ fi
 # ---------- 临时 keychain ----------
 TEMP_KEYCHAIN=0
 if [ -z "$KEYCHAIN" ]; then
-  KEYCHAIN="$(mktemp -u "${TMPDIR:-/tmp}/swiftmq-sign-XXXXXX.keychain-db")"
+  KEYCHAIN="$(mktemp -u "${TMPDIR:-/tmp}/speedmq-sign-XXXXXX.keychain-db")"
   TEMP_KEYCHAIN=1
 fi
 KC_PASSWORD="$(openssl rand -hex 16 2>/dev/null || date +%s%N)"
@@ -166,13 +166,13 @@ if [ -z "$NOTARY_MODE" ]; then
 fi
 
 # 公证用的 zip 必须放在 stage 目录**之外**，否则 ditto 会把自己也打进去
-TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/swiftmq-notarize-XXXXXX")"
+TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/speedmq-notarize-XXXXXX")"
 STAGE="$TMPROOT/payload"
 mkdir -p "$STAGE"
 trap 'rm -rf "$TMPROOT"; cleanup' EXIT
 for f in "${FILES[@]}"; do cp "$f" "$STAGE/"; done
 
-if [ -z "$ZIP_OUT" ]; then ZIP_OUT="$TMPROOT/swiftmq-notarize.zip"; fi
+if [ -z "$ZIP_OUT" ]; then ZIP_OUT="$TMPROOT/speedmq-notarize.zip"; fi
 mkdir -p "$(dirname "$ZIP_OUT")"
 rm -f "$ZIP_OUT"
 # 公证要求 zip（用 ditto 打包，不要用 zip 命令）

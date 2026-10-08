@@ -1,8 +1,8 @@
-# دليل تطوير المكوّن الإضافي كعملية خارجية في SwiftMQ —— PHP
+# دليل تطوير المكوّن الإضافي كعملية خارجية في SpeedMQ —— PHP
 
-> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSwiftMQ بلغة PHP.
+> **الجمهور**: المطوّرون الذين يكتبون مكوّنًا إضافيًا كعملية خارجية (sidecar) لـSpeedMQ بلغة PHP.
 > **اقرأ أولًا**: [دليل تطوير المكوّن الإضافي كعملية خارجية (sidecar)](plugin-development.md) (النموذج الذهني / حقول الإعداد / الجدول الكامل لبروتوكول السلك).
-> **المشروع النموذجي**: في مساحة العمل `swiftmq-plugin/php/sidecar_plugin.php` (المكتبة القياسية فقط، **بلا حاجة إلى اعتماديات composer**).
+> **المشروع النموذجي**: في مساحة العمل `speedmq-plugin/php/sidecar_plugin.php` (المكتبة القياسية فقط، **بلا حاجة إلى اعتماديات composer**).
 
 ---
 
@@ -26,7 +26,7 @@
 
 ### الخطوة الأولى: الإعداد
 
-`swiftmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
+`speedmqd.json` (**الإعداد الفعلي هو JSON قياسي، ولا يقبل التعليقات**):
 
 ```json
 {
@@ -36,7 +36,7 @@
       "enabled": true,
       "sidecar": {
         "address": "tcp://127.0.0.1:19021",
-        "spawn": ["php", "/opt/swiftmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
+        "spawn": ["php", "/opt/speedmq/sidecar_plugin.php", "--addr", "0.0.0.0:19021", "--name", "php-sidecar"],
         "protocols": [
           { "name": "phpecho", "prefix": "PH",
             "listeners": [{ "name": "phpecho", "addr": ":19022" }] }
@@ -155,7 +155,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 4. قراءة الشيفرة (المشروع النموذجي)
 
-يبلغ `swiftmq-plugin/php/sidecar_plugin.php` نحو 320 سطرًا:
+يبلغ `speedmq-plugin/php/sidecar_plugin.php` نحو 320 سطرًا:
 
 | الموضع | الوظيفة |
 | --- | --- |
@@ -171,7 +171,7 @@ $this->callAndWait('session.consume', ['stream' => $streamId, 'queue' => $q['nam
 
 ## 5. اختبار فعلي (إعادة الإنتاج محليًا)
 
-Windows + PHP 7.4؛ والنواة في Docker (`swiftmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19021`).
+Windows + PHP 7.4؛ والنواة في Docker (`speedmq:1.1.01`)، والمكوّن الإضافي على المضيف (`tcp://host.docker.internal:19021`).
 
 ```
 php -l sidecar_plugin.php  → No syntax errors detected

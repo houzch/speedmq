@@ -1,4 +1,4 @@
-# SwiftMQ 文档多语言索引 / Documentation Index
+# SpeedMQ 文档多语言索引 / Documentation Index
 
 本目录存放 `README`、**插件开发文档**（`docs/plugin-development*.md`）与运维文档（`docs/ops/`）的**多语言版本**。
 

@@ -1,7 +1,7 @@
 package spec
 
 import (
-	"github.com/houzch/swiftmq/internal/protocol/codec"
+	"github.com/houzch/speedmq/internal/protocol/codec"
 )
 
 // 本文件覆盖 M2 所需的 Exchange / Queue / Basic 方法编解码。
