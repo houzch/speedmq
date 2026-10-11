@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Tag `administrator` hanya diberikan kepada sangat sedikit akaun operasi
 
-### A-4. `remote_access`: hadkan akaun hanya log masuk dari mesin tempatan 【Belum diverifikasi（mesin sama tidak dapat mensimulasikan sumber jauh）】
+### A-4. `remote_access`: hadkan akaun hanya log masuk dari mesin tempatan 【Telah diverifikasi（2026-10-10，mesin tempatan + kontena Docker）】
 
 - **Mengapa**: selaras RabbitMQ，`guest` terbina dalam secara lalai hanya membenarkan log masuk mesin tempatan; semasa penggunaan luar, pastikan sumber akaun istimewa terhad。
 - **Bagaimana / skop（kekangan penting）**:
@@ -77,7 +77,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **Akaun yang dibina melalui API pengurusan / `speedmqctl` semuanya `remote_access=true`**（membenarkan log masuk dari mana-mana sumber）——
     asas komen `UpsertUser` dalam `internal/broker/observe.go` dan ujian sebenar `"remote_access":true` dalam `meta/state.json`。Maksudnya **API pada masa ini tidak dapat mengehadkan sesuatu akaun agar hanya mesin tempatan**。
 - **Cara sahkan**: sambung dari **hos lain**（bukan `127.0.0.1`）menggunakan akaun tersebut, sepatutnya 403; sambungan mesin tempatan sepatutnya berjaya。
-  **【Belum diverifikasi】**: persekitaran mesin ini tidak dapat membina sumber jauh sebenar, belum diuji。
+  **【Telah diverifikasi（2026-10-10，mesin tempatan + kontena Docker）】** Di mesin ini, `localonly`（`remote_access:false`）**berjaya** log masuk melalui loopback `127.0.0.1:5676`；
+  sambungan dari kontena `python:3.12-slim` melalui **IP LAN hos**（`localonly@192.168.124.2:5676`）mendapat **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`，log broker merekod `认证失败 ... remote=192.168.124.2:...`；
+  `remoteok`（`remote_access:true`）log masuk **berjaya** dari sumber yang sama; `apiuser` yang dibina melalui API pengurusan juga **berjaya** dari sumber yang sama
+  （mengesahkan "akaun yang dibina melalui API membuka akses jauh secara lalai"：percubaan pertamanya ditolak oleh **kebenaran vhost** `ACCESS_REFUSED`, selepas diberi kebenaran ialah `LOGIN OK`）。
 - [ ] Had sumber akaun istimewa telah dinilai mengikut skop di atas（perhatikan akaun yang dibina melalui API secara lalai membuka akses jauh）
 
 ---
@@ -223,7 +227,7 @@ Yang berikut semuanya **jurang fakta**，sila akui secara eksplisit dalam reka b
 - [ ] A-1 Akaun lalai telah diubah/dipadam 【aliran telah diverifikasi】
 - [ ] A-2 Kebenaran minimum akaun perniagaan（regex），tiada tag pentadbir 【laluan 403 telah diverifikasi】
 - [ ] A-3 Tag `administrator` hanya diberikan kepada akaun operasi 【skop kebenaran tersirat telah diverifikasi】
-- [ ] A-4 Had sumber akaun istimewa telah dinilai（perhatikan akaun yang dibina melalui API secara lalai membuka akses jauh）
+- [ ] A-4 Had sumber akaun istimewa telah dinilai（perhatikan akaun yang dibina melalui API secara lalai membuka akses jauh）【remote_access berkesan telah diverifikasi】
 - [ ] B-1 Port luaran menghidupkan TLS, salah konfigurasi terus tolak permulaan 【telah diverifikasi】
 - [ ] B-2 `min_version` ≥ 1.2 【telah diverifikasi】
 - [ ] B-3 Port yang memerlukan mTLS dikonfigurasi dengan `require_and_verify` + `ca_file`

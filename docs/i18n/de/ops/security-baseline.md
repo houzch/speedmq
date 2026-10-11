@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Der `administrator`-Tag ist nur an sehr wenige Betriebskonten vergeben
 
-### A-4. `remote_access`: Konten auf lokale Anmeldung beschränken 【Nicht verifiziert (auf demselben Rechner lässt sich keine Remote-Quelle simulieren)】
+### A-4. `remote_access`: Konten auf lokale Anmeldung beschränken 【Verifiziert (2026-10-10, dieser Rechner + Docker-Container)】
 
 - **Warum**: An RabbitMQ angeglichen; das integrierte `guest` erlaubt standardmäßig nur die lokale Anmeldung; bei externer Bereitstellung sollte die Quelle privilegierter Konten eingeschränkt werden.
 - **Vorgehen / Handhabung (wichtige Einschränkung)**:
@@ -77,8 +77,12 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **Über die Management-API / `speedmqctl` erstellte Konten haben grundsätzlich `remote_access=true`** (Anmeldung von beliebiger Quelle erlaubt) –
     Beleg: der `UpsertUser`-Kommentar in `internal/broker/observe.go` und die Messung in `meta/state.json` von
     `"remote_access":true`. Mit anderen Worten: **Die API kann derzeit ein Konto nicht auf „nur lokal“ beschränken**.
-- **Verifikation**: Von **einem anderen Host** (nicht `127.0.0.1`) aus mit diesem Konto verbinden; es sollte 403 liefern; die lokale Verbindung sollte erfolgreich sein.
-  **【Nicht verifiziert】**: In der Umgebung dieses Rechners lässt sich keine echte Remote-Quelle erzeugen, daher nicht gemessen.
+- **Verifikation**: Mit diesem Konto von **einer Quelle außerhalb `127.0.0.1`** aus verbinden; es sollte 403 liefern; die lokale (Loopback-)Verbindung sollte erfolgreich sein.
+  **【Verifiziert (2026-10-10, dieser Rechner + Docker-Container)】** Auf diesem Rechner war die Anmeldung von `localonly` (`remote_access:false`) über Loopback `127.0.0.1:5676` **erfolgreich**;
+  in einem `python:3.12-slim`-Container wurde die Verbindung über die **LAN-IP des Hosts** (`localonly@192.168.124.2:5676`) mit **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost` abgelehnt, und das Broker-Log protokollierte `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) war von derselben Quelle aus **erfolgreich**; auch der über die Management-API neu angelegte `apiuser` war von derselben Quelle aus **erfolgreich**
+  (Bestätigung von „über die API angelegte Konten öffnen standardmäßig den Remote-Zugriff“: abgelehnt wurde bei seinem ersten Versuch der **vhost-Berechtigungs**-Eintrag `ACCESS_REFUSED`, nach Ergänzung der Berechtigung dann `LOGIN OK`).
 - [ ] Die Quellenbeschränkung privilegierter Konten wurde gemäß obiger Handhabung bewertet (beachte: über die API erstellte Konten haben standardmäßig Remote-Zugriff)
 
 ---
@@ -224,7 +228,7 @@ Die folgenden Punkte sind alle **faktische Lücken**; sie sollten im Sicherheits
 - [ ] A-1 Standardkonto geändert/gelöscht 【Verifizierter Ablauf】
 - [ ] A-2 Minimale Rechte (Regex) für Anwendungskonten, ohne Administrator-Tag 【Verifizierter 403-Pfad】
 - [ ] A-3 Der `administrator`-Tag ist nur an Betriebskonten vergeben 【Verifizierte Handhabung der impliziten Berechtigung】
-- [ ] A-4 Quellenbeschränkung privilegierter Konten bewertet (beachte: über die API erstellte Konten haben standardmäßig Remote-Zugriff)
+- [ ] A-4 Quellenbeschränkung privilegierter Konten bewertet (beachte: über die API erstellte Konten haben standardmäßig Remote-Zugriff) 【Verifiziert: `remote_access` wirksam】
 - [ ] B-1 TLS für nach außen offene Ports aktiviert; Fehlkonfiguration lehnt den Start ab 【Verifiziert】
 - [ ] B-2 `min_version` ≥ 1.2 【Verifiziert】
 - [ ] B-3 Für Ports, die mTLS benötigen, `require_and_verify` + `ca_file` konfiguriert

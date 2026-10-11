@@ -26,8 +26,13 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 	var sb strings.Builder
 
 	writeMetric(&sb, "speedmq_up", "gauge", "节点是否存活", "1")
-	writeMetric(&sb, "speedmq_build_info", "gauge", "构建信息",
-		`1{version="`+escapeLabel(s.deps.Version)+`",node="`+escapeLabel(s.deps.NodeName)+`"}`)
+	// 标签必须写在**数值之前**：`name{labels} value`。
+	// 曾误写成 `name 1{labels}`（把标签当成了数值的一部分）——那是**非法**的曝光格式，
+	// 真实 Prometheus 会因这一行拒绝**整份抓取**（目标 up=0）。见 U11 实测（2026-10-10）。
+	sb.WriteString("# HELP speedmq_build_info 构建信息\n")
+	sb.WriteString("# TYPE speedmq_build_info gauge\n")
+	fmt.Fprintf(&sb, "speedmq_build_info{version=\"%s\",node=\"%s\"} 1\n",
+		escapeLabel(s.deps.Version), escapeLabel(s.deps.NodeName))
 
 	blocked := 0
 	if b.BlockedState() {
@@ -84,8 +89,9 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request, _ params, au
 	// 每队列指标：vhost / queue 标签是运维定位问题的主要维度。
 	sb.WriteString("# HELP speedmq_queue_messages_ready 队列中的就绪消息数\n")
 	sb.WriteString("# TYPE speedmq_queue_messages_ready gauge\n")
-	sb.WriteString("# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数\n")
-	sb.WriteString("# TYPE speedmq_queue_messages_unacknowledged gauge\n")
+	// 注意：这里**不能**再声明一次 speedmq_queue_messages_unacknowledged 的 HELP/TYPE——
+	// 它已在上面的全局指标里声明过；同一指标名出现第二条 HELP 是非法曝光格式，
+	// 会让真实 Prometheus 拒绝整份抓取（promtool: second HELP line for metric name）。见 U11 实测。
 	sb.WriteString("# HELP speedmq_queue_consumers 队列上的消费者数\n")
 	sb.WriteString("# TYPE speedmq_queue_consumers gauge\n")
 	sb.WriteString("# HELP speedmq_queue_memory_bytes 队列内存占用估算值\n")

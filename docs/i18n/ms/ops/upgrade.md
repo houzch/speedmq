@@ -61,7 +61,7 @@ data/
 
 - Dalam mod kluster, fail kegigihan Raft **diletakkan terus di bawah `meta/`**（`raft.state` / `raft.log` / `snapshot.json`），
   **tiada subdirektori `meta/raft/`**。Asas: pemalar nama fail `internal/raft/log.go` + `Dir: filepath.Join(b.cfg.DataDir, "meta")`
-  dalam `internal/broker/cluster.go`。**【Susun atur kluster belum diuji】**（mesin ini hanya menjalankan instans mesin tunggal）。
+  dalam `internal/broker/cluster.go`。**【Disahkan（2026-10-10, Docker Desktop mesin ini, kluster 3 nod）】** —— kandungan sandaran volum nod kluster boleh dilihat terus mengandungi `meta/raft.log`、`meta/raft.state`、`meta/*.seeded`（tiada subdirektori `meta/raft/` dilihat）。
 - Nama direktori **bukan nama vhost / baris gilir asal**, tetapi pengekodan `store.SafeDirName`: menambah awalan `q_`，bait yang bukan `[A-Za-z0-9._-]` dieskap sebagai `%XX`。
   Ujian sebenar: vhost `/` → direktori `q_%2F`，baris gilir `persist.q` → direktori `q_persist.q`。
   Reka bentuk ini untuk mengelakkan lintasan laluan dan nama peranti terpelihara Windows（`con`/`nul` dsb.）。
@@ -79,6 +79,8 @@ data/
   Ujian sebenar（lihat `backup-restore.md` §6）: selepas proses berhenti dan mula semula, 5 mesej gigih baris gilir durable **semuanya dipulihkan**，
   log memaparkan `已从磁盘恢复队列消息 ... messages=5`。
 
+**【Disahkan（2026-10-10, mesin ini）】** Bacaan merentas versi utama telah diuji: data baris gilir durable yang ditulis dengan tag `v1.1.0` dipulihkan seadanya di bawah `1.1.05`（arahan dan output lihat §5）。
+
 ### 4.2 Skop `vhosts` / `users` dalam konfigurasi (perangkap paling mudah tersandung semasa naik taraf)
 
 - Kedua-duanya **hanya berkesan semasa but pertama kalinya**: permulaan pertama akan menulis vhosts/users dalam konfigurasi ke metadata dan meninggalkan fail penanda
@@ -87,6 +89,8 @@ data/
   sila gunakan API pengurusan atau `speedmqctl`。
 - Sebaliknya, naik taraf **tidak akan** menimpa akaun sedia ada dengan konfigurasi: kata laluan yang diubah semasa operasi tidak akan dikembalikan kepada nilai lama dalam konfigurasi selepas mula semula,
   akaun yang dipadam semasa operasi juga tidak akan hidup semula。Asas: logik penanda semaian `cluster.go`; README M8-4 / M8-7。
+
+**【Disahkan（2026-10-10, mesin ini）】** Perubahan masa operasi memang tidak ditimpa oleh konfigurasi: sebelum naik taraf, melalui API pengurusan, kata laluan `guest` diubah kepada `rotated`; selepas mula semula dengan `1.1.05` + `data_dir` yang sama, `guest/guest`（kata laluan lama dalam konfigurasi）memulangkan **401**、`guest/rotated` memulangkan **200**。
 
 ### 4.3 Putaran segmen dan pengitaran semula cakera
 
@@ -97,7 +101,8 @@ data/
 
 ## 5. Naik taraf binari (mesin kosong)
 
-> Mesin ini **belum melakukan latihan sebenar merentas versi**（repositori pada masa ini hanya mempunyai satu versi `1.0.0`，tiada binari lama untuk dinaik taraf）。Langkah di bawah ialah **pengesahan main semula versi sama + aliran umum** bagi keupayaan yang sedia ada dalam repositori ini, bahagian merentas versi ditandakan **【Belum diverifikasi】**。
+> **【Disahkan（2026-10-10, mesin ini）】** Latihan sebenar merentas versi utama: binari lama yang dibina daripada tag `v1.1.0` menulis penukar/baris gilir/pengikatan durable + 5 mesej gigih + vhost/akaun/kebenaran/polisi dan menukar kata laluan semasa operasi; selepas proses dihentikan, mula semula dengan binari `1.1.05` semasa + **`data_dir` yang sama + port yang sama** —— proses mula seperti biasa、objek dan bilangan mesej dalam `/api/queues` sama、klien AMQP sebenar mengambil semula kesemua 5 mesej gigih、`/metrics` melaporkan `speedmq_build_info{version="1.1.05"}`。
+> Langkah di bawah masih merupakan aliran umum, boleh digunakan pada mana-mana versi bersebelahan; **penurunan** lihat §8。
 
 ### 5.1 Langkah
 
@@ -160,7 +165,11 @@ docker compose logs -f --tail 100
 > ```
 
 Kegigihan data bergantung pada **volum bernama** `speedmq-data` compose, data tidak hilang apabila kontena dibina semula（sejak M4 benar-benar ditulis ke cakera）。
-Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan menyandarkan `/var/lib/speedmq`（lihat `backup-restore.md` §3.2）。**【Naik taraf imej belum diuji】**（mesin ini tidak menjalankan Docker）。
+Jika perlu menyandarkan kandungan volum sebelum naik taraf, ia bersamaan dengan menyandarkan `/var/lib/speedmq`（lihat `backup-restore.md` §3.2）。
+
+> **【Disahkan（2026-10-10, Docker Desktop mesin ini）】** Telah melakukan latihan naik taraf imej sebenar: bina secara tempatan imej lama `speedmq:1.1.0-old`（git tag `v1.1.0`）dan imej baharu `speedmq:1.1.05-new`（sumber semasa）, mulakan imej lama dengan compose mesin tunggal → bina baris gilir durable `persist.q` dan terbitkan 5 mesej gigih（`delivery_mode=2`）→ `docker compose down`（**tanpa `-v`**, volum bernama `speedmq-data` dikekalkan）→ tukar tag imej dalam compose kepada imej baharu kemudian `docker compose up -d`。
+> Keputusan: kontena baharu mula seperti biasa、log permulaan memaparkan `已从磁盘恢复队列消息 ... queue=persist.q messages=5`、`/metrics` melaporkan `speedmq_build_info{version="1.1.05"}`、`queue_totals.messages=5` dalam `/api/overview` dan `messages=5` baris gilir `persist.q` sama sebelum dan selepas naik taraf, dan klien AMQP sebenar（`rabbitmq/amqp091-go`）mengambil semula kesemua 5 mesej gigih satu demi satu（`deliveryMode=2`）。
+> Nota: `v1.1.0` ialah imej jenama `speedmq` sebelum tukar nama（binari `speedmqd`、metrik `speedmq_build_info`、direktori data lalai `/var/lib/speedmq`）, berbeza penamaan dengan versi semasa; dalam latihan ini berpandukan konfigurasi `data_dir=/var/lib/speedmq` dan menyediakan pemilik untuk volum bernama terlebih dahulu（dalam imej lama tiada laluan boleh tulis ini）。Ini tidak menjejaskan kesimpulan「tukar tag bina semula kontena, data volum bernama tidak hilang」。
 
 ---
 
@@ -192,8 +201,15 @@ Platform tidak menyediakan "naik taraf bergilir satu klik", perlu mengendalikan 
    semasa naik taraf sila elakkan `add_member` / `remove_member` serentak。
 5. Selepas naik taraf selesai, semak `object_totals` `GET /api/cluster` sama seperti sebelum naik taraf。
 
-> **【Belum diverifikasi】** Mesin ini belum melakukan latihan naik taraf bergilir kluster sebenar（laluan kluster dan kontena kedua-duanya tidak dijalankan）; urutan di atas berasal daripada kekangan umum
-> perisian tengah mesej dan Raft serta fakta pelaksanaan `pause_minority` / perubahan ahli dalam repositori ini, bukan kesimpulan ujian sebenar mesin ini。
+> **【Disahkan（2026-10-10, Docker Desktop mesin ini, kluster 3 nod）】** Telah melakukan latihan naik taraf bergilir **merentas versi** kluster sebenar: garis dasar ialah `speedmq:1.1.0-old` yang dibina secara tempatan（git tag `v1.1.0`）, naik taraf nod demi nod（n1 → n2 → n3, satu demi satu: hentikan dahulu, kemudian sandarkan volum bernamanya, kemudian tukar imej dan mula）ke `1.1.05` semasa（dibina tempatan `speedmq:1.1.05-new`, compose menggunakan override nod demi nod untuk menukar imej）。Sepanjang masa kluster sentiasa mengekalkan leader dan majoriti —— apabila leader semasa dihentikan, leader baharu dipilih dalam kira-kira 0.6 s、`pause_minority` tidak mencetuskan jeda、tiada gangguan luar semasa pemberhentian; selepas naik taraf `object_totals` `GET /api/cluster` sama seperti sebelum naik taraf（`queues:1`）, 25 mesej gigih baris gilir kuorum 3 replika `qroll` kekal bilangan sama dan boleh dibaca semula satu demi satu, selepas menerbitkan 5 mesej baharu, kesemua 30 boleh diambil semula。
+> Urutan di atas masih terpakai di bawah kekangan umum Raft, latihan ini merangkumi senario 3 nod. **【Disahkan（2026-10-10, Docker Desktop mesin ini）kluster 2 nod hentikan 1 sudah kehilangan majoriti】** Membina satu lagi kluster minimum 2 nod（n1/n2, setiap `peers` hanya mengandungi dua ini, `partition_policy=pause_minority`）uji sebenar: apabila kedua nod dalam talian, `GET /api/cluster` ialah `has_quorum=true / paused=false`（n1 leader、n2 follower）; selepas `docker stop` n2, n1 dalam kira-kira 2 s menjadi `has_quorum=false / paused=true` —— iaitu hentikan 1 ahli pengundi sudah kehilangan majoriti, `pause_minority` menjeda perkhidmatan, **membuktikan kluster 2 nod tidak mempunyai keupayaan naik taraf bergilir**; selepas `docker start` memulihkan n2, n1 kembali kepada `has_quorum=true / paused=false` dalam kira-kira 2 s（perkhidmatan pulih automatik）。
+
+> **【Disahkan（2026-10-11, Docker Desktop mesin ini, kluster 3 nod）】Naik taraf bergilir di bawah pemisahan rangkaian telah diuji sebenar**（`v1.1.0` → `1.1.05` merentas versi, pemisahan menggunakan topologi dua rangkaian: RPC Raft antara nod hanya melalui `cluster-net` ber-IP statik, klien/satah pengurusan melalui `client-net`, `docker network disconnect/connect` untuk menukar pemisahan）:
+> - **Follower yang dipisahkan**: pihak majoriti mengekalkan quorum sepanjang pemisahan、menterbit/menggunakan seperti biasa, dan dalam keadaan pemisahan berterusan menyelesaikan "henti→tukar imej→mula→menyusul" bagi satu nod majoriti; kluster versi campuran（1.1.0 + 1.1.05）boleh berkhidmat. Selepas pemisahan dipulihkan, nod yang diasingkan（versi lama）menyertai semula dan menyusul, mesej disemak mengikut set ID unik 35/35 tiada kehilangan.
+> - **Leader yang dipisahkan**: majoriti memilih leader baharu dalam kira-kira **630 ms**; leader lama yang diasingkan mengekalkan `role=leader` tetapi `has_quorum=false / paused=true`（`pause_minority` berkuat kuasa, tidak menaikkan penggal secara aktif）; naik taraf nod lain di pihak majoriti semasa pemisahan berjaya; selepas pemulihan leader lama menyertai semula, tiada split-brain、tiada pencabangan data.
+> - **Tingkah laku yang dijangka tanpa PreVote（direkodkan dengan jujur）**: follower yang diasingkan serta-merta bertanding berulang kali, penggal meningkat kira-kira +2 setiap 2 s（dua kumpulan Raft bagi metadata dan baris gilir menaik secara bergilir）; sebaik sahaja pemulihan, ia **merebut kepemimpinan** dengan penggal tinggi（diuji dipilih dalam 1.4 s）—— ada gangguan pertukaran leader tetapi tiada masalah ketepatan.
+> - **Dua perangkap operasi**: ① jika `peers` menggunakan nama hos dan kontena turut dipasang pada rangkaian kedua yang boleh dicapai, trafik Raft akan membelok dan menyebabkan "pemisahan palsu"（nod yang diasingkan masih `has_quorum=true` selepas lebih seminit）—— RPC antara nod mesti hanya melalui satu rangkaian（peers menunjuk terus ke IP statik rangkaian tersebut）; ② semasa pemulihan, `docker network connect` mesti membawa `--ip <IP asal>`, jika tidak nod mendapat IP baharu manakala majoriti masih mendail alamat lama, nod yang diasingkan membawa log yang ketinggalan dan bertanding berulang kali dengan penggal yang melambung（ujian sebenar menyeret term kluster daripada 320 ke 488、komit metadata melonjak daripada 13 ke 97）, dan mungkin muncul keadaan fana di mana leader `quorum=true` tetapi seketika `paused=true`.
+> - Semasa pemisahan, API pengurusan di pihak minoriti boleh dibaca（memudahkan pemerhatian）, penerbitan AMQP ditolak（`pause_minority` berkuat kuasa）.
 
 ---
 
@@ -206,5 +222,5 @@ Platform tidak menyediakan "naik taraf bergilir satu klik", perlu mengendalikan 
 - **Naik taraf panas pemalam/protokol dalam talian**: pemalam dikompil bersama kernel（bentuk A）atau dilancarkan mengikut konfigurasi `spawn`（bentuk B），
   naik taraf kernel = mula semula proses; **tiada** mekanisme menggantikan binari panas di tempat。
 - **Migrasi di tempat enjin penyimpanan**: putaran segmen/pemadatan indeks ialah tingkah laku latar belakang masa operasi，**tiada** arahan "migrasi data/pemadatan" berasingan。
-- **Naik taraf kluster dalam rangkaian sebenar**: repositori ini hanya melakukan kekacauan berskala kecil（kill pada peringkat proses），**tidak melakukan** latihan naik taraf di bawah pemisahan rangkaian dan cakera penuh。
+- **Naik taraf kluster di bawah cakera penuh**: **belum diverifikasi**。（Naik taraf bergilir di bawah pemisahan rangkaian telah diuji sebenar pada 2026-10-11, lihat nota di hujung §7。）
 - Dokumen ini **tidak mengandungi** sebarang pengesahan pemindahan data antara SpeedMQ dan broker lain（RabbitMQ）。

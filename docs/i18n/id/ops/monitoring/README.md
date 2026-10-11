@@ -49,16 +49,29 @@ rule_files:
 
 Di dalam aturan secara seragam menggunakan `job="speedmq"`; jika nama job Anda berbeda, ganti seluruhnya.
 
+> **【Terverifikasi (2026-10-10, Docker Desktop lokal)】** File aturan ini dimuat dengan Prometheus sungguhan (`prom/prometheus:v2.54.1`):
+> `GET /api/v1/rules` mendaftar grup `speedmq` dengan 10 aturan (nama cocok satu per satu dengan file), dan mesin aturan benar-benar mengevaluasi dan memicu.
+> ⚠️ Saat memuat aturan juga ditemukan: `/metrics` kernel memiliki **dua format eksposisi tidak valid** (posisi label `speedmq_build_info`, `# HELP` duplikat),
+> yang membuat Prometheus sungguhan menolak **seluruh** scrape (`up==0`). Keduanya telah diperbaiki **pada ronde ini** (lihat §6); pemicuan `SpeedMQScrapeDown` sebelumnya
+> adalah rangkaian akibat cacat format, bukan aturan yang salah tulis.
+
 ### 1.3 Dasbor Grafana
 
 `grafana-dashboard.json` diimpor melalui **Dashboards → Import → unggah JSON**, saat impor pilih sumber data Prometheus Anda
 (di dasbor dirujuk dengan variabel `${DS_PROMETHEUS}`). Variabel template `DS_PROMETHEUS` akan diberi nilai pada pemetaan impor.
 
-**【Belum Diverifikasi】** Mesin lokal tidak menjalankan instans Grafana, belum melakukan verifikasi impor sungguhan; JSON tersebut hanya menjalani validasi sintaks JSON (14 panel, parsing lulus).
+**【Terverifikasi (2026-10-10, Docker Desktop lokal)】** Diimpor sungguhan dengan Grafana asli (`grafana/grafana:11.2.0`) melalui HTTP API:
+buat sumber data Prometheus terlebih dahulu, lalu `POST /api/dashboards/import` (`overwrite=true`), mengembalikan `uid=speedmq-overview`;
+`GET /api/dashboards/uid/speedmq-overview` mengembalikan 14 panel, dan variabel template `DS_PROMETHEUS` terselesaikan ke sumber data yang dibuat.
 
 ---
 
 ## 2. Potongan `/metrics` sungguhan (bukti)
+
+> ⚠️ Sampel pada bagian ini diambil dari instans **sebelum perbaikan**, di mana dua baris memiliki format eksposisi **tidak valid**, sehingga Prometheus sungguhan menolak **seluruh** scrape (lihat §6):
+> ① `speedmq_build_info 1{version=...}` —— label harus ditulis **sebelum** nilai (bentuk benar `speedmq_build_info{version="..."} 1`);
+> ② pada `speedmq_queue_messages_unacknowledged` muncul **baris `# HELP` kedua** (nama sama dengan metrik global di atas).
+> Keduanya telah diperbaiki pada ronde ini (2026-10-10); sampel di bawah sudah diberikan dalam **bentuk benar** setelah perbaikan.
 
 Berikut adalah **keluaran sungguhan** `/metrics` instans `1.0.0` mesin lokal (sudah dibuat satu antrean durable `persist.q`,
 sehingga metrik per-queue dengan label `vhost`/`queue` muncul):
@@ -69,7 +82,7 @@ sehingga metrik per-queue dengan label `vhost`/`queue` muncul):
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **Dua famili seri dengan nama sama tetapi kardinalitas berbeda**: `speedmq_queue_messages_unacknowledged` **baik** memiliki seri global tanpa label,
   **maupun** seri per-queue dengan label; sedangkan sisi "siap" global bernama `speedmq_queue_messages`, per-queue bernama
   `speedmq_queue_messages_ready` (nama tidak simetris). Saat menulis aturan gunakan `{queue=~".+"}` untuk secara eksplisit hanya mengambil famili per-queue.
+  ⚠️ tetapi `# HELP`/`# TYPE` untuk nama metrik yang sama **hanya boleh dideklarasikan sekali**: sebelumnya dideklarasikan sekali di masing-masing dua tempat, dan Prometheus sungguhan menilainya sebagai
+  `second HELP line for metric name` dan **menolak seluruh scrape** (telah diperbaiki pada ronde ini, lihat §6).
 - **Ketentuan `speedmq_process_memory_bytes`**: implementasinya adalah `MemStats.HeapInuse + StackInuse` (**memori yang sedang dipakai**),
   sama dengan ketentuan penilaian watermark memori kernel; tetapi teks `# HELP`-nya menulis "byte memori yang diminta dari sistem operasi", **teks tidak sesuai dengan ketentuan sebenarnya**,
   dokumen ini yang berlaku.
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. Item **belum diverifikasi** lainnya
+## 6. Status verifikasi item lainnya
 
-- Dasbor Grafana **belum diverifikasi dengan impor di Grafana sungguhan** (hanya validasi sintaks JSON yang lulus).
-- Aturan peringatan **belum diverifikasi dengan memuat di Prometheus/Alertmanager sungguhan** (mesin lokal tidak menjalankan Prometheus).
-  Tetapi **nama metrik di dalam aturan sudah dicocokkan satu per satu dengan keluaran sungguhan `/metrics`** (lihat §2/§3), tidak ada masalah "nama salah sehingga tidak pernah terpicu".
+- **【Terverifikasi (2026-10-10, Docker Desktop lokal)】** Dasbor Grafana telah diimpor dan diverifikasi di Grafana asli 11.2.0 (14 panel, pemetaan `DS_PROMETHEUS` berhasil), lihat §1.3.
+- **【Terverifikasi + cacat diperbaiki (2026-10-10, Docker Desktop lokal)】** Aturan peringatan telah dimuat dan dapat digunakan di Prometheus sungguhan (`prom/prometheus:v2.54.1`):
+  `GET /api/v1/rules` mendaftar grup `speedmq` dengan 10 aturan, dan mesin aturan benar-benar mengevaluasi dan memicu (lihat §1.2).
+  - **Pada ronde ini, berkat verifikasi nyata, ditemukan dan diperbaiki dua cacat format eksposisi `/metrics` kernel** (`internal/management/metrics.go`):
+    ① `speedmq_build_info` menulis label setelah nilai (`name 1{labels}`), yang benar `name{labels} 1`;
+    ② `speedmq_queue_messages_unacknowledged` memiliki baris `# HELP`/`# TYPE` kedua yang duplikat.
+    **Salah satu saja membuat Prometheus sungguhan menolak seluruh scrape** (`up=0`; pemicuan `SpeedMQScrapeDown` adalah "rangkaian cacat format", bukan nama aturan yang salah)——
+    sebelumnya tidak pernah terdeteksi karena belum pernah diverifikasi dengan endpoint scrape sungguhan.
+  - **Bukti setelah perbaikan**: `promtool check metrics` (parser resmi Prometheus v2.54.1) atas keluaran `/metrics` yang diperbaiki memberikan **kode keluar 0 dan tanpa galat**;
+    dan ditambahkan kasus regresi `TestMetricsBuildInfoExpositionFormat` (`speedmq-test/test/unit/management`) yang mengunci format tersebut.
+  - **Belum diulang**: setelah perbaikan, "scrape target `up`" belum dijalankan ulang dengan Prometheus sungguhan, jadi di sini hanya dinyatakan "keluaran sudah lulus parser resmi", dan **tidak** menyatakan "up target terukur 1".

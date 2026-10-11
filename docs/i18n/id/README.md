@@ -16,6 +16,16 @@ Kemampuan yang sudah dimiliki: persistensi (log segmen + tingkat fsync + pemulih
 
 ***
 
+## Tolok ukur performa dan pengujian
+
+Proyek ini **tidak memberikan janji performa publik apa pun**. **Kesimpulan tentang klaster dan performa** dalam README ini dan laporan terkait semuanya didasarkan pada **lingkungan terskala kecil di satu host** (Docker Desktop / WSL2 di satu mesin, 3 node masing-masing 4C4G, `fsync=batch`, antrean quorum dengan 3 replika) dan pada **satu kali pengujian** tanpa mengambil median:
+
+- angka-angka tersebut hanya untuk **perbandingan relatif di lingkungan yang sama** (misalnya sebelum/sesudah optimasi, classic vs quorum); **nilai absolut tidak boleh diekstrapolasi** ke produksi atau perangkat keras lain;
+- pada satu host, lalu lintas antar-node melewati loopback, sehingga **biaya penerusan antar-node diremehkan**; pada jaringan nyata multi-mesin, biaya relatifnya lebih tinggi;
+- jika Anda memerlukan perencanaan kapasitas produksi, lakukan benchmark sendiri pada perangkat keras dan jaringan target Anda.
+
+***
+
 ## Mulai cepat
 
 ### Cara pertama: Docker (disarankan)

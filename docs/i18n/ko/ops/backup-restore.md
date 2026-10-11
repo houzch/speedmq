@@ -1,7 +1,10 @@
 # SpeedMQ 백업과 복구
 
 > 이 문서의 "실측" 결론은 모두 **Windows + PowerShell 5.1**에서의 실제 리허설(임시 `data_dir`과 임시 포트)에서 나온 것입니다.
-> 리허설 명령과 핵심 출력은 §6에 그대로 실었습니다. **【미검증】** 부분은 명시적으로 표시합니다(클러스터 백업/복구, Docker 볼륨 백업 등).
+> 리허설 명령과 핵심 출력은 §6에 그대로 실었습니다. **【미검증】** 부분은 명시적으로 표시합니다(진짜 물리 머신 정전 등).
+
+> **【검증됨(2026-10-11, 로컬 Docker Desktop 3노드 클러스터)】** 프로세스 강제 종료(`docker kill`)와 복구 과정 중의 동시 쓰기를 실측했으며,
+> 기록은 §6.2 / §6.3을 참고하세요. §2.3의 "정전" 기준과 §7의 검증 상태 목록도 함께 갱신되었습니다.
 
 ---
 
@@ -45,7 +48,12 @@
   (fsync는 하지 않음), publisher confirm도 그 이후에 반환됩니다.
 - 실측: 영속 메시지를 발행한 후 **즉시** 세그먼트 파일 크기를 조회하면 이미 데이터를 볼 수 있습니다(`t=0ms seg=832`). 즉 "OS가 볼 수 있는 바이트"와 confirm은 거의 동기화됩니다.
 - **주의**: 이는 "OS 버퍼에 도달했다"는 것만 의미하며, **프로세스를 강제 종료해도 유실되지 않고**(프로세스가 죽어도 OS 버퍼는 유실되지 않음), **전원이 꺼지면 유실됩니다**.
-  "confirm을 받은 즉시 fsync로 디스크에 기록"되길 원하면 `storage.fsync`를 `batch` / `always`로 변경하세요. **【정전 시나리오 미검증】**
+  "confirm을 받은 즉시 fsync로 디스크에 기록"되길 원하면 `storage.fsync`를 `batch` / `always`로 변경하세요.
+  **【검증됨(2026-10-11, 로컬 Docker Desktop 3노드 클러스터)】** 쓰기 도중 `docker kill`(SIGKILL)로 노드를 강제 종료하는 실측에서 두 모드 모두 confirm된 메시지를 잃지 않았습니다:
+  `fsync: os`에서 follower 종료(5만 건 모두 confirm, 대사 missing=0), `fsync: always`에서 쿼럼 큐 leader 종료(20만 건 모두 confirm,
+  missing=0; 추가로 디스크에 기록됐지만 confirm이 반환되지 않은 메시지 1,355건이 재전송되었으며, at-least-once 시맨틱상 허용되고 소비자 측에서 메시지 ID로 중복 제거하면 멱등).
+  추가 사항: 기본 모드에서 발행 도중 `wsl --shutdown`으로 Docker VM 전체를 급정지(전체 머신 정전으로 인한 OS 버퍼 유실에 근사)한 뒤 복구하면 confirm된 메시지 69,669건이
+  ID별 대사에서 missing=0이었습니다. **여전히 미검증**: 진짜 물리 머신 정전(호스트 전원 유실, 디스크 캐시 계층)은 로컬에서 시뮬레이션할 수 없습니다.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **각 노드는 자신의 `data_dir`을 따로 백업합니다**(메타데이터는 Raft로 전체에 복제되고, 메시지 데이터는 Owner 노드에, 쿼럼 큐 복제본은 각자의 Raft 디렉터리에 있습니다).
 - 중지 순서: **한 번에 한 노드만 중지**하며, 여러 투표 멤버를 동시에 중지하지 마세요(`upgrade.md` §7.2 참고).
 - **클러스터 전체의 일관된 스냅샷**을 얻으려면 모든 노드를 순서대로 중지한 뒤 각각 복사해야 합니다. 프로덕션에서는 "노드별 중지/복사/기동"이 더 흔합니다.
-- **【미검증】** 로컬에서 실제 클러스터 백업/복구 리허설을 하지 않았습니다.
+- **【검증됨(2026-10-10, 로컬 Docker Desktop 3노드 클러스터)】** 3노드 compose 클러스터에서 노드별로 "중지/복사/기동"을 수행했습니다: 각 노드의 명명 볼륨을 일회성 alpine 컨테이너로 패키징했습니다
+  (`docker run --rm -v <볼륨>:/data -v <호스트 디렉터리>:/backup alpine tar czf ...`), 패키지에는 `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`이 포함되었습니다;
+  복구 후 그 노드는 기존 멤버로서 다시 합류해 따라잡을 수 있었습니다(§4.2 참고, 증거는 `upgrade.md` §7.2와 동일).
 
 ### 3.3 Docker(명명 볼륨)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【미검증】**(로컬에서 Docker를 실행하지 않았습니다).
+> **【검증됨(2026-10-10, 로컬 Docker Desktop)】** 이 명령을 3노드 클러스터의 명명 볼륨에서 실제로 실행했고(패키지에는 `meta/`, `quorum/` 포함),
+> 이를 바탕으로 단일 노드 볼륨 복구 리허설을 완료했습니다(§4.2 참고).
 
 ---
 
@@ -112,7 +123,8 @@ Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 - 단일 노드 복구: §4.1에 따라 해당 노드의 `data_dir`을 복구한 뒤 기동하면, 기존 멤버로서 다시 합류해 Raft 로그를 따라잡습니다.
 - 클러스터 전체 복구: **먼저 다수파 노드를 복구하고 기동해야**(≥ 과반수 투표 멤버) 클러스터가 leader를 선출할 수 있으며, 이후 나머지 노드를 복구합니다.
-- **【미검증】** 클러스터 복구는 실측하지 않았습니다.
+- **【검증됨(2026-10-10, 로컬 Docker Desktop 3노드 클러스터)】** "n3 중지 → 그 볼륨 비우기 → §3.3 백업으로 덮어쓰기 → 재기동"을 실측했습니다:
+  n3는 follower로서 다시 합류해 leader를 따라잡았고(`commit_index == last_applied`), 쿼럼 큐 메시지 수와 멤버 테이블은 변하지 않았습니다.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **WARN이 전혀 없습니다**. 이는 WARN이 "인덱스에 아직 정산된 레코드가 남아 있는" 시나리오에서만 나타남을 보여줍니다(§7 참고).
 
+### 6.2 쓰기 도중 노드 강제 종료(`docker kill`, 2026-10-11)
+
+3노드 클러스터(`partition_policy=pause_minority`), 3복제본 쿼럼 큐 `pwr.q`; 클라이언트는 publisher confirms를 켜고, 각 메시지에 고유 ID를 부여하며, confirm된 ID를 디스크에 기록해 대사합니다.
+
+**라운드 1(`fsync: os`, follower n3 종료)**: 50,000건 발행 도중 `docker kill pwr-n3`:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**라운드 2(`fsync: always`, 쿼럼 leader n1 종료)**: 200,000건 발행 도중 `docker kill pwr-n1`:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**라운드 1b(`fsync: os`, `wsl --shutdown`으로 Docker VM 전체 급정지, 전체 머신 정전에 근사)**: 발행 도중 급정지, 호스트에 confirm 기록 69,669행;
+VM 재구성, 클러스터 복구 후:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+주의: `wsl --shutdown`은 "OS 버퍼 유실"에 근사할 뿐 **물리 머신 정전과 동등하지 않습니다**(호스트 전원 유실, 디스크 캐시 계층은 커버하지 못하며 여전히 미검증).
+
+### 6.3 복구 과정 중의 동시 쓰기(2026-10-11)
+
+`fsync: always` 클러스터에서: `docker stop`으로 follower n2 중지 → 50,000건 발행 적체(모두 confirm) → `docker start pwr-n2`,
+**같은 초부터** 다수파 노드에 20,000건을 계속 발행:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+결론: 따라잡기 동안의 동시 쓰기는 유실도 오류도 없으며, 카운트가 정확합니다.
+
 ---
 
 ## 7. 알려진 문제와 제한(사실 그대로 등록)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os`는 정전 시 유실되지 않음을 보장하지 않음**: "confirm 즉시 디스크 기록"을 원하면 `batch` / `always`를 사용하세요.
 4. **비밀번호 평문**: `meta/state.json`의 사용자 비밀번호는 **평문**입니다(실측으로 `"password":"drillpass"` 확인 가능) —
    따라서 백업 파일은 **반드시 민감 데이터로 취급**해야 합니다(접근 제어, 암호화 보관). 자세한 내용은 `security-baseline.md` 참고.
-5. **【미검증】** 클러스터 백업/복구, Docker 볼륨 백업/복구, 정전 시나리오, 복구 과정 중의 동시 쓰기.
+5. **【검증 상태】** 프로세스 강제 종료(쓰기 도중 쿼럼 leader 종료 포함, `fsync: os`/`always` 두 모드)와 복구 과정 중의 동시 쓰기(따라잡기 동안 약 4,000~6,000건/초로 계속 발행, 4초 만에 스냅샷으로 따라잡고, 카운트 정확, 대사 missing=0) —— **【검증됨(2026-10-11, 로컬 Docker Desktop 3노드 클러스터)】**; `wsl --shutdown`으로 Docker VM 전체 급정지(전체 머신 정전에 근사) 단일 샘플에서 confirm된 메시지 유실이 0이었지만 **진짜 물리 머신 정전은 여전히 미검증**; 클러스터 노드별 백업/복구, Docker 명명 볼륨 백업/복구 —— **【검증됨(2026-10-10, 로컬 Docker Desktop 3노드 클러스터)】**(§3.2 / §3.3 / §4.2 참고).
+6. **부가 관찰(2026-10-11 리허설에서 사실대로 기록, 비차단)**: ① 쿼럼 leader를 강제 종료한 뒤 follower의 발행 전달 경로가 약 76초 동안 죽은 leader를 계속 가리켰습니다(그동안 새 발행은 nack, 클라이언트 재전송은 모두 성공, confirm된 메시지 유실 없음) —— 가용성에 흔들림 구간이 있습니다; ② 대형 큐(43.8만 건)를 한 번에 비울 때 약 153배의 재전송 증폭이 관찰되었습니다(at-least-once 시맨틱은 성립하며 최종적으로 정확히 0으로 클리어); ③ 대형 큐 따라잡기 동안 follower 경유로 소비자를 시작할 때 `i/o timeout`이 간헐적으로 발생했고, leader에 직접 연결하면 정상이었습니다.

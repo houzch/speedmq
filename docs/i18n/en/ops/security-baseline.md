@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] The `administrator` tag is granted to only a very small number of operations accounts
 
-### A-4. `remote_access`: restrict an account to local login only 【Not verified (a remote source cannot be simulated on the same machine)】
+### A-4. `remote_access`: restrict an account to local login only 【Verified (2026-10-10, local machine + Docker container)】
 
 - **Why**: aligned with RabbitMQ, the built-in `guest` allows only local login by default; when deploying externally, ensure that privileged accounts' sources are restricted.
 - **How / semantics (important limitation)**:
@@ -78,7 +78,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
     based on the `UpsertUser` comment in `internal/broker/observe.go` and the measured `"remote_access":true` in
     `meta/state.json`. That is, **the API currently cannot restrict a given account to local-only**.
 - **How to verify**: connect from **another host** (not `127.0.0.1`) with that account; it should get 403, while a local connection should succeed.
-  **【Not verified】**: this machine's environment cannot construct a real remote source, so it was not measured.
+  **【Verified (2026-10-10, local machine + Docker container)】** On this machine, `localonly` (`remote_access:false`) logged in **successfully** via loopback `127.0.0.1:5676`;
+  connecting from a `python:3.12-slim` container through the **host LAN IP** (`localonly@192.168.124.2:5676`) got **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, and the broker log recorded `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) logged in **successfully** from the same source; an `apiuser` newly created via the management API also **succeeded** from the same source
+  (confirming "accounts created via the API allow remote by default": its first attempt was rejected by the **vhost permission** `ACCESS_REFUSED`, and after granting the permission it was `LOGIN OK`).
 - [ ] Privileged accounts' source restrictions have been evaluated per the semantics above (note that accounts created via the API allow remote access by default)
 
 ---
@@ -224,7 +228,7 @@ The following are all **factual gaps**; explicitly acknowledge them in your secu
 - [ ] A-1 Default account changed/deleted 【flow verified】
 - [ ] A-2 Least privilege for business accounts (regexes), no administrator tag 【403 path verified】
 - [ ] A-3 The `administrator` tag is granted only to operations accounts 【implicit-permission semantics verified】
-- [ ] A-4 Privileged accounts' source restrictions evaluated (note that accounts created via the API allow remote by default)
+- [ ] A-4 Privileged accounts' source restrictions evaluated (note that accounts created via the API allow remote by default) 【remote_access in effect verified】
 - [ ] B-1 TLS enabled on external ports; misconfiguration refuses to start 【Verified】
 - [ ] B-2 `min_version` ≥ 1.2 【Verified】
 - [ ] B-3 Ports needing mTLS configured with `require_and_verify` + `ca_file`

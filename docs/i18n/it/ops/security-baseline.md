@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Il tag `administrator` è concesso solo a pochissimi account operativi
 
-### A-4. `remote_access`: limitare l'account al solo login locale 【non verificato (sulla stessa macchina non è possibile simulare una sorgente remota)】
+### A-4. `remote_access`: limitare l'account al solo login locale 【verificato (2026-10-10, questa macchina + container Docker)】
 
 - **Perché**: in linea con RabbitMQ, l'utente integrato `guest` per impostazione predefinita consente il login solo dalla macchina locale; in una distribuzione esposta all'esterno occorre assicurarsi che l'origine degli account privilegiati sia limitata.
 - **Come fare / criterio (limitazione importante)**:
@@ -77,8 +77,12 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **gli account creati tramite l'API di gestione / `speedmqctl` hanno sempre `remote_access=true`** (consentono il login da qualsiasi origine) —
     base: il commento di `UpsertUser` in `internal/broker/observe.go` e `"remote_access":true` misurato in `meta/state.json`.
     In altre parole **al momento l'API non può limitare un account al solo accesso locale**.
-- **Come verificare**: connettendosi con quell'account da **un'altra macchina** (diversa da `127.0.0.1`) si deve ricevere 403; la connessione locale deve riuscire.
-  **【non verificato】**: l'ambiente locale non consente di costruire una vera origine remota, quindi non è stato misurato.
+- **Come verificare**: connettendosi con quell'account da **un'origine diversa da `127.0.0.1`** si deve ricevere 403; la connessione locale (loopback) deve riuscire.
+  **【verificato (2026-10-10, questa macchina + container Docker)】** Su questa macchina, il login di `localonly` (`remote_access:false`) via loopback `127.0.0.1:5676` è **riuscito**;
+  da un container `python:3.12-slim`, la connessione tramite l'**IP LAN dell'host** (`localonly@192.168.124.2:5676`) è stata **rifiutata con 403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, e il log del broker ha registrato `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) è riuscito **con successo** dalla stessa origine; anche `apiuser`, creato tramite l'API di gestione, è **riuscito** dalla stessa origine
+  (conferma che "gli account creati via API aprono di default il remoto": al primo tentativo è stato rifiutato l'elemento **permessi vhost** `ACCESS_REFUSED`, e dopo aver aggiunto il permesso è risultato `LOGIN OK`).
 - [ ] La limitazione dell'origine degli account privilegiati è stata valutata secondo il criterio sopra (attenzione: gli account creati via API abilitano di default l'accesso remoto)
 
 ---
@@ -224,7 +228,7 @@ Tutti i seguenti sono **carenze fattuali**: riconoscile esplicitamente nel proge
 - [ ] A-1 Account predefinito modificato/eliminato 【processo verificato】
 - [ ] A-2 Privilegio minimo per gli account applicativi (regex), senza tag amministratore 【percorso 403 verificato】
 - [ ] A-3 Il tag `administrator` concesso solo agli account operativi 【criterio dei permessi impliciti verificato】
-- [ ] A-4 Valutata la limitazione dell'origine degli account privilegiati (attenzione: gli account creati via API abilitano di default l'accesso remoto)
+- [ ] A-4 Valutata la limitazione dell'origine degli account privilegiati (attenzione: gli account creati via API abilitano di default l'accesso remoto) 【verificato: `remote_access` efficace】
 - [ ] B-1 TLS abilitato sulle porte esposte; configurazione errata = avvio rifiutato 【verificato】
 - [ ] B-2 `min_version` ≥ 1.2 【verificato】
 - [ ] B-3 Le porte che richiedono mTLS configurate con `require_and_verify` + `ca_file`

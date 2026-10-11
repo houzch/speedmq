@@ -16,6 +16,16 @@ Capacités déjà disponibles : persistance (journal par segments + niveaux fsyn
 
 ***
 
+## Référentiel de performance et de test
+
+Ce projet **ne formule aucun engagement public de performance**. Les **conclusions sur le cluster et les performances** de ce README et des rapports associés reposent toutes sur un **environnement réduit sur un seul hôte** (Docker Desktop / WSL2 sur une seule machine, 3 nœuds de 4C4G chacun, `fsync=batch`, files quorum à 3 réplicas) et sur une **exécution unique**, sans médiane :
+
+- les chiffres ne servent qu'à une **comparaison relative au sein du même environnement** (par exemple avant/après une optimisation, classic vs quorum) ; **les valeurs absolues ne doivent pas être extrapolées** à la production ou à un autre matériel ;
+- sur un seul hôte, le trafic entre nœuds passe par la boucle locale (loopback), donc le **coût de transfert entre nœuds est sous-estimé** ; sur un véritable réseau multi-machines, le coût relatif est plus élevé ;
+- pour un dimensionnement de production, réalisez vos propres tests de charge sur votre matériel et votre réseau cibles.
+
+***
+
 ## Démarrage rapide
 
 ### Méthode 1 : Docker (recommandée)

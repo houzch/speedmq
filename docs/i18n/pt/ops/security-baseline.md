@@ -68,7 +68,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] A tag `administrator` é concedida apenas a pouquíssimas contas de operação
 
-### A-4. `remote_access`: restringir a conta a login apenas local 【não verificado (não é possível simular origem remota na mesma máquina)】
+### A-4. `remote_access`: restringir a conta a login apenas local 【verificado (2026-10-10, máquina local + contêiner Docker)】
 
 - **Por quê**: em alinhamento ao RabbitMQ, o `guest` embutido, por padrão, só permite login local; em implantação exposta externamente, garanta que a origem das contas privilegiadas seja restrita.
 - **Como fazer / critério (limitação importante)**:
@@ -77,7 +77,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
     base: o comentário de `UpsertUser` em `internal/broker/observe.go` e o `"remote_access":true` medido no `meta/state.json`.
     Ou seja, **a API atualmente não consegue restringir uma conta a apenas login local**.
 - **Como verificar**: conecte-se de **outra máquina** (não `127.0.0.1`) com essa conta; deve receber 403; a conexão local deve funcionar.
-  **【não verificado】**: o ambiente desta máquina não permite construir uma origem remota real, então não foi medido.
+  **【verificado (2026-10-10, máquina local + contêiner Docker)】** Nesta máquina, `localonly` (`remote_access:false`) fez login **com sucesso** pelo loopback `127.0.0.1:5676`;
+  a conexão a partir de um contêiner `python:3.12-slim` pelo **IP de LAN do host** (`localonly@192.168.124.2:5676`) recebeu **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, e o log do broker registrou `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) fez login **com sucesso** da mesma origem; um `apiuser` recém-criado pela API de gerenciamento também **teve sucesso** da mesma origem
+  (confirmando "contas criadas por API liberam o remoto por padrão": sua primeira tentativa foi rejeitada pela **permissão de vhost** `ACCESS_REFUSED`; após conceder a permissão, foi `LOGIN OK`).
 - [ ] A restrição de origem das contas privilegiadas foi avaliada conforme o critério acima (atenção: contas criadas por API liberam o acesso remoto por padrão)
 
 ---
@@ -223,7 +227,7 @@ Os itens a seguir são **lacunas factuais**; reconheça-as explicitamente no des
 - [ ] A-1 Conta padrão alterada/excluída 【fluxo verificado】
 - [ ] A-2 Privilégio mínimo das contas de negócio (regex), sem tag de administrador 【caminho 403 verificado】
 - [ ] A-3 A tag `administrator` é concedida apenas a contas de operação 【critério de permissão implícita verificado】
-- [ ] A-4 Restrição de origem das contas privilegiadas avaliada (atenção: contas criadas por API liberam o remoto por padrão)
+- [ ] A-4 Restrição de origem das contas privilegiadas avaliada (atenção: contas criadas por API liberam o remoto por padrão) 【efeito do remote_access verificado】
 - [ ] B-1 TLS habilitado nas portas expostas, recusando a inicialização se mal configurado 【verificado】
 - [ ] B-2 `min_version` ≥ 1.2 【verificado】
 - [ ] B-3 Portas que precisam de mTLS com `require_and_verify` + `ca_file`

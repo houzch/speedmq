@@ -1,7 +1,10 @@
 # SpeedMQ Sao lưu và phục hồi
 
 > Các kết luận "đo thực tế" trong tài liệu này đều đến từ một buổi diễn tập thực tế trên **Windows + PowerShell 5.1** (dùng `data_dir` tạm và cổng tạm).
-> Các lệnh diễn tập và đầu ra quan trọng được dán nguyên văn ở §6. Phần **【chưa kiểm chứng】** sẽ được đánh dấu rõ ràng (sao lưu/phục hồi cluster, sao lưu volume Docker, v.v.).
+> Các lệnh diễn tập và đầu ra quan trọng được dán nguyên văn ở §6.
+> Phần **【chưa kiểm chứng】** sẽ được đánh dấu rõ ràng (như tình huống mất điện thật trên máy vật lý).
+>
+> **【đã kiểm chứng (2026-10-11, cluster 3 node Docker Desktop máy cục bộ)】** Kill cứng tiến trình (`docker kill`) và ghi đồng thờitrong quá trình phục hồi đã được đo thực tế, biên bản xem §6.2 / §6.3; cách hiểu "mất điện" ở §2.3 và danh sách trạng thái kiểm chứng ở §7 đã được cập nhật đồng bộ.
 
 ---
 
@@ -45,7 +48,12 @@ Kho message là **hai tệp** (tệp phân đoạn `*.seg` và tệp chỉ mục
   (không fsync), publisher confirm cũng trả về sau đó.
 - Đo thực tế: sau khi publish message bền vững, **kiểm tra ngay** kích thước tệp phân đoạn đã có thể thấy dữ liệu (`t=0ms seg=832`); tức là "số byte mà OS có thể thấy" gần như đồng bộ với confirm.
 - **Lưu ý**: điều này chỉ cho thấy "đã vào bộ đệm OS", **kill cứng tiến trình sẽ không mất** (tiến trình bị kill không mất bộ đệm OS), nhưng **mất điện sẽ mất**.
-  Muốn "nhận confirm là đã fsync xuống đĩa", hãy đổi `storage.fsync` thành `batch` / `always`. **【tình huống mất điện chưa đo thực tế】**
+  Muốn "nhận confirm là đã fsync xuống đĩa", hãy đổi `storage.fsync` thành `batch` / `always`.
+  **【đã kiểm chứng (2026-10-11, cluster 3 node Docker Desktop máy cục bộ)】** Kill cứng node bằng `docker kill` (SIGKILL) trong khi ghi, đo thực tế cả hai mức đều không mất message đã confirm:
+  `fsync: os` kill follower (50.000 message confirm toàn bộ, đối soát missing=0), `fsync: always` kill leader của queue trọng tài (200.000 message confirm toàn bộ,
+  missing=0; ngoài ra 1.355 message đã xuống đĩa nhưng chưa confirm được phát lại, ngữ nghĩa at-least-once cho phép, phía consumer khử trùng theo message ID là idempotent).
+  Điểm cộng: ở mức mặc định, dùng `wsl --shutdown` để dừng khẩn cấp toàn bộ Docker VM trong khi publish (gần tương đương mất điện toàn máy, mất bộ đệm OS), sau khi phục hồi 69.669 message đã confirm
+  đối soát theo ID missing=0. **Vẫn chưa kiểm chứng**: mất điện thật trên máy vật lý (mất nguồn điện của host, tầng cache đĩa), không thể mô phỏng trên máy này.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Mỗi node tự sao lưu `data_dir` của mình** (siêu dữ liệu được Raft sao chép tới toàn bộ, dữ liệu message nằm ở node Owner, bản sao queue trọng tài nằm trong thư mục Raft của từng node).
 - Thứ tự dừng: **mỗi lần chỉ dừng một node**; không dừng đồng thời nhiều thành viên bỏ phiếu (xem `upgrade.md` §7.2).
 - Muốn có **ảnh chụp nhất quán toàn cluster**, cần lần lượt dừng tất cả các node rồi sao chép từng node; trong sản xuất phổ biến hơn là "dừng/sao chép/khởi động từng node".
-- **【chưa kiểm chứng】** Máy cục bộ chưa thực hiện diễn tập sao lưu/phục hồi cluster thực tế.
+- **【đã kiểm chứng (2026-10-10, cluster 3 node Docker Desktop máy cục bộ)】** Trên cluster compose 3 node, "dừng/sao chép/khởi động" từng node: mỗi node dùng container alpine dùng một lần đóng gói named volume của mình
+  (`docker run --rm -v <volume>:/data -v <thư mục host>:/backup alpine tar czf ...`), gói chứa `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`;
+  sau phục hồi node đó tham gia lại với tư cách thành viên sẵn có và đuổi kịp (xem §4.2, bằng chứng như `upgrade.md` §7.2).
 
 ### 3.3 Docker (volume có tên)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【chưa kiểm chứng】** (máy cục bộ chưa chạy Docker).
+> **【đã kiểm chứng (2026-10-10, Docker Desktop máy cục bộ)】** Lệnh này đã được thực thi thực tế trên named volume của cluster 3 node (gói chứa `meta/`, `quorum/`),
+> và dựa vào đó hoàn thành diễn tập phục hồi volume của một node (xem §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 - Phục hồi một node: theo §4.1 phục hồi `data_dir` của node đó rồi khởi động, nó sẽ tham gia lại với tư cách thành viên sẵn có và đuổi kịp nhật ký Raft.
 - Phục hồi toàn bộ cluster: **khôi phục và khởi động các node đa số trước** (≥ một nửa thành viên bỏ phiếu), cluster mới bầu được leader; sau đó phục hồi các node còn lại.
-- **【chưa kiểm chứng】** Phục hồi cluster chưa đo thực tế.
+- **【đã kiểm chứng (2026-10-10, cluster 3 node Docker Desktop máy cục bộ)】** Đo thực tế "dừng n3 → xóa trắng volume của nó → ghi đè bằng bản sao lưu ở §3.3 → khởi động lại":
+  n3 tham gia lại với tư cách follower và đuổi kịp leader (`commit_index == last_applied`), số message của queue trọng tài và bảng thành viên giữ nguyên.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **Không có WARN nào**. Điều này cho thấy WARN chỉ xuất hiện trong tình huống "trong chỉ mục còn lưu bản ghi đã kết toán" (xem §7).
 
+### 6.2 Kill cứng node trong khi ghi (`docker kill`, 2026-10-11)
+
+Cluster 3 node (`partition_policy=pause_minority`), queue trọng tài 3 bản sao `pwr.q`; client bật publisher confirms, mỗi message mang ID duy nhất, các ID đã confirm được ghi xuống đĩa để đối soát.
+
+**Lượt 1 (`fsync: os`, kill follower n3)**: đang publish 50.000 message thì `docker kill pwr-n3`:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**Lượt 2 (`fsync: always`, kill leader trọng tài n1)**: đang publish 200.000 message thì `docker kill pwr-n1`:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Lượt 1b (`fsync: os`, `wsl --shutdown` dừng khẩn cấp toàn bộ Docker VM, gần tương đương mất điện toàn máy)**: dừng khẩn cấp trong khi publish, phía host đã ghi nhận 69.669 dòng confirm;
+sau khi VM được tạo lại và cluster phục hồi:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Lưu ý: `wsl --shutdown` chỉ mô phỏng gần đúng "mất bộ đệm OS", **không tương đương mất điện máy vật lý** (mất nguồn điện của host, tầng cache đĩa chưa được bao phủ, vẫn chưa kiểm chứng).
+
+### 6.3 Ghi đồng thời trong quá trình phục hồi (2026-10-11)
+
+Trên cluster `fsync: always`: `docker stop` follower n2 → publish tích lũy 50.000 message (confirm toàn bộ) → `docker start pwr-n2`,
+**ngay cùng giây đó** tiếp tục publish 20.000 message vào các node đa số:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Kết luận: ghi đồng thời trong lúc đuổi kịp không mất, không sai, đếm chính xác.
+
 ---
 
 ## 7. Vấn đề và giới hạn đã biết (ghi nhận trung thực)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` không đảm bảo mất điện không mất**: muốn "confirm là xuống đĩa" hãy dùng `batch` / `always`.
 4. **Mật khẩu dạng văn bản thuần**: mật khẩu người dùng trong `meta/state.json` là **văn bản thuần** (đo thực tế thấy được `"password":"drillpass"`) ——
    do đó tệp sao lưu **phải được xử lý như dữ liệu nhạy cảm** (kiểm soát truy cập, lưu trữ mã hóa). Xem chi tiết ở `security-baseline.md`.
-5. **【chưa kiểm chứng】** Sao lưu/phục hồi cluster, sao lưu/phục hồi volume Docker, tình huống mất điện, ghi đồng thời trong quá trình phục hồi.
+5. **【Trạng thái kiểm chứng】** Kill cứng tiến trình (bao gồm kill leader trọng tài trong khi ghi, cả hai mức `fsync: os`/`always`) và ghi đồng thời trong quá trình phục hồi (trong lúc đuổi kịp tiếp tục publish với khoảng 4.000~6.000 message/giây, đuổi kịp qua snapshot trong 4 giây, đếm chính xác, đối soát missing=0) — **【đã kiểm chứng (2026-10-11, cluster 3 node Docker Desktop máy cục bộ)】**; dùng `wsl --shutdown` dừng khẩn cấp toàn bộ Docker VM (gần tương đương mất điện toàn máy), mẫu một lần cho thấy message đã confirm không mất, nhưng **mất điện thật trên máy vật lý vẫn chưa kiểm chứng**; sao lưu/phục hồi cluster từng node và sao lưu/phục hồi Docker named volume — **【đã kiểm chứng (2026-10-10, cluster 3 node Docker Desktop máy cục bộ)】** (xem §3.2 / §3.3 / §4.2).
+6. **Quan sát kèm theo (ghi nhận trung thực trong diễn tập 2026-10-11, không chặn)**: ① sau khi kill cứng leader trọng tài, đường chuyển tiếp publish của follower từng tiếp tục trỏ tới leader đã chết khoảng 76 giây (trong thời gian đó publish mới bị nack, client phát lại thành công, không mất message đã confirm) —— có cửa sổ chập chờn về khả dụng; ② queue lớn (438 nghìn message) drain một lần quan sát thấy phát lại khuếch đại khoảng 153 lần (ngữ nghĩa at-least-once vẫn đúng, cuối cùng dọn về 0 chính xác); ③ trong lúc queue lớn đuổi kịp, khởi động consumer qua follower thỉnh thoảng gặp `i/o timeout`, kết nối trực tiếp leader thì bình thường.

@@ -49,16 +49,29 @@ rule_files:
 
 Trong quy tắc dùng thống nhất `job="speedmq"`; nếu tên job của bạn khác, hãy thay thế toàn văn.
 
+> **【đã kiểm chứng (2026-10-10, Docker Desktop máy cục bộ)】** Tệp quy tắc này đã được nạp bằng Prometheus thật (`prom/prometheus:v2.54.1`):
+> `GET /api/v1/rules` liệt kê 10 quy tắc trong nhóm `speedmq` (tên khớp một-một với trong tệp), và engine quy tắc thực sự đánh giá và kích hoạt chúng.
+> ⚠️ Khi nạp quy tắc, tình cờ phát hiện `/metrics` của nhân từng có **hai định dạng phơi bày không hợp lệ** (vị trí tag `speedmq_build_info`, `# HELP` trùng lặp),
+> khiến Prometheus thật từ chối **toàn bộ** lần thu thập (`up==0`). Cả hai đã được **sửa trong đợt này** (xem §6); trước khi sửa, việc kích hoạt `SpeedMQScrapeDown`
+> là phản ứng dây chuyền của lỗi định dạng, không phải viết sai tên quy tắc.
+
 ### 1.3 Bảng điều khiển Grafana
 
 `grafana-dashboard.json` được import qua **Dashboards → Import → tải lên JSON**, khi import chọn nguồn dữ liệu Prometheus của bạn
 (trong bảng điều khiển tham chiếu bằng biến `${DS_PROMETHEUS}`). Biến mẫu `DS_PROMETHEUS` sẽ được gán trong ánh xạ import.
 
-**【chưa kiểm chứng】** Máy cục bộ chưa dựng instance Grafana, chưa làm kiểm chứng import thật; JSON này chỉ được kiểm tra cú pháp JSON (14 panel, phân tích qua).
+**【đã kiểm chứng (2026-10-10, Docker Desktop máy cục bộ)】** Bảng điều khiển đã được import bằng Grafana thật (`grafana/grafana:11.2.0`) qua HTTP API:
+trước tiên tạo nguồn dữ liệu Prometheus, rồi `POST /api/dashboards/import` (`overwrite=true`), trả về `uid=speedmq-overview`;
+`GET /api/dashboards/uid/speedmq-overview` lấy về 14 panel, và biến mẫu `DS_PROMETHEUS` phân giải tới nguồn dữ liệu đã tạo.
 
 ---
 
 ## 2. Đoạn thật của `/metrics` (bằng chứng)
+
+> ⚠️ Mẫu trong mục này lấy từ instance **trước khi sửa**, trong đó hai dòng có định dạng phơi bày **không hợp lệ**, Prometheus thật sẽ từ chối **toàn bộ** lần thu thập vì điều đó (xem §6):
+> ① `speedmq_build_info 1{version=...}` —— tag phải viết **trước** giá trị (dạng đúng `speedmq_build_info{version="..."} 1`);
+> ② `speedmq_queue_messages_unacknowledged` có **dòng thứ hai** `# HELP` (cùng tên với chỉ số toàn cục ở trên).
+> Cả hai đã được sửa trong đợt này (2026-10-10); mẫu bên dưới được đưa theo **dạng đúng** sau khi sửa.
 
 Dưới đây là **đầu ra thật** của `/metrics` từ instance `1.0.0` trên máy cục bộ (đã tạo một queue durable `persist.q`,
 nên các chỉ số per-queue có tag `vhost`/`queue` đã xuất hiện):
@@ -69,7 +82,7 @@ nên các chỉ số per-queue có tag `vhost`/`queue` đã xuất hiện):
 speedmq_up 1
 # HELP speedmq_build_info thông tin build
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked mức nước tài nguyên có chặn producer không (1=đang chặn)
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready số message sẵn sàng trong queue
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged số message chưa xác nhận trong queue
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers số consumer trên queue
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes giá trị ước lượng mức chiếm dụng bộ nhớ của queue
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **Hai họ series cùng tên khác cardinality**: `speedmq_queue_messages_unacknowledged` **vừa** có series toàn cục không tag,
   **vừa** có series per-queue có tag; còn phía "sẵn sàng" toàn cục gọi là `speedmq_queue_messages`, per-queue gọi là
   `speedmq_queue_messages_ready` (tên không đối xứng). Khi viết quy tắc hãy dùng `{queue=~".+"}` để rõ ràng chỉ lấy họ per-queue.
+  ⚠️ Nhưng `# HELP`/`# TYPE` của cùng một tên chỉ số **chỉ được khai báo một lần**: trước đây khai báo mỗi nơi một lần ở hai nơi, bị Prometheus thật phán là
+  `second HELP line for metric name` và **từ chối toàn bộ lần thu thập** (đã sửa trong đợt này, xem §6).
 - **Cách hiểu `speedmq_process_memory_bytes`**: hiện thực là `MemStats.HeapInuse + StackInuse` (**bộ nhớ đang dùng**),
   cùng cách hiểu với việc phán đoán mức nước bộ nhớ của nhân; nhưng nội dung `# HELP` của nó viết là "số byte bộ nhớ xin hệ điều hành", **nội dung không khớp với cách hiểu thực tế**,
   hãy lấy tài liệu này làm chuẩn.
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. Các mục **chưa kiểm chứng** khác
+## 6. Trạng thái kiểm chứng của các mục khác
 
-- Bảng điều khiển Grafana **chưa được kiểm chứng import trong Grafana thật** (chỉ kiểm tra cú pháp JSON qua).
-- Quy tắc cảnh báo **chưa được kiểm chứng load trong Prometheus/Alertmanager thật** (máy cục bộ chưa dựng Prometheus).
-  Nhưng **tên chỉ số trong quy tắc đã được đối chiếu từng dòng với đầu ra thật của `/metrics`** (xem §2/§3), không tồn tại vấn đề "viết sai tên dẫn đến mãi mãi không kích hoạt".
+- **【đã kiểm chứng (2026-10-10, Docker Desktop máy cục bộ)】** Bảng điều khiển Grafana đã được import và kiểm chứng trong Grafana thật 11.2.0 (14 panel, ánh xạ `DS_PROMETHEUS` thành công), xem §1.3.
+- **【đã kiểm chứng + đã sửa lỗi (2026-10-10, Docker Desktop máy cục bộ)】** Quy tắc cảnh báo đã được nạp và dùng được trong Prometheus thật (`prom/prometheus:v2.54.1`):
+  `GET /api/v1/rules` liệt kê 10 quy tắc của nhóm `speedmq`, engine quy tắc thực sự đánh giá và kích hoạt (xem §1.2).
+  - **Đợt này qua kiểm chứng thật đã phát hiện và sửa hai lỗi định dạng phơi bày `/metrics` của nhân** (`internal/management/metrics.go`):
+    ① `speedmq_build_info` viết tag sau giá trị (`name 1{labels}`), đúng phải là `name{labels} 1`;
+    ② `speedmq_queue_messages_unacknowledged` bị khai báo trùng dòng `# HELP`/`# TYPE` thứ hai.
+    **Bất kỳ điểm nào cũng khiến Prometheus thật từ chối toàn bộ lần thu thập** (`up=0`; `SpeedMQScrapeDown` kích hoạt do "phản ứng dây chuyền của lỗi định dạng", không phải viết sai tên quy tắc) ——
+    trước đây chưa từng bị phát hiện vì chưa bao giờ kiểm chứng bằng đầu thu thập thật.
+  - **Bằng chứng sau khi sửa**: `promtool check metrics` (bộ phân tích chính thức của Prometheus v2.54.1) với đầu ra `/metrics` đã sửa **mã thoát 0, không báo lỗi**;
+    và thêm ca hồi quy `TestMetricsBuildInfoExpositionFormat` (`speedmq-test/test/unit/management`) để khóa định dạng đó.
+  - **Chưa chạy lại**: sau khi sửa chưa chạy lại "mục tiêu thu thập `up`" bằng Prometheus thật, nên ở đây chỉ tuyên bố "đầu ra đã qua bộ phân tích chính thức", **không** tuyên bố "mục tiêu up đo được là 1".

@@ -16,6 +16,16 @@ Capacidades ya disponibles: persistencia (registro por segmentos + niveles de fs
 
 ***
 
+## Criterios de rendimiento y pruebas
+
+Este proyecto **no ofrece ningún compromiso público de rendimiento**. Las **conclusiones sobre clúster y rendimiento** de este README y de los informes relacionados se basan todas en un **entorno reducido en un único host** (Docker Desktop / WSL2 en una sola máquina, 3 nodos de 4C4G cada uno, `fsync=batch`, colas de quórum con 3 réplicas) y en una **única ejecución** sin tomar la mediana:
+
+- las cifras solo sirven para la **comparación relativa dentro del mismo entorno** (por ejemplo, antes/después de una optimización, classic vs quorum); **los valores absolutos no deben extrapolarse** a producción ni a otro hardware;
+- en un único host el tráfico entre nodos va por loopback, por lo que el **coste de reenvío entre nodos se subestima**; en una red real de varias máquinas el coste relativo será mayor;
+- si necesitas planificación de capacidad para producción, realiza tus propias pruebas de carga sobre tu hardware y tu red objetivo.
+
+***
+
 ## Inicio rápido
 
 ### Opción 1: Docker (recomendado)

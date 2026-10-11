@@ -16,6 +16,16 @@ Funzionalità già disponibili: persistenza (log a segmenti + profili fsync + ri
 
 ***
 
+## Criteri di prestazioni e test
+
+Questo progetto **non fornisce alcun impegno pubblico sulle prestazioni**. Le **conclusioni su cluster e prestazioni** presenti in questo README e nei report correlati si basano tutte su un **ambiente ridotto su un singolo host** (Docker Desktop / WSL2 su una sola macchina, 3 nodi da 4C4G ciascuno, `fsync=batch`, code quorum a 3 repliche) e su una **singola esecuzione**, senza mediana:
+
+- i numeri servono solo per un **confronto relativo all'interno dello stesso ambiente** (ad esempio prima/dopo un'ottimizzazione, classic vs quorum); **i valori assoluti non vanno estrapolati** a produzione o altro hardware;
+- su un singolo host il traffico tra i nodi passa in loopback, quindi il **costo di inoltro tra nodi è sottostimato**; su una rete reale con più macchine il costo relativo è più alto;
+- per la pianificazione della capacità di produzione, esegui i tuoi benchmark sull'hardware e sulla rete di destinazione.
+
+***
+
 ## Avvio rapido
 
 ### Metodo 1: Docker (consigliato)

@@ -16,6 +16,16 @@ Bereits vorhandene Fähigkeiten: Persistenz (Segment-Log + fsync-Stufen + Crash-
 
 ***
 
+## Leistungs- und Testmaßstab
+
+Dieses Projekt gibt **keine öffentlichen Leistungszusagen**. Die **Cluster- und Leistungsaussagen** in diesem README und zugehörigen Berichten beruhen alle auf einer **verkleinerten Umgebung auf einem einzigen Host** (Docker Desktop / WSL2 auf einem Rechner, 3 Knoten mit je 4C4G, `fsync=batch`, Quorum-Queues mit 3 Replikaten) und auf **einem einzigen Durchlauf** ohne Medianwerte:
+
+- die Zahlen dienen nur dem **relativen Vergleich innerhalb derselben Umgebung** (z. B. vor/nach einer Optimierung, classic vs. quorum); **absolute Werte dürfen nicht** auf die Produktion oder andere Hardware **hochgerechnet werden**;
+- auf einem einzigen Host läuft der Verkehr zwischen den Knoten über Loopback, daher wird der **Aufwand für die Weiterleitung zwischen Knoten unterschätzt**; in einem echten Multi-Maschinen-Netz sind die relativen Kosten höher;
+- für die Produktionskapazitätsplanung führen Sie bitte eigene Benchmarks auf Ihrer Zielhardware und Ihrem Zielnetz durch.
+
+***
+
 ## Schnellstart
 
 ### Variante 1: Docker (empfohlen)

@@ -49,16 +49,29 @@ rule_files:
 
 ルール内では一律 `job="speedmq"` を使用します；job 名が異なる場合は全体を置換してください。
 
+> **【検証済み（2026-10-10、本機 Docker Desktop）】** このルールファイルは実際の Prometheus（`prom/prometheus:v2.54.1`）でロードしました：
+> `GET /api/v1/rules` は `speedmq` グループの 10 ルールを列挙し（名前はファイル内と一対一に対応）、ルールエンジンが実際に評価・発火します。
+> ⚠️ ルールをロードする際に併せて判明：カーネルの `/metrics` に**2 箇所の不正な露出形式**（`speedmq_build_info` のラベル位置、`# HELP` の重複）があり、
+> 実際の Prometheus が**スcrape 全体**を拒否します（`up==0`）。両方とも**今回のラウンドで修正済み**です（§6 を参照）；修正前に `SpeedMQScrapeDown` が発火していたのは
+> 形式欠陥の連鎖であり、ルールの書き間違いではありません。
+
 ### 1.3 Grafana ダッシュボード
 
 `grafana-dashboard.json` は **Dashboards → Import → JSON をアップロード**でインポートし、インポート時に自分の Prometheus データソースを選択します
 （ダッシュボード内では `${DS_PROMETHEUS}` 変数で参照）。テンプレート変数 `DS_PROMETHEUS` はインポートのマッピングで値が割り当てられます。
 
-**【未検証】** 本機では Grafana インスタンスを起動せず、実際のインポート検証は行っていません；この JSON は JSON 構文検証のみ実施（14 パネル、パース成功）。
+**【検証済み（2026-10-10、本機 Docker Desktop）】** 実際の Grafana（`grafana/grafana:11.2.0`）で HTTP API 経由でインポートしました：
+まず Prometheus データソースを作成し、次に `POST /api/dashboards/import`（`overwrite=true`）を実行して `uid=speedmq-overview` を返しました；
+`GET /api/dashboards/uid/speedmq-overview` は 14 パネルを返し、テンプレート変数 `DS_PROMETHEUS` は作成したデータソースに解決されました。
 
 ---
 
 ## 2. `/metrics` の実片段（証拠）
+
+> ⚠️ 本節のサンプルは**修正前**のインスタンスから取得したもので、2 行の露出形式が**不正**であり、実際の Prometheus が**scrape 全体**を拒否します（§6 を参照）：
+> ① `speedmq_build_info 1{version=...}` —— ラベルは必ず値の**前**に書きます（正しい書き方 `speedmq_build_info{version="..."} 1`）；
+> ② `speedmq_queue_messages_unacknowledged` に**2 番目の** `# HELP` 行が出現（上記のグローバルメトリクスと同名）。
+> 両方とも今回のラウンド（2026-10-10）で修正済みです；下記サンプルは修正後の**正しい形**で示しています。
 
 以下は本機 `1.0.0` インスタンスの `/metrics` の**実際の出力**です（durable キュー `persist.q` を 1 つ作成済みのため、
 `vhost`/`queue` ラベル付きの per-queue メトリクスが出現）：
@@ -69,7 +82,7 @@ rule_files:
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **同名で基数が異なる 2 つの系列ファミリー**：`speedmq_queue_messages_unacknowledged` は**グローバルなラベルなし系列**と、
   **per-queue のラベル付き系列**の**両方**を持ちます；一方「就緒」側はグローバルが `speedmq_queue_messages`、per-queue が
   `speedmq_queue_messages_ready`（名前が非対称）。ルールを書く際は `{queue=~".+"}` で per-queue のファミリーのみを明示的に取得してください。
+  ⚠️ ただし同じメトリクス名の `# HELP`/`# TYPE` は**一度だけ宣言する必要があります**：以前は 2 箇所でそれぞれ 1 回ずつ宣言しており、実際の Prometheus から
+  `second HELP line for metric name` と判定され、**scrape 全体を拒否**されました（今回のラウンドで修正済み、§6 を参照）。
 - **`speedmq_process_memory_bytes` の扱い**：実装は `MemStats.HeapInuse + StackInuse`（**使用中メモリ**）で、
   カーネルのメモリ水位判定と同じ扱いです；ただしその `# HELP` の文言は「OS に要求したメモリバイト数」と書かれており、**文言と実際の扱いが一致していません**。
   本書の記載を優先してください。
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. その他の**未検証**項目
+## 6. その他の項目の検証状態
 
-- Grafana ダッシュボードは**実際の Grafana でのインポート検証を行っていません**（JSON 構文検証のみ通過）。
-- アラートルールは**実際の Prometheus/Alertmanager でのロード検証を行っていません**（本機では Prometheus を起動していません）。
-  ただしルール内の**メトリクス名は `/metrics` の実際の出力と 1 件ずつ照合済み**（§2/§3 を参照）で、「名前の間違いで永遠に発火しない」問題はありません。
+- **【検証済み（2026-10-10、本機 Docker Desktop）】** Grafana ダッシュボードは実際の Grafana 11.2.0 でインポート検証済み（14 パネル、`DS_PROMETHEUS` のマッピング成功）、§1.3 を参照。
+- **【検証済み + 欠陥修正済み（2026-10-10、本機 Docker Desktop）】** アラートルールは実際の Prometheus（`prom/prometheus:v2.54.1`）でロードされ使用可能です：
+  `GET /api/v1/rules` は `speedmq` グループの 10 ルールを列挙し、ルールエンジンが実際に評価・発火します（§1.2 を参照）。
+  - **今回のラウンドで、実際の検証によりカーネル `/metrics` の露出形式の欠陥を 2 箇所発見し修正しました**（`internal/management/metrics.go`）：
+    ① `speedmq_build_info` はラベルを値の後に書いていた（`name 1{labels}`）、正しくは `name{labels} 1`；
+    ② `speedmq_queue_messages_unacknowledged` に 2 番目の `# HELP`/`# TYPE` が重複して宣言されていた。
+    **どちらか一方でも実際の Prometheus に scrape 全体を拒否させる**（`up=0`、`SpeedMQScrapeDown` の発火は「形式欠陥の連鎖」であり、ルール名の書き間違いではない）——
+    これまで見つからなかったのは、実際のスクレイプ端末での検証を一度も行っていなかったためです。
+  - **修正後の証拠**：`promtool check metrics`（Prometheus 公式パーサ v2.54.1）は修正後の `/metrics` 出力に対して**終了コード 0、エラーなし**を返しました；
+    さらにこの形式を固定する回帰テスト `TestMetricsBuildInfoExpositionFormat`（`speedmq-test/test/unit/management`）を追加しました。
+  - **未再実行**：修正後に実際の Prometheus で「スクレイプ対象の `up`」を再実行していないため、ここでは「出力は公式パーサを通過した」とのみ表明し、「対象 up が 1 と実測」とは**表明しません**。

@@ -1,7 +1,10 @@
 # SpeedMQ Pencadangan dan Pemulihan
 
 > Kesimpulan "hasil uji nyata" dalam dokumen ini seluruhnya berasal dari satu latihan nyata di **Windows + PowerShell 5.1** (dengan `data_dir` sementara dan port sementara).
-> Perintah latihan dan keluaran pentingnya ditempel apa adanya di §6. Bagian yang **【Belum Diverifikasi】** ditandai secara eksplisit (pencadangan/pemulihan klaster, pencadangan volume Docker, dan lain-lain).
+> Perintah latihan dan keluaran pentingnya ditempel apa adanya di §6. Bagian yang **【Belum Diverifikasi】** ditandai secara eksplisit (misalnya mati listrik fisik sungguhan).
+
+> **【Terverifikasi (2026-10-11, klaster 3 node di Docker Desktop lokal)】** Mematikan proses secara paksa (`docker kill`) dan penulisan bersamaan selama pemulihan telah diuji;
+> catatannya lihat §6.2 / §6.3; redaksi "mati listrik" di §2.3 dan daftar status verifikasi di §7 telah diperbarui.
 
 ---
 
@@ -45,7 +48,12 @@ Penyimpanan pesan terdiri dari **dua file** (file segmen `*.seg` dan file indeks
   (tanpa fsync), dan publisher confirm juga dikembalikan setelah itu.
 - Hasil uji nyata: setelah memublikasikan pesan persisten, memeriksa ukuran file segmen **segera**, data sudah terlihat (`t=0ms seg=832`); artinya "byte yang dapat dilihat OS" pada dasarnya sinkron dengan confirm.
 - **Catatan**: ini hanya berarti "sudah sampai buffer OS", **mematikan proses secara paksa tidak akan kehilangan** (proses dimatikan tidak kehilangan buffer OS), tetapi **mati listrik akan kehilangan**.
-  Untuk "begitu menerima confirm berarti sudah fsync ke disk", ubah `storage.fsync` menjadi `batch` / `always`. **【Skenario mati listrik belum diuji】**
+  Untuk "begitu menerima confirm berarti sudah fsync ke disk", ubah `storage.fsync` menjadi `batch` / `always`.
+  **【Terverifikasi (2026-10-11, klaster 3 node di Docker Desktop lokal)】** Mematikan node secara paksa dengan `docker kill` (SIGKILL) di tengah penulisan telah diuji pada kedua level fsync tanpa kehilangan pesan yang sudah dikonfirmasi:
+  `fsync: os` mematikan follower (50.000 pesan semuanya terkonfirmasi, rekonsiliasi missing=0), `fsync: always` mematikan leader antrean quorum (200.000 pesan semuanya terkonfirmasi,
+  missing=0; ada 1.355 pesan lain yang sudah tertulis ke disk tetapi confirm-nya belum kembali yang dikirim ulang — diizinkan oleh semantik at-least-once; konsumen yang melakukan deduplikasi berdasarkan ID pesan bersifat idempoten).
+  Nilai tambah: saat mempublikasikan pada level default, `wsl --shutdown` digunakan untuk menghentikan seluruh VM Docker secara mendadak (mendekati mati listrik satu mesin yang kehilangan buffer OS); setelah pemulihan, 69.669 pesan terkonfirmasi
+  direkonsiliasi satu per satu berdasarkan ID dengan missing=0. **Masih belum diverifikasi**: mati listrik fisik sungguhan (hilangnya daya host, lapisan cache disk), tidak dapat disimulasikan secara lokal.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Setiap node mencadangkan `data_dir`-nya sendiri** (metadata direplikasi melalui Raft ke seluruh node, data pesan berada di node Owner, replika antrean quorum ada di direktori Raft masing-masing).
 - Urutan penghentian: **hanya hentikan satu node dalam satu waktu**; jangan menghentikan beberapa anggota voting sekaligus (lihat `upgrade.md` §7.2).
 - Untuk mendapatkan **snapshot konsisten seluruh klaster**, perlu menghentikan semua node secara berurutan lalu menyalin masing-masing; di produksi yang lebih umum adalah "hentikan/salin/jalankan per node".
-- **【Belum Diverifikasi】** Mesin lokal belum melakukan latihan pencadangan/pemulihan klaster sungguhan.
+- **【Terverifikasi (2026-10-10, klaster 3 node di Docker Desktop lokal)】** Pada klaster compose 3 node dilakukan "hentikan/salin/jalankan" per node: named volume setiap node dikemas menggunakan kontainer alpine sekali pakai
+  (`docker run --rm -v <volume>:/data -v <direktori host>:/backup alpine tar czf ...`), dan paketnya memuat `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`;
+  setelah pemulihan, node tersebut dapat bergabung kembali sebagai anggota yang sudah ada dan mengejar ketinggalan (lihat §4.2, bukti sama dengan `upgrade.md` §7.2).
 
 ### 3.3 Docker (named volume)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【Belum Diverifikasi】** (mesin lokal tidak menjalankan Docker).
+> **【Terverifikasi (2026-10-10, Docker Desktop lokal)】** Perintah ini benar-benar dijalankan pada named volume sebuah klaster 3 node (paketnya memuat `meta/`, `quorum/`),
+> dan atas dasar itu diselesaikan latihan pemulihan volume satu node (lihat §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Poin penting:
 
 - Memulihkan satu node: pulihkan `data_dir` node tersebut sesuai §4.1 lalu jalankan, ia akan bergabung kembali sebagai anggota yang sudah ada dan mengejar log Raft.
 - Memulihkan seluruh klaster: **pulihkan dan jalankan node mayoritas terlebih dahulu** (≥ separuh anggota voting), agar klaster dapat memilih leader; baru kemudian pulihkan node lainnya.
-- **【Belum Diverifikasi】** Pemulihan klaster belum diuji nyata.
+- **【Terverifikasi (2026-10-10, klaster 3 node di Docker Desktop lokal)】** Uji nyata "hentikan n3 → kosongkan volumenya → timpa dengan cadangan §3.3 → jalankan ulang":
+  n3 bergabung kembali sebagai follower dan mengejar leader (`commit_index == last_applied`); jumlah pesan antrean quorum dan tabel anggota tetap tidak berubah.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **Tidak ada WARN sama sekali**. Ini menunjukkan WARN hanya muncul pada skenario "indeks masih menyimpan record yang sudah diselesaikan" (lihat §7).
 
+### 6.2 Mematikan node secara paksa di tengah penulisan (`docker kill`, 2026-10-11)
+
+Klaster 3 node (`partition_policy=pause_minority`), antrean quorum 3 replika `pwr.q`; klien menggunakan publisher confirms, setiap pesan membawa ID unik, dan ID yang terkonfirmasi disimpan ke disk untuk rekonsiliasi.
+
+**Ronde 1 (`fsync: os`, mematikan follower n3)**: `docker kill pwr-n3` di tengah publikasi 50.000 pesan:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0
+```
+
+**Ronde 2 (`fsync: always`, mematikan leader quorum n1)**: `docker kill pwr-n1` di tengah publikasi 200.000 pesan:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Ronde 1b (`fsync: os`, `wsl --shutdown` menghentikan seluruh VM Docker secara mendadak, mendekati mati listrik satu mesin)**: dihentikan mendadak di tengah publikasi; host telah mencatat 69.669 baris terkonfirmasi;
+setelah VM dibangun ulang dan klaster pulih:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Catatan: `wsl --shutdown` hanya mendekati "kehilangan buffer OS"; **tidak setara dengan mati listrik fisik** (hilangnya daya host dan lapisan cache disk tidak tercakup dan masih belum diverifikasi).
+
+### 6.3 Penulisan bersamaan selama pemulihan (2026-10-11)
+
+Pada klaster `fsync: always`: `docker stop` follower n2 → publikasi backlog 50.000 pesan (semuanya terkonfirmasi) → `docker start pwr-n2`,
+dan **sejak detik yang sama** terus mempublikasikan 20.000 pesan lagi ke node-node sisi mayoritas:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Kesimpulan: penulisan bersamaan selama pengejaran tidak hilang dan tidak rusak; hitungannya tepat.
+
 ---
 
 ## 7. Masalah dan keterbatasan yang diketahui (dicatat apa adanya)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` tidak menjamin tidak hilang saat mati listrik**: untuk "confirm berarti sudah ke disk" gunakan `batch` / `always`.
 4. **Kata sandi plaintext**: kata sandi pengguna di `meta/state.json` adalah **plaintext** (uji nyata terlihat `"password":"drillpass"`) —
    file cadangan karena itu **harus diperlakukan sebagai data sensitif** (kontrol akses, penyimpanan terenkripsi). Lihat `security-baseline.md`.
-5. **【Belum Diverifikasi】** Pencadangan/pemulihan klaster, pencadangan/pemulihan volume Docker, skenario mati listrik, penulisan bersamaan selama proses pemulihan.
+5. **【status verifikasi】** Mematikan proses secara paksa (termasuk mematikan leader quorum di tengah penulisan, pada kedua level `fsync: os`/`always`) dan penulisan bersamaan selama pemulihan (publikasi sekitar 4.000–6.000 pesan/detik selama pengejaran, pengejaran via snapshot dalam 4 detik, hitungan tepat, rekonsiliasi missing=0) —— **【Terverifikasi (2026-10-11, klaster 3 node di Docker Desktop lokal)】**; `wsl --shutdown` menghentikan seluruh VM Docker secara mendadak (mendekati mati listrik satu mesin) pada satu sampel menunjukkan nol kehilangan pesan terkonfirmasi, tetapi **mati listrik fisik sungguhan masih belum diverifikasi**; pencadangan/pemulihan klaster per node dan pencadangan/pemulihan named volume Docker —— **【Terverifikasi (2026-10-10, klaster 3 node di Docker Desktop lokal)】** (lihat §3.2 / §3.3 / §4.2).
+6. **Pengamatan sampingan (dicatat apa adanya selama latihan 2026-10-11, tidak menghalangi)**: ① setelah mematikan leader quorum secara paksa, jalur penerusan publikasi para follower terus menunjuk ke leader yang sudah mati selama sekitar 76 detik (selama jendela itu publikasi baru di-nack; semua percobaan ulang klien berhasil; tidak ada pesan terkonfirmasi yang hilang) —— ada jendela jitter ketersediaan; ② pengosongan antrean besar (438.000 pesan) dalam satu lintasan menunjukkan amplifikasi pengiriman ulang sekitar 153× (semantik at-least-once tetap berlaku, dan akhirnya terkuras tepat ke nol); ③ saat antrean besar sedang mengejar, memulai konsumen melalui follower kadang-kadang menemui `i/o timeout`, sedangkan koneksi langsung ke leader normal.

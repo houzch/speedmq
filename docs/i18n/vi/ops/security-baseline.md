@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Tag `administrator` chỉ cấp cho số rất ít tài khoản vận hành
 
-### A-4. `remote_access`: giới hạn tài khoản chỉ đăng nhập từ máy cục bộ 【chưa kiểm chứng (cùng máy không thể mô phỏng nguồn từ xa)】
+### A-4. `remote_access`: giới hạn tài khoản chỉ đăng nhập từ máy cục bộ 【đã kiểm chứng (2026-10-10, máy cục bộ + container Docker)】
 
 - **Tại sao**: căn chỉnh theo RabbitMQ, `guest` tích hợp mặc định chỉ cho phép đăng nhập từ máy cục bộ; khi triển khai ra ngoài nên đảm bảo nguồn của tài khoản đặc quyền bị giới hạn.
 - **Làm thế nào / cách hiểu (giới hạn quan trọng)**:
@@ -77,7 +77,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **Tài khoản tạo qua API quản trị / `speedmqctl` nhất loạt `remote_access=true`** (cho phép đăng nhập từ mọi nguồn) ——
     căn cứ theo chú thích `UpsertUser` của `internal/broker/observe.go` và `"remote_access":true` đo thực tế trong `meta/state.json`. Nói cách khác **API hiện tại không thể giới hạn một tài khoản chỉ đăng nhập từ máy cục bộ**.
 - **Cách kiểm tra**: dùng tài khoản đó kết nối từ **một máy chủ khác** (không phải `127.0.0.1`), phải bị 403; kết nối từ máy cục bộ phải thành công.
-  **【chưa kiểm chứng】**: môi trường máy cục bộ không thể tạo nguồn từ xa thực, chưa đo thực tế.
+  **【đã kiểm chứng (2026-10-10, máy cục bộ + container Docker)】** Trên máy này, `localonly` (`remote_access:false`) đăng nhập **thành công** qua loopback `127.0.0.1:5676`;
+  kết nối từ container `python:3.12-slim` qua **LAN IP của máy chủ** (`localonly@192.168.124.2:5676`) bị **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, và log broker ghi `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) đăng nhập **thành công** từ cùng nguồn; `apiuser` mới tạo qua API quản trị cũng **thành công** từ cùng nguồn
+  (khẳng định "tài khoản tạo qua API mặc định mở nguồn từ xa": lần thử đầu bị từ chối bởi `ACCESS_REFUSED` của **quyền vhost**, sau khi cấp quyền thì `LOGIN OK`).
 - [ ] Giới hạn nguồn của tài khoản đặc quyền đã được đánh giá theo cách hiểu trên (lưu ý tạo tài khoản qua API mặc định mở nguồn từ xa)
 
 ---
@@ -223,7 +227,7 @@ Dưới đây đều là **khoảng trống mang tính sự thật**, hãy thừ
 - [ ] A-1 Tài khoản mặc định đã đổi/đã xóa 【đã kiểm chứng quy trình】
 - [ ] A-2 Tài khoản nghiệp vụ quyền tối thiểu (regex), không có tag quản trị 【đã kiểm chứng đường 403】
 - [ ] A-3 Tag `administrator` chỉ cấp cho tài khoản vận hành 【đã kiểm chứng cách hiểu quyền ngầm định】
-- [ ] A-4 Giới hạn nguồn tài khoản đặc quyền đã đánh giá (lưu ý tạo tài khoản qua API mặc định mở nguồn từ xa)
+- [ ] A-4 Giới hạn nguồn tài khoản đặc quyền đã đánh giá (lưu ý tạo tài khoản qua API mặc định mở nguồn từ xa) 【đã kiểm chứng remote_access có hiệu lực】
 - [ ] B-1 Cổng hướng ngoài bật TLS, cấu hình sai là từ chối khởi động 【đã kiểm chứng】
 - [ ] B-2 `min_version` ≥ 1.2 【đã kiểm chứng】
 - [ ] B-3 Cổng cần mTLS cấu hình `require_and_verify` + `ca_file`

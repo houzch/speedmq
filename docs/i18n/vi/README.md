@@ -16,6 +16,16 @@ Các khả năng hiện có: lưu trữ bền vững (nhật ký phân đoạn +
 
 ***
 
+## Tiêu chuẩn đo hiệu năng và kiểm thử
+
+Dự án này **không đưa ra bất kỳ cam kết hiệu năng nào ra bên ngoài**. Các **kết luận về cluster và hiệu năng** trong README này và các báo cáo liên quan đều dựa trên **môi trường thu nhỏ trên một host duy nhất** (Docker Desktop / WSL2 trên một máy, 3 node mỗi node 4C4G, `fsync=batch`, hàng đợi trọng tài 3 bản sao) và chạy **một lần duy nhất**, không lấy trung vị:
+
+- các con số chỉ dùng để **so sánh tương đối trong cùng môi trường** (ví dụ trước/sau khi tối ưu, classic so với quorum); **giá trị tuyệt đối không được ngoại suy** sang môi trường production hay phần cứng khác;
+- trên một host, lưu lượng giữa các node đi qua loopback, nên **chi phí chuyển tiếp giữa các node bị đánh giá thấp**; trên mạng nhiều máy thực tế, chi phí tương đối sẽ cao hơn;
+- nếu cần quy hoạch dung lượng cho production, hãy tự chạy benchmark trên phần cứng và mạng đích của bạn.
+
+***
+
 ## Bắt đầu nhanh
 
 ### Cách 1: Docker (khuyến nghị)

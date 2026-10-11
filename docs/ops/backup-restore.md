@@ -3,7 +3,10 @@
 > 🌐 本文档提供多语言版本：[文档多语言索引](../i18n/README.md)
 
 > 本文中的"实测"结论全部来自 **Windows + PowerShell 5.1** 上的一次真实演练（临时 `data_dir` 与临时端口）。
-> 演练命令与关键输出原样贴在 §6。**【未验证】** 的部分会显式标注（集群备份/恢复、Docker 卷备份等）。
+> 演练命令与关键输出原样贴在 §6。**【未验证】** 的部分会显式标注（如真·物理机断电）。
+
+> **【已验证（2026-10-11，本机 Docker Desktop 3 节点集群）】** 强杀进程（`docker kill`）与恢复过程并发写入已实测，
+> 记录见 §6.2 / §6.3；§2.3 的"断电"口径与 §7 的验证状态清单已同步更新。
 
 ---
 
@@ -47,7 +50,12 @@
   （不 fsync），publisher confirm 也在此之后返回。
 - 实测：发布持久消息后**立即**查段文件大小，已经能看到数据（`t=0ms seg=832`）；即"可被 OS 看到的字节"与 confirm 基本同步。
 - **注意**：这只说明"到了 OS 缓冲"，**强杀进程不会丢**（进程被杀不丢 OS 缓冲），但**断电会丢**。
-  要"收到 confirm 即已 fsync 落盘"，请把 `storage.fsync` 改成 `batch` / `always`。**【断电场景未实测】**
+  要"收到 confirm 即已 fsync 落盘"，请把 `storage.fsync` 改成 `batch` / `always`。
+  **【已验证（2026-10-11，本机 Docker Desktop 3 节点集群）】** 写入中 `docker kill`（SIGKILL）强杀节点实测两档均不丢已 confirm 消息：
+  `fsync: os` 杀 follower（5 万条全 confirm，对账 missing=0）、`fsync: always` 杀仲裁队列 leader（20 万条全 confirm，
+  missing=0；另有 1,355 条已落盘未 confirm 的消息被重投，at-least-once 语义允许，消费端按消息 ID 去重即幂等）。
+  加分项：默认档下发布中以 `wsl --shutdown` 急停整个 Docker VM（近似整机断电丢 OS 缓冲），恢复后 69,669 条已 confirm 消息
+  逐 ID 对账 missing=0。**仍未验证**：真·物理机断电（宿主电源丢失、磁盘缓存层），本机无法模拟。
 
 ---
 
@@ -73,7 +81,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **每个节点各自备份自己的 `data_dir`**（元数据经 Raft 复制到全体，消息数据在 Owner 节点，仲裁队列副本在各自 Raft 目录）。
 - 停机顺序：**一次只停一个节点**；不要同时停多个投票成员（见 `upgrade.md` §7.2）。
 - 要得到**全集群一致快照**，需按顺序停全部节点后各自复制；生产中更常见的是"逐节点停/拷/起"。
-- **【未验证】** 本机未做真实集群备份/恢复演练。
+- **【已验证（2026-10-10，本机 Docker Desktop 3 节点集群）】** 在 3 节点 compose 集群上逐节点"停/拷/起"：每节点用一次性 alpine 容器打包其命名卷
+  （`docker run --rm -v <卷>:/data -v <宿主机目录>:/backup alpine tar czf ...`），包内含 `meta/raft.log`、`meta/raft.state`、`meta/*.seeded`、`quorum/...`；
+  恢复后该节点能作为既有成员重新加入并追平（见 §4.2，证据同 `upgrade.md` §7.2）。
 
 ### 3.3 Docker（命名卷）
 
@@ -83,7 +93,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【未验证】**（本机未跑 Docker）。
+> **【已验证（2026-10-10，本机 Docker Desktop）】** 已在 3 节点集群的命名卷上真实执行该命令（包内含 `meta/`、`quorum/`），
+> 并据此完成单节点卷恢复演练（见 §4.2）。
 
 ---
 
@@ -114,7 +125,8 @@ Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 - 恢复单个节点：按 §4.1 恢复该节点 `data_dir` 后启动，它作为既有成员重新加入并追平 Raft 日志。
 - 恢复整个集群：**先恢复并启动多数派节点**（≥ 半数投票成员），集群才能选出 leader；再恢复其余节点。
-- **【未验证】** 集群恢复未实测。
+- **【已验证（2026-10-10，本机 Docker Desktop 3 节点集群）】** 实测"停 n3 → 清空其卷 → 用 §3.3 的备份覆盖 → 重启"：
+  n3 以 follower 重新加入并追平 leader（`commit_index == last_applied`），仲裁队列消息数与成员表保持不变。
 
 ---
 
@@ -253,6 +265,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **无任何 WARN**。说明 WARN 只出现在"索引里还留着已结算记录"的场景（见 §7）。
 
+### 6.2 写入中强杀节点（`docker kill`，2026-10-11）
+
+3 节点集群（`partition_policy=pause_minority`），3 副本仲裁队列 `pwr.q`；客户端开 publisher confirms、每条消息带唯一 ID、已 confirm ID 落盘对账。
+
+**轮 1（`fsync: os`，杀 follower n3）**：发布 50,000 条进行中 `docker kill pwr-n3`：
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**轮 2（`fsync: always`，杀仲裁 leader n1）**：发布 200,000 条进行中 `docker kill pwr-n1`：
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**轮 1b（`fsync: os`，`wsl --shutdown` 急停整个 Docker VM，近似整机断电）**：发布进行中急停，宿主已 confirm 记录 69,669 行；
+VM 重建、集群恢复后：
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+注意：`wsl --shutdown` 只近似"丢 OS 缓冲"，**不等价物理机断电**（宿主电源丢失、磁盘缓存层未覆盖，仍为未验证）。
+
+### 6.3 恢复过程中的并发写入（2026-10-11）
+
+`fsync: always` 集群上：`docker stop` follower n2 → 积压发布 50,000 条（全 confirm）→ `docker start pwr-n2`，
+**同一秒起**继续向多数派节点发布 20,000 条：
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+结论：追平期间并发写入不丢、不错，计数精确。
+
 ---
 
 ## 7. 已知问题与限制（如实登记）
@@ -267,4 +326,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` 不保证断电不丢**：要"confirm 即落盘"请用 `batch` / `always`。
 4. **口令明文**：`meta/state.json` 里用户口令是**明文**（实测可见 `"password":"drillpass"`）——
    备份文件因此**必须按敏感数据处理**（访问控制、加密存放）。详见 `security-baseline.md`。
-5. **【未验证】** 集群备份/恢复、Docker 卷备份/恢复、断电场景、恢复过程中的并发写入。
+5. **【验证状态】** 强杀进程（含写入中杀仲裁 leader，`fsync: os`/`always` 两档）与恢复过程中的并发写入（追平期间以约 4,000~6,000 条/秒继续发布，4 秒快照追平，计数精确、对账 missing=0）—— **【已验证（2026-10-11，本机 Docker Desktop 3 节点集群）】**；`wsl --shutdown` 急停整个 Docker VM（近似整机断电）单次样本已 confirm 消息零丢失，但**真·物理机断电仍未验证**；集群逐节点备份/恢复、Docker 命名卷备份/恢复 —— **【已验证（2026-10-10，本机 Docker Desktop 3 节点集群）】**（见 §3.2 / §3.3 / §4.2）。
+6. **附带观察（2026-10-11 演练中如实记录，非阻断）**：① 强杀仲裁 leader 后，追随者的发布转发路径曾持续指向已死 leader 约 76 秒（期间新发布被 nack、客户端重投成功，无已 confirm 消息丢失）——可用性有抖动窗口；② 大队列（43.8 万条）一次排空观察到约 153 倍重投放大（at-least-once 语义成立，最终正确清零）；③ 大队列追平期间经 follower 起消费者偶发 `i/o timeout`，直连 leader 正常。

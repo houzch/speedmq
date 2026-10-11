@@ -69,15 +69,19 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] L'étiquette `administrator` n'est accordée qu'à un très petit nombre de comptes d'exploitation
 
-### A-4. `remote_access` : restreindre un compte aux connexions locales 【non vérifié (impossible de simuler une source distante sur la même machine)】
+### A-4. `remote_access` : restreindre un compte aux connexions locales 【vérifié (2026-10-10, cette machine + conteneur Docker)】
 
 - **Pourquoi** : comme dans RabbitMQ, le compte intégré `guest` n'autorise par défaut que les connexions locales ; en déploiement exposé, assurez-vous que la source des comptes privilégiés est restreinte.
 - **Comment / portée (limite importante)** :
   - `remote_access` ne peut être défini que dans le **fichier de configuration**, sous `users.<name>.remote_access`, et **ne prend effet qu'au premier amorçage** ;
   - **tout compte créé via l'API d'administration / `speedmqctl` a systématiquement `remote_access=true`** (connexion depuis n'importe quelle source autorisée) —
     d'après le commentaire d'`UpsertUser` dans `internal/broker/observe.go` et `"remote_access":true` mesuré dans `meta/state.json`. Autrement dit, **l'API ne peut actuellement pas restreindre un compte aux connexions locales**.
-- **Comment vérifier** : depuis **une autre machine** (autre que `127.0.0.1`), une connexion avec ce compte doit renvoyer 403 ; une connexion locale doit réussir.
-  **【non vérifié】** : l'environnement de cette machine ne permet pas de construire une vraie source distante, donc non mesuré.
+- **Comment vérifier** : depuis **une source autre que `127.0.0.1`**, une connexion avec ce compte doit renvoyer 403 ; une connexion locale (loopback) doit réussir.
+  **【vérifié (2026-10-10, cette machine + conteneur Docker)】** Sur cette machine, la connexion de `localonly` (`remote_access:false`) via le loopback `127.0.0.1:5676` a **réussi** ;
+  depuis un conteneur `python:3.12-slim`, la connexion via l'**IP LAN de l'hôte** (`localonly@192.168.124.2:5676`) a été **refusée avec 403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, et le journal du broker a enregistré `认证失败 ... remote=192.168.124.2:...` ;
+  `remoteok` (`remote_access:true`) s'est connecté **avec succès** depuis la même source ; le compte `apiuser` créé via l'API d'administration a également **réussi** depuis la même source
+  (confirmant que « les comptes créés via l'API ouvrent le distant par défaut » : au premier essai, c'est l'entrée de **droits vhost** `ACCESS_REFUSED` qui a été refusée, puis après ajout du droit, `LOGIN OK`).
 - [ ] La restriction de source des comptes privilégiés a été évaluée selon la portée ci-dessus (attention : les comptes créés via l'API ouvrent le distant par défaut)
 
 ---
@@ -222,7 +226,7 @@ Tous les points ci-dessous sont des **lacunes factuelles** ; reconnaissez-les ex
 - [ ] A-1 Compte par défaut modifié/supprimé 【procédure vérifiée】
 - [ ] A-2 Privilège minimal du compte métier (régulier), sans étiquette d'administrateur 【chemin 403 vérifié】
 - [ ] A-3 L'étiquette `administrator` n'est accordée qu'aux comptes d'exploitation 【portée des droits implicites vérifiée】
-- [ ] A-4 Restriction de source des comptes privilégiés évaluée (attention : comptes créés via l'API ouvrent le distant par défaut)
+- [ ] A-4 Restriction de source des comptes privilégiés évaluée (attention : comptes créés via l'API ouvrent le distant par défaut) 【vérifié : `remote_access` effectif】
 - [ ] B-1 TLS activé sur les ports exposés, refus de démarrage en cas de mauvaise configuration 【vérifié】
 - [ ] B-2 `min_version` ≥ 1.2 【vérifié】
 - [ ] B-3 Les ports nécessitant mTLS configurés avec `require_and_verify` + `ca_file`

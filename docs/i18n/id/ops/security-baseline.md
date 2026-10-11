@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Tag `administrator` hanya diberikan ke sangat sedikit akun operasional
 
-### A-4. `remote_access`: batasi akun hanya dapat login dari mesin lokal 【Belum Diverifikasi (tidak dapat menyimulasikan sumber jarak jauh di mesin yang sama)】
+### A-4. `remote_access`: batasi akun hanya dapat login dari mesin lokal 【Terverifikasi (2026-10-10, mesin lokal + kontainer Docker)】
 
 - **Mengapa**: selaras dengan RabbitMQ, `guest` bawaan secara default hanya mengizinkan login dari mesin lokal; saat deployment ke luar harus memastikan sumber akun istimewa dibatasi.
 - **Bagaimana / ketentuan (batasan penting)**:
@@ -77,8 +77,12 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **akun yang dibuat melalui API manajemen / `speedmqctl` selalu `remote_access=true`** (mengizinkan login dari sumber mana pun) ——
     dasar komentar `UpsertUser` di `internal/broker/observe.go` dan uji nyata `"remote_access":true` di `meta/state.json`.
     Artinya **API saat ini tidak dapat membatasi suatu akun hanya untuk mesin lokal**.
-- **Bagaimana memverifikasi**: dari **host lain** (bukan `127.0.0.1`) menggunakan akun tersebut untuk terhubung, harus ditolak 403; koneksi dari mesin lokal harus berhasil.
-  **【Belum Diverifikasi】**: lingkungan mesin lokal tidak dapat menyusun sumber jarak jauh yang nyata, belum diuji.
+- **Bagaimana memverifikasi**: dari **sumber selain `127.0.0.1`** menggunakan akun tersebut untuk terhubung, harus ditolak 403; koneksi dari mesin lokal (loopback) harus berhasil.
+  **【Terverifikasi (2026-10-10, mesin lokal + kontainer Docker)】** Di mesin lokal, login `localonly` (`remote_access:false`) melalui loopback `127.0.0.1:5676` **berhasil**;
+  dari dalam kontainer `python:3.12-slim`, koneksi melalui **IP LAN host** (`localonly@192.168.124.2:5676`) **ditolak dengan 403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, dan log broker mencatat `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) **berhasil** dari sumber yang sama; akun `apiuser` yang baru dibuat melalui API manajemen juga **berhasil** dari sumber yang sama
+  (menegaskan bahwa "akun yang dibuat API membuka akses jarak jauh secara default": yang ditolak pada percobaan pertamanya adalah entri **izin vhost** `ACCESS_REFUSED`, dan setelah izin ditambahkan menjadi `LOGIN OK`).
 - [ ] Batasan sumber akun istimewa sudah dievaluasi sesuai ketentuan di atas (perhatikan akun yang dibuat API secara default membuka akses jarak jauh)
 
 ---
@@ -224,7 +228,7 @@ Berikut semuanya **celah faktual**, harap diakui secara eksplisit dalam desain k
 - [ ] A-1 Akun default sudah diubah/dihapus 【alur Terverifikasi】
 - [ ] A-2 Hak minimal akun bisnis (regex), tanpa tag admin 【jalur 403 Terverifikasi】
 - [ ] A-3 Tag `administrator` hanya diberikan ke akun operasional 【ketentuan izin implisit Terverifikasi】
-- [ ] A-4 Batasan sumber akun istimewa sudah dievaluasi (perhatikan akun yang dibuat API membuka akses jarak jauh secara default)
+- [ ] A-4 Batasan sumber akun istimewa sudah dievaluasi (perhatikan akun yang dibuat API membuka akses jarak jauh secara default) 【Terverifikasi: `remote_access` berlaku】
 - [ ] B-1 Port yang terbuka ke luar mengaktifkan TLS, salah konfigurasi langsung menolak start 【Terverifikasi】
 - [ ] B-2 `min_version` ≥ 1.2 【Terverifikasi】
 - [ ] B-3 Port yang memerlukan mTLS dikonfigurasi `require_and_verify` + `ca_file`

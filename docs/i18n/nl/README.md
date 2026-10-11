@@ -16,6 +16,16 @@ Reeds aanwezige mogelijkheden: persistentie (segmentlog + fsync-niveaus + crashh
 
 ***
 
+## Prestatie- en testmaatstaf
+
+Dit project geeft **geen publieke prestatietoezeggingen**. De **conclusies over cluster en prestaties** in deze README en gerelateerde rapporten zijn alle gebaseerd op een **verkleinde omgeving op één host** (Docker Desktop / WSL2 op één machine, 3 nodes van elk 4C4G, `fsync=batch`, quorumqueues met 3 replica's) en op **één enkele run**, zonder mediaan:
+
+- de cijfers dienen alleen voor **relatieve vergelijking binnen dezelfde omgeving** (bijvoorbeeld voor/na een optimalisatie, classic vs quorum); **absolute waarden mogen niet worden geëxtrapoleerd** naar productie of andere hardware;
+- op één host loopt het verkeer tussen nodes via loopback, waardoor de **kosten van doorsturen tussen nodes worden onderschat**; op een echt netwerk met meerdere machines zijn de relatieve kosten hoger;
+- voor productiecapaciteitsplanning moet u uw eigen benchmarks uitvoeren op uw doelhardware en doelsnetwerk.
+
+***
+
 ## Snel aan de slag
 
 ### Methode 1: Docker (aanbevolen)

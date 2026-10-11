@@ -1,7 +1,10 @@
 # Sauvegarde et restauration de SpeedMQ
 
 > Les conclusions « mesurées » de ce document proviennent toutes d'un exercice réel réalisé sur **Windows + PowerShell 5.1** (avec un `data_dir` temporaire et des ports temporaires).
-> Les commandes de l'exercice et les sorties clés sont reproduites telles quelles au §6. Les parties **【non vérifié】** sont explicitement signalées (sauvegarde/restauration de cluster, sauvegarde de volume Docker, etc.).
+> Les commandes de l'exercice et les sorties clés sont reproduites telles quelles au §6. Les parties **【non vérifié】** sont explicitement signalées (par ex. une vraie coupure d'alimentation physique).
+
+> **【vérifié (2026-10-11, cluster à 3 nœuds sur Docker Desktop local)】** L'arrêt forcé de processus (`docker kill`) et les écritures concurrentes pendant la restauration ont été mesurés ;
+> les enregistrements sont au §6.2 / §6.3 ; la formulation sur la « coupure d'alimentation » du §2.3 et la liste des états de vérification du §7 ont été mises à jour en conséquence.
 
 ---
 
@@ -45,7 +48,12 @@ Le stockage des messages repose sur **deux fichiers** (le fichier de segment `*.
   (sans fsync) ; le publisher confirm est renvoyé après cela.
 - Mesuré : après publication d'un message persistant, la taille du fichier de segment est **immédiatement** consultable et les données sont déjà visibles (`t=0ms seg=832`) ; autrement dit, « les octets visibles par l'OS » sont pratiquement synchrones avec le confirm.
 - **Attention** : cela signifie seulement que « les données ont atteint le tampon de l'OS » ; **tuer le processus brutalement ne les perd pas** (l'arrêt forcé du processus ne perd pas le tampon de l'OS), mais **une coupure d'alimentation les perd**.
-  Pour garantir « au moment de recevoir le confirm, les données sont déjà fsync sur disque », passez `storage.fsync` à `batch` / `always`. **【scénario de coupure d'alimentation non mesuré】**
+  Pour garantir « au moment de recevoir le confirm, les données sont déjà fsync sur disque », passez `storage.fsync` à `batch` / `always`.
+  **【vérifié (2026-10-11, cluster à 3 nœuds sur Docker Desktop local)】** L'arrêt forcé d'un nœud par `docker kill` (SIGKILL) en cours d'écriture a été mesuré aux deux réglages sans perte de messages confirmés :
+  `fsync: os` en tuant un follower (50 000 messages tous confirmés, réconciliation missing=0), `fsync: always` en tuant le leader de la file quorum (200 000 messages tous confirmés,
+  missing=0 ; 1 355 messages supplémentaires écrits sur disque mais non confirmés ont été renvoyés, ce que la sémantique at-least-once autorise ; la déduplication par ID de message côté consommateur rend le traitement idempotent).
+  Bonus : au réglage par défaut, un `wsl --shutdown` a arrêté brutalement toute la VM Docker en cours de publication (ce qui s'apparente à une coupure d'alimentation de la machine entière avec perte du tampon de l'OS) ; après la restauration, les 69 669 messages confirmés
+  ont été réconciliés un par un par ID avec missing=0. **Toujours non vérifié** : la vraie coupure d'alimentation physique (perte d'alimentation de l'hôte, couche de cache disque), impossible à simuler sur cette machine.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Chaque nœud sauvegarde son propre `data_dir`** (les métadonnées sont répliquées à tous via Raft, les données de messages résident sur le nœud Owner, les répliques des files quorum dans leur propre répertoire Raft).
 - Ordre d'arrêt : **un seul nœud à la fois** ; n'arrêtez pas plusieurs membres votants simultanément (voir §7.2 de `upgrade.md`).
 - Pour obtenir un **instantané cohérent de tout le cluster**, il faut arrêter tous les nœuds dans l'ordre puis copier chacun ; en production, il est plus courant de procéder « nœud par nœud : arrêt / copie / redémarrage ».
-- **【non vérifié】** Aucun exercice réel de sauvegarde/restauration de cluster n'a été réalisé sur cette machine.
+- **【vérifié (2026-10-10, cluster à 3 nœuds sur Docker Desktop local)】** Sur un cluster compose à 3 nœuds, exécution « arrêt / copie / redémarrage » nœud par nœud : le volume nommé de chaque nœud a été empaqueté avec un conteneur alpine jetable
+  (`docker run --rm -v <volume>:/data -v <répertoire hôte>:/backup alpine tar czf ...`), l'archive contenait `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...` ;
+  après la restauration, ce nœud a pu rejoindre de nouveau le cluster en tant que membre existant et rattraper son retard (voir §4.2, même preuve qu'au §7.2 de `upgrade.md`).
 
 ### 3.3 Docker (volume nommé)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【non vérifié】** (Docker n'a pas été exécuté sur cette machine).
+> **【vérifié (2026-10-10, Docker Desktop local)】** Cette commande a été réellement exécutée sur les volumes nommés d'un cluster à 3 nœuds (l'archive contenait `meta/`, `quorum/`),
+> et a servi à réaliser un exercice de restauration du volume d'un seul nœud (voir §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Points clés :
 
 - Restauration d'un seul nœud : restaurez le `data_dir` de ce nœud en suivant §4.1 puis démarrez ; il rejoint le cluster en tant que membre existant et rattrape le journal Raft.
 - Restauration du cluster entier : **restaurez et démarrez d'abord les nœuds majoritaires** (≥ la moitié des membres votants) pour que le cluster puisse élire un leader ; restaurez ensuite les autres nœuds.
-- **【non vérifié】** La restauration de cluster n'a pas été mesurée.
+- **【vérifié (2026-10-10, cluster à 3 nœuds sur Docker Desktop local)】** Mesure de « arrêt de n3 → vidage de son volume → écrasement par la sauvegarde du §3.3 → redémarrage » :
+  n3 a rejoint de nouveau en tant que follower et rattrapé le leader (`commit_index == last_applied`) ; le nombre de messages des files quorum et la table des membres sont restés inchangés.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **Aucun WARN**. Cela montre que les WARN n'apparaissent que dans le cas où « l'index conserve encore des enregistrements réglés » (voir §7).
 
+### 6.2 Arrêt forcé d'un nœud en cours d'écriture (`docker kill`, 2026-10-11)
+
+Cluster à 3 nœuds (`partition_policy=pause_minority`), file quorum à 3 répliques `pwr.q` ; le client active les publisher confirms, chaque message porte un ID unique, et les ID confirmés sont consignés sur disque pour la réconciliation.
+
+**Manche 1 (`fsync: os`, arrêt du follower n3)** : `docker kill pwr-n3` pendant la publication de 50 000 messages :
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**Manche 2 (`fsync: always`, arrêt du leader quorum n1)** : `docker kill pwr-n1` pendant la publication de 200 000 messages :
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Manche 1b (`fsync: os`, `wsl --shutdown` arrête brutalement toute la VM Docker, ce qui s'apparente à une coupure d'alimentation de la machine entière)** : arrêt brutal en cours de publication ; l'hôte avait enregistré 69 669 lignes confirmées ;
+après reconstruction de la VM et rétablissement du cluster :
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Attention : `wsl --shutdown` ne fait que s'approcher de la « perte du tampon de l'OS » ; ce n'est **pas l'équivalent d'une coupure d'alimentation physique** (la perte d'alimentation de l'hôte et la couche de cache disque ne sont pas couvertes et restent non vérifiées).
+
+### 6.3 Écritures concurrentes pendant la restauration (2026-10-11)
+
+Sur un cluster en `fsync: always` : `docker stop` du follower n2 → publication d'un arriéré de 50 000 messages (tous confirmés) → `docker start pwr-n2`,
+et **dès la même seconde**, poursuite de la publication de 20 000 messages vers les nœuds du côté majoritaire :
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Conclusion : les écritures concurrentes pendant le rattrapage ne sont ni perdues ni corrompues ; les compteurs sont exacts.
+
 ---
 
 ## 7. Problèmes et limites connus (recensés fidèlement)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` ne garantit pas l'absence de perte en cas de coupure d'alimentation** : pour « confirm implique écriture sur disque », utilisez `batch` / `always`.
 4. **Mots de passe en clair** : dans `meta/state.json`, les mots de passe des utilisateurs sont **en clair** (mesuré : `"password":"drillpass"` visible) —
    les fichiers de sauvegarde **doivent donc être traités comme des données sensibles** (contrôle d'accès, stockage chiffré). Voir `security-baseline.md`.
-5. **【non vérifié】** Sauvegarde/restauration de cluster, sauvegarde/restauration de volume Docker, scénario de coupure d'alimentation, écritures concurrentes pendant la restauration.
+5. **【état de vérification】** L'arrêt forcé de processus (y compris l'arrêt du leader quorum en cours d'écriture, aux deux réglages `fsync: os`/`always`) et les écritures concurrentes pendant la restauration (publication à environ 4 000–6 000 msg/s pendant le rattrapage, rattrapage par instantané en 4 secondes, compteurs exacts, réconciliation missing=0) —— **【vérifié (2026-10-11, cluster à 3 nœuds sur Docker Desktop local)】** ; un `wsl --shutdown` arrêtant brutalement toute la VM Docker (s'apparentant à une coupure d'alimentation de la machine entière) a montré zéro perte de messages confirmés sur un seul échantillon, mais **la vraie coupure d'alimentation physique reste non vérifiée** ; la sauvegarde/restauration de cluster nœud par nœud et la sauvegarde/restauration du volume nommé Docker —— **【vérifié (2026-10-10, cluster à 3 nœuds sur Docker Desktop local)】** (voir §3.2 / §3.3 / §4.2).
+6. **Observations annexes (consignées fidèlement lors de l'exercice du 2026-10-11, non bloquantes)** : ① après l'arrêt forcé du leader quorum, le chemin de transfert des publications des followers est resté pointé vers le leader mort pendant environ 76 secondes (les nouvelles publications ont été nackées pendant cette fenêtre ; les renvois du client ont tous réussi ; aucun message confirmé n'a été perdu) — il existe une fenêtre de gigue de disponibilité ; ② la vidange en une passe d'une grande file (438 000 messages) a montré une amplification de renvoi d'environ 153× (la sémantique at-least-once tient, et la file s'est finalement vidée exactement à zéro) ; ③ pendant le rattrapage d'une grande file, le démarrage d'un consommateur via un follower a occasionnellement rencontré `i/o timeout`, tandis qu'une connexion directe au leader fonctionnait.

@@ -1,7 +1,10 @@
 # SpeedMQ Backup and Restore
 
 > All "measured" conclusions in this document come from a single real drill on **Windows + PowerShell 5.1** (temporary `data_dir` and temporary ports).
-> The drill commands and key output are pasted verbatim in §6. Parts marked **【Not verified】** are explicitly flagged (cluster backup/restore, Docker volume backup, etc.).
+> The drill commands and key output are pasted verbatim in §6. Parts marked **【Not verified】** are explicitly flagged (e.g. a real physical power failure).
+
+> **【Verified (2026-10-11, local Docker Desktop 3-node cluster)】** Force-killing processes (`docker kill`) and concurrent writes during recovery have been measured;
+> see §6.2 / §6.3 for the records. The "power failure" wording in §2.3 and the verification-status list in §7 have been updated accordingly.
 
 ---
 
@@ -45,7 +48,12 @@ Message storage consists of **two files** (the segment file `*.seg` and the inde
   (without fsync), and publisher confirms are also returned after this.
 - Measured: checking the segment file size **immediately** after publishing a persistent message already shows the data (`t=0ms seg=832`); that is, the "bytes visible to the OS" are essentially in sync with the confirm.
 - **Note**: this only means the data "reached the OS buffer" — **killing the process forcefully does not lose it** (killing the process does not lose the OS buffer), but **a power failure will**.
-  To have "fsync on disk as soon as the confirm is received", change `storage.fsync` to `batch` / `always`. **【Power-failure scenario not measured】**
+  To have "fsync on disk as soon as the confirm is received", change `storage.fsync` to `batch` / `always`.
+  **【Verified (2026-10-11, local Docker Desktop 3-node cluster)】** Force-killing a node with `docker kill` (SIGKILL) during writes was measured at both fsync settings with no loss of confirmed messages:
+  `fsync: os` killing a follower (50,000 messages all confirmed, reconciliation missing=0), and `fsync: always` killing the quorum-queue leader (200,000 messages all confirmed,
+  missing=0; another 1,355 messages that were persisted but whose confirms had not returned were redelivered — allowed by at-least-once semantics; consumers that deduplicate by message ID are idempotent).
+  Bonus: while publishing at the default setting, `wsl --shutdown` was used to abruptly stop the entire Docker VM (approximating a machine-wide power failure that loses the OS buffer); after recovery, the 69,669 confirmed messages
+  reconciled ID by ID with missing=0. **Still not verified**: a real physical power failure (host power loss, disk cache layer), which cannot be simulated locally.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Each node backs up its own `data_dir`** (metadata is replicated to all nodes via Raft, message data resides on the owner node, and quorum queue replicas reside in their respective Raft directories).
 - Shutdown order: **stop only one node at a time**; do not stop multiple voting members at the same time (see `upgrade.md` §7.2).
 - To obtain a **cluster-wide consistent snapshot**, you must stop all nodes in order and then copy each one; in production, the more common approach is "stop/copy/start node by node".
-- **【Not verified】** No real cluster backup/restore drill was performed on this machine.
+- **【Verified (2026-10-10, local Docker Desktop 3-node cluster)】** On a 3-node compose cluster, "stop/copy/start" node by node: each node's named volume was packed with a one-off alpine container
+  (`docker run --rm -v <volume>:/data -v <host dir>:/backup alpine tar czf ...`), and the archive contained `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`;
+  after restore the node could rejoin as an existing member and catch up (see §4.2; the evidence is the same as `upgrade.md` §7.2).
 
 ### 3.3 Docker (named volume)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【Not verified】** (Docker was not run on this machine).
+> **【Verified (2026-10-10, local Docker Desktop)】** This command was actually executed on the named volume of the 3-node cluster (the archive contained `meta/`, `quorum/`),
+> and a single-node volume restore drill was completed based on it (see §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Key points:
 
 - Restoring a single node: restore that node's `data_dir` as in §4.1 and then start it; it rejoins as an existing member and catches up on the Raft log.
 - Restoring the entire cluster: **first restore and start a majority of nodes** (≥ half of the voting members) so the cluster can elect a leader; then restore the remaining nodes.
-- **【Not verified】** Cluster restore was not measured.
+- **【Verified (2026-10-10, local Docker Desktop 3-node cluster)】** Measured "stop n3 → wipe its volume → overwrite from the §3.3 backup → restart":
+  n3 rejoined as a follower and caught up with the leader (`commit_index == last_applied`), with the quorum queue message count and membership table unchanged.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **No WARN at all.** This shows the WARNs only occur in the scenario where "settled records still remain in the index" (see §7).
 
+### 6.2 Force-killing a node during writes (`docker kill`, 2026-10-11)
+
+3-node cluster (`partition_policy=pause_minority`), 3-replica quorum queue `pwr.q`; the client uses publisher confirms, each message carries a unique ID, and confirmed IDs are persisted to disk for reconciliation.
+
+**Round 1 (`fsync: os`, killing follower n3)**: `docker kill pwr-n3` while publishing 50,000 messages:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**Round 2 (`fsync: always`, killing the quorum leader n1)**: `docker kill pwr-n1` while publishing 200,000 messages:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Round 1b (`fsync: os`, `wsl --shutdown` abruptly stops the entire Docker VM, approximating a machine-wide power failure)**: stopped abruptly mid-publish; the host had recorded 69,669 confirmed lines;
+after the VM was rebuilt and the cluster recovered:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Note: `wsl --shutdown` only approximates "losing the OS buffer"; it is **not equivalent to a physical power failure** (host power loss and the disk cache layer are not covered and remain unverified).
+
+### 6.3 Concurrent writes during recovery (2026-10-11)
+
+On an `fsync: always` cluster: `docker stop` follower n2 → backlog-publish 50,000 messages (all confirmed) → `docker start pwr-n2`,
+and **from the same second on** keep publishing 20,000 more messages to the majority-side nodes:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Conclusion: concurrent writes during catch-up are neither lost nor corrupted; the counts are exact.
+
 ---
 
 ## 7. Known issues and limitations (faithfully recorded)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` does not guarantee survival of a power failure**: for "fsync on disk as soon as the confirm is received", use `batch` / `always`.
 4. **Plaintext passwords**: user passwords in `meta/state.json` are **plaintext** (measured: `"password":"drillpass"` is visible) —
    backup files must therefore **be handled as sensitive data** (access control, encrypted storage). See `security-baseline.md` for details.
-5. **【Not verified】** Cluster backup/restore, Docker volume backup/restore, power-failure scenarios, and concurrent writes during recovery.
+5. **【Verification status】** Force-killing processes (including killing the quorum leader mid-write, at both `fsync: os`/`always` settings) and concurrent writes during recovery (publishing at about 4,000–6,000 msgs/s during catch-up, snapshot catch-up in 4 seconds, exact counts, reconciliation missing=0) — **【Verified (2026-10-11, local Docker Desktop 3-node cluster)】**; `wsl --shutdown` abruptly stopping the entire Docker VM (approximating a machine-wide power failure) showed zero loss of confirmed messages in a single sample, but **a real physical power failure is still not verified**; node-by-node cluster backup/restore and Docker named-volume backup/restore — **【Verified (2026-10-10, local Docker Desktop 3-node cluster)】** (see §3.2 / §3.3 / §4.2).
+6. **Incidental observations (faithfully recorded during the 2026-10-11 drill, non-blocking)**: ① after force-killing the quorum leader, the followers' publish-forwarding path kept pointing at the dead leader for about 76 seconds (new publishes were nacked during that window; client retries all succeeded; no confirmed message was lost) — there is an availability jitter window; ② draining a large queue (438,000 messages) in one pass showed about 153× redelivery amplification (at-least-once semantics hold, and it eventually drained to exactly zero); ③ while a large queue was catching up, starting a consumer via a follower occasionally hit `i/o timeout`, while connecting directly to the leader was fine.

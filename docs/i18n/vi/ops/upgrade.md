@@ -61,7 +61,7 @@ data/
 
 - Trong chế độ cluster, tệp lưu trữ bền vững của Raft **đặt trực tiếp dưới `meta/`** (`raft.state` / `raft.log` / `snapshot.json`),
   **không tồn tại thư mục con `meta/raft/`**. Căn cứ: hằng số tên tệp của `internal/raft/log.go` + `internal/broker/cluster.go`
-  với `Dir: filepath.Join(b.cfg.DataDir, "meta")`. **【bố cục cluster chưa đo thực tế】** (máy cục bộ chỉ chạy instance máy đơn).
+  với `Dir: filepath.Join(b.cfg.DataDir, "meta")`. **【đã kiểm chứng (2026-10-10, Docker Desktop cục bộ, cluster 3 node)】** —— nội dung sao lưu volume của node cluster trực tiếp thấy được `meta/raft.log`, `meta/raft.state`, `meta/*.seeded` (không thấy thư mục con `meta/raft/`).
 - Tên thư mục **không phải tên vhost / queue gốc**, mà là mã hóa `store.SafeDirName`: thêm tiền tố `q_`, các byte không thuộc `[A-Za-z0-9._-]` được escape theo `%XX`.
   Đo thực tế: vhost `/` → thư mục `q_%2F`, queue `persist.q` → thư mục `q_persist.q`.
   Thiết kế như vậy để tránh path traversal và tên thiết bị dành riêng của Windows (`con`/`nul` v.v.).
@@ -79,6 +79,8 @@ data/
   Đo thực tế (xem `backup-restore.md` §6): sau khi dừng tiến trình rồi khởi động lại, 5 message bền vững của queue durable **được phục hồi toàn bộ**,
   log xuất hiện `已从磁盘恢复队列消息 ... messages=5`.
 
+**【đã kiểm chứng (2026-10-10, cục bộ)】** Đọc xuyên đại phiên bản đã đo thực tế: dữ liệu queue durable được ghi bằng tag `v1.1.0` được phục hồi nguyên trạng dưới `1.1.05` (lệnh và kết quả xem §5).
+
 ### 4.2 Cách hiểu về `vhosts` / `users` trong cấu hình (cái bẫy dễ vấp nhất khi nâng cấp)
 
 - Cả hai **chỉ có hiệu lực khi khởi tạo lần đầu**: lần khởi động đầu tiên sẽ ghi vhosts/users trong cấu hình vào siêu dữ liệu và để lại tệp dấu hiệu
@@ -87,6 +89,8 @@ data/
   hãy dùng API quản trị hoặc `speedmqctl`.
 - Ngược lại, nâng cấp **sẽ không** dùng cấu hình để ghi đè tài khoản sẵn có: mật khẩu đã đổi trong lúc chạy sẽ không bị khởi động lại đẩy về giá trị cũ trong cấu hình,
   tài khoản đã xóa trong lúc chạy cũng không sống lại. Căn cứ: logic dấu hiệu gieo hạt của `cluster.go`; README M8-4 / M8-7.
+
+**【đã kiểm chứng (2026-10-10, cục bộ)】** Thay đổi lúc chạy thực sự không bị cấu hình ghi đè: trước khi nâng cấp, qua API quản trị đổi mật khẩu `guest` thành `rotated`, sau khi khởi động lại bằng `1.1.05` + cùng `data_dir`, `guest/guest` (mật khẩu cũ trong cấu hình) trả về **401**, `guest/rotated` trả về **200**.
 
 ### 4.3 Luân chuyển phân đoạn và thu hồi đĩa
 
@@ -97,7 +101,8 @@ data/
 
 ## 5. Nâng cấp binary (máy trần)
 
-> Máy cục bộ **chưa diễn tập thật xuyên phiên bản** (kho hiện chỉ có một phiên bản `1.0.0`, không có binary cũ để nâng cấp). Các bước dưới đây là **kiểm chứng tái hiện cùng phiên bản + quy trình chung** cho các khả năng kho này đã có, phần xuyên phiên bản được đánh dấu **【chưa kiểm chứng】**.
+> **【đã kiểm chứng (2026-10-10, cục bộ)】** Diễn tập thật xuyên đại phiên bản: binary cũ build từ tag `v1.1.0` ghi exchange/queue/binding durable + 5 message bền vững + vhost/tài khoản/quyền/policy và đổi mật khẩu lúc chạy; sau khi dừng tiến trình, khởi động lại bằng binary `1.1.05` hiện tại + **cùng `data_dir` + cùng cổng** —— tiến trình khởi động bình thường, đối tượng và số message trong `/api/queues` nhất quán, client AMQP thật lấy lại toàn bộ 5 message bền vững, `/metrics` báo `speedmq_build_info{version="1.1.05"}`.
+> Các bước dưới đây vẫn là quy trình chung, có thể áp dụng cho mọi phiên bản liền kề; **hạ cấp** xem §8.
 
 ### 5.1 Các bước
 
@@ -160,7 +165,11 @@ docker compose logs -f --tail 100
 > ```
 
 Việc lưu trữ bền vững dữ liệu phụ thuộc **volume có tên** `speedmq-data` của compose, tạo lại container không mất dữ liệu (từ M4 mới thực sự ghi xuống đĩa).
-Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đương với sao lưu `/var/lib/speedmq` (xem `backup-restore.md` §3.2). **【nâng cấp image chưa đo thực tế】** (máy cục bộ chưa chạy Docker).
+Nếu cần sao lưu nội dung volume trước khi nâng cấp, tương đương với sao lưu `/var/lib/speedmq` (xem `backup-restore.md` §3.2).
+
+> **【đã kiểm chứng (2026-10-10, Docker Desktop cục bộ)】** Đã diễn tập nâng cấp image thật: build cục bộ image cũ `speedmq:1.1.0-old` (git tag `v1.1.0`) và image mới `speedmq:1.1.05-new` (mã nguồn hiện tại), dùng compose máy đơn khởi động image cũ → tạo queue durable `persist.q` và publish 5 message bền vững (`delivery_mode=2`) → `docker compose down` (**không thêm `-v`**, volume có tên `speedmq-data` được giữ lại) → đổi tag image trong compose sang image mới rồi `docker compose up -d`.
+> Kết quả: container mới khởi động bình thường, log khởi động xuất hiện `已从磁盘恢复队列消息 ... queue=persist.q messages=5`, `/metrics` báo `speedmq_build_info{version="1.1.05"}`, `queue_totals.messages=5` của `/api/overview` và `messages=5` của queue `persist.q` nhất quán trước và sau khi nâng cấp, và client AMQP thật (`rabbitmq/amqp091-go`) lấy lại từng message một toàn bộ 5 message bền vững (`deliveryMode=2`).
+> Lưu ý: `v1.1.0` là image thương hiệu `speedmq` trước khi đổi tên (binary `speedmqd`, metric `speedmq_build_info`, thư mục dữ liệu mặc định `/var/lib/speedmq`), khác với cách đặt tên của bản hiện tại; trong diễn tập lấy cấu hình `data_dir=/var/lib/speedmq` làm chuẩn và đặt trước chủ sở hữu cho volume có tên (trong image cũ không có đường dẫn ghi được này). Điều này không ảnh hưởng tới kết luận "đổi tag tạo lại container, dữ liệu volume có tên không mất".
 
 ---
 
@@ -192,8 +201,15 @@ Phía nền tảng không cung cấp "nâng cấp cuốn chiếu một nút", c�
    trong thời gian nâng cấp hãy tránh đồng thời `add_member` / `remove_member`.
 5. Sau khi nâng cấp xong, đối chiếu `object_totals` của `GET /api/cluster` nhất quán với trước khi nâng cấp.
 
-> **【chưa kiểm chứng】** Máy cục bộ chưa diễn tập nâng cấp cuốn chiếu trên cluster thật (cả đường đi cluster và container đều chưa chạy); thứ tự trên đến từ các ràng buộc chung của
-> middleware nhắn tin và Raft cũng như sự thật hiện thực `pause_minority` / thay đổi thành viên của kho này, không phải kết luận đo thực tế trên máy cục bộ.
+> **【đã kiểm chứng (2026-10-10, Docker Desktop cục bộ, cluster 3 node)】** Đã diễn tập **xuyên phiên bản** nâng cấp cuốn chiếu trên cluster thật: đường cơ sở là `speedmq:1.1.0-old` build cục bộ (git tag `v1.1.0`), nâng cấp từng node (n1 → n2 → n3, mỗi lần một node: dừng trước, rồi sao lưu volume có tên của nó, rồi đổi image khởi động) lên `1.1.05` hiện tại (build cục bộ `speedmq:1.1.05-new`, compose dùng override từng node để đổi image). Suốt quá trình cluster luôn giữ được leader và đa số —— khi dừng leader hiện tại thì khoảng 0.6 s chọn ra leader mới, `pause_minority` không kích hoạt tạm dừng, trong thời gian dừng không có gián đoạn từ bên ngoài; sau nâng cấp `object_totals` của `GET /api/cluster` nhất quán với trước nâng cấp (`queues:1`), 25 message bền vững của queue trọng tài 3 bản sao `qroll` giữ nguyên số lượng và đọc lại được từng message một, publish thêm 5 message mới thì tổng 30 message đều lấy lại được.
+> Thứ tự trên vẫn đúng theo các ràng buộc chung của Raft, lần diễn tập này bao phủ kịch bản 3 node. **【đã kiểm chứng (2026-10-10, Docker Desktop cục bộ) cluster 2 node dừng 1 là mất đa số】** Dựng thêm một cluster tối thiểu 2 node (n1/n2, mỗi bên `peers` chỉ gồm hai node này, `partition_policy=pause_minority`) đo thực tế: khi cả hai node đều trực tuyến, `GET /api/cluster` là `has_quorum=true / paused=false` (n1 leader, n2 follower); sau khi `docker stop` n2, n1 trong khoảng 2 s chuyển thành `has_quorum=false / paused=true` —— tức dừng 1 thành viên bỏ phiếu là mất đa số, `pause_minority` tạm dừng phục vụ, **xác nhận cluster 2 node không có khả năng nâng cấp cuốn chiếu**; sau khi `docker start` khôi phục n2, n1 trong khoảng 2 s trở lại `has_quorum=true / paused=false` (dịch vụ tự khôi phục).
+
+> **【đã kiểm chứng (2026-10-11, Docker Desktop cục bộ, cluster 3 node)】Nâng cấp cuốn chiếu dưới phân vùng mạng đã được đo thực tế** (xuyên phiên bản `v1.1.0` → `1.1.05`; phân vùng dùng topology hai mạng: Raft RPC giữa các node chỉ đi qua `cluster-net` có IP tĩnh, client/mặt quản trị đi qua `client-net`, chuyển phân vùng bằng `docker network disconnect/connect`):
+> - **Follower bị phân vùng**: phía đa số trong thời gian phân vùng liên tục giữ quorum, publish/consume bình thường, và hoàn thành "dừng → đổi image → khởi động → đuổi kịp" của một node đa số trong khi phân vùng vẫn duy trì; cluster hỗn hợp phiên bản (1.1.0 + 1.1.05) phục vụ được. Sau khi khôi phục phân vùng, node bị cô lập (phiên bản cũ) tham gia lại và đuổi kịp, message đối soát theo tập ID duy nhất 35/35 không mất.
+> - **Leader bị phân vùng**: phía đa số chọn leader mới trong khoảng **630 ms**; leader cũ bị cô lập giữ `role=leader` nhưng `has_quorum=false / paused=true` (`pause_minority` có hiệu lực, không chủ động nâng nhiệm kỳ); trong lúc phân vùng nâng cấp thành công một node khác phía đa số; sau khi khôi phục leader cũ tham gia lại, không split-brain, không phân nhánh dữ liệu.
+> - **Hành vi kỳ vọng khi không có PreVote (ghi nhận trung thực)**: follower bị cô lập lập tức tranh cử lặp lại, nhiệm kỳ tăng khoảng +2 mỗi 2 s (hai nhóm Raft của siêu dữ liệu và queue luân phiên nâng); ngay khi khôi phục, dùng nhiệm kỳ cao **giành chính** (đo thực tế đắc cử trong 1,4 s) —— có nhiễu động chuyển leader nhưng không có vấn đề đúng đắn.
+> - **Hai cái bẫy vận hành**: ① nếu `peers` dùng hostname và container đồng thời gắn mạng thứ hai có thể đến được, lưu lượng Raft sẽ đi đường vòng gây "phân vùng giả" (node bị cô lập hơn một phút vẫn `has_quorum=true`) —— RPC giữa các node bắt buộc chỉ đi qua một mạng (peers trỏ thẳng IP tĩnh của mạng đó); ② khi khôi phục, `docker network connect` bắt buộc phải kèm `--ip <IP gốc>`, nếu không node nhận IP mới trong khi đa số vẫn quay địa chỉ cũ, node bị cô lập mang log tụt hậu tranh cử lặp lại với nhiệm kỳ phình to (đo thực tế kéo term của cluster từ 320 lên 488, commit siêu dữ liệu từ 13 vọt lên 97), đồng thời có thể xuất hiện trạng thái tức thời leader `quorum=true` nhưng `paused=true` trong chốc lát.
+> - Trong thời gian phân vùng, API quản trị phía thiểu số đọc được (thuận tiện quan sát), publish AMQP bị từ chối (`pause_minority` có hiệu lực).
 
 ---
 
@@ -206,5 +222,5 @@ Phía nền tảng không cung cấp "nâng cấp cuốn chiếu một nút", c�
 - **Nâng cấp nóng plugin/giao thức trực tuyến**: plugin được biên dịch kèm nhân (dạng A) hoặc `spawn` khởi động theo cấu hình (dạng B),
   nâng cấp nhân = khởi động lại tiến trình; **không có** cơ chế thay nóng binary tại chỗ.
 - **Di trú tại chỗ engine lưu trữ**: luân chuyển phân đoạn/nén chỉ mục là hành vi chạy nền trong lúc chạy, **không có** lệnh "di trú/nén dữ liệu" độc lập.
-- **Nâng cấp cluster dưới mạng thật**: kho này chỉ làm chaos thu nhỏ (kill ở mức tiến trình), **chưa làm** diễn tập nâng cấp dưới phân vùng mạng, đĩa ghi đầy.
+- **Nâng cấp cluster khi đĩa đầy**: **chưa kiểm chứng**. (Nâng cấp cuốn chiếu dưới phân vùng mạng đã được đo thực tế vào 2026-10-11, xem ghi chú cuối §7.)
 - Tài liệu này **không bao gồm** bất kỳ kiểm chứng vận chuyển dữ liệu nào giữa SpeedMQ và broker khác (RabbitMQ).

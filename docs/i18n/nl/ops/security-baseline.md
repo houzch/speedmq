@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] De tag `administrator` wordt slechts aan zeer weinig beheeraccounts toegekend
 
-### A-4. `remote_access`: accounts beperken tot alleen lokale aanmelding 【niet geverifieerd (op dezelfde machine kan geen externe bron worden gesimuleerd)】
+### A-4. `remote_access`: accounts beperken tot alleen lokale aanmelding 【geverifieerd (2026-10-10, deze machine + Docker-container)】
 
 - **Waarom**: afgestemd op RabbitMQ staat de ingebouwde `guest` standaard alleen lokale aanmelding toe; bij een externe uitrol moet je ervoor zorgen dat de bron van bevoorrechte accounts beperkt is.
 - **Hoe / reikwijdte (belangrijke beperking)**:
@@ -78,7 +78,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
     op basis van de `UpsertUser`-commentaar in `internal/broker/observe.go` en de gemeten `"remote_access":true` in `meta/state.json`.
     Met andere woorden: **de API kan een account momenteel niet beperken tot alleen lokaal**.
 - **Hoe verifiëren**: maak vanaf **een andere host** (niet `127.0.0.1`) met dat account verbinding; je moet 403 krijgen; een lokale verbinding moet slagen.
-  **【niet geverifieerd】**: in de omgeving van deze machine kan geen echte externe bron worden geconstrueerd; niet in de praktijk getest.
+  **【geverifieerd (2026-10-10, deze machine + Docker-container)】** Op deze machine is `localonly` (`remote_access:false`) **met succes** aangemeld via loopback `127.0.0.1:5676`;
+  verbinding vanuit een `python:3.12-slim`-container via het **LAN-IP van de host** (`localonly@192.168.124.2:5676`) gaf **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, en het brokerlog registreerde `认证失败 ... remote=192.168.124.2:...`;
+  `remoteok` (`remote_access:true`) is **met succes** aangemeld vanaf dezelfde bron; een via de beheer-API aangemaakte `apiuser` **slaagde** ook vanaf dezelfde bron
+  (bevestigt "accounts die via de API worden aangemaakt, staan standaard open voor extern": de eerste poging werd geweigerd door de **vhost-rechten** `ACCESS_REFUSED`; na het toekennen van de rechten was het `LOGIN OK`).
 - [ ] De bronbeperking van bevoorrechte accounts is volgens de bovenstaande reikwijdte beoordeeld (let op: accounts die via de API worden aangemaakt, staan standaard open voor extern)
 
 ---
@@ -224,7 +228,7 @@ Het volgende zijn allemaal **feitelijke hiaten**; erken ze expliciet in het beve
 - [ ] A-1 Standaardaccount gewijzigd/verwijderd 【procedure geverifieerd】
 - [ ] A-2 Minimaal rechten voor bedrijfsaccounts (regexes), geen beheerderstag 【403-pad geverifieerd】
 - [ ] A-3 De tag `administrator` wordt alleen aan beheeraccounts toegekend 【reikwijdte van impliciete rechten geverifieerd】
-- [ ] A-4 Bronbeperking van bevoorrechte accounts beoordeeld (let op: accounts via de API staan standaard open voor extern)
+- [ ] A-4 Bronbeperking van bevoorrechte accounts beoordeeld (let op: accounts via de API staan standaard open voor extern) 【remote_access-effect geverifieerd】
 - [ ] B-1 TLS ingeschakeld op externe poorten, foutieve configuratie weigert de start 【geverifieerd】
 - [ ] B-2 `min_version` ≥ 1.2 【geverifieerd】
 - [ ] B-3 Poorten die mTLS nodig hebben, geconfigureerd met `require_and_verify` + `ca_file`

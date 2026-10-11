@@ -16,6 +16,16 @@ Mga kakayahang mayroon na: persistence (segment log + fsync tiers + crash recove
 
 ***
 
+## Pamantayan ng performance at pagsubok
+
+Ang proyektong ito ay **hindi gumagawa ng pampublikong pangako sa performance**. Ang **mga konklusyon tungkol sa cluster at performance** sa README na ito at sa mga kaugnay na ulat ay nakabatay lahat sa isang **pinaliit na kapaligiran sa isang host** (Docker Desktop / WSL2 sa isang makina, 3 node na tig-4C4G, `fsync=batch`, quorum queue na may 3 replica) at sa **isang beses na pagtakbo** nang walang median:
+
+- ang mga numero ay para lamang sa **relatibong paghahambing sa loob ng parehong kapaligiran** (halimbawa, bago/pagkatapos ng optimization, classic vs quorum); **hindi dapat i-extrapolate ang mga absolute na halaga** sa production o ibang hardware;
+- sa isang host, dumadaan sa loopback ang trapiko sa pagitan ng mga node, kaya **maliit ang pagtatantiya sa gastos ng pagpapasa sa pagitan ng mga node**; sa tunay na network na may maraming makina, mas mataas ang relatibong gastos;
+- kung kailangan mo ng production capacity planning, magsagawa ng sarili mong benchmark sa target mong hardware at network.
+
+***
+
 ## Mabilis na Pagsisimula
 
 ### Paraan 1: Docker (inirerekomenda)

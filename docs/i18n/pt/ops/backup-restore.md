@@ -1,7 +1,10 @@
 # Backup e restauração do SpeedMQ
 
 > As conclusões "medidas" neste documento vêm todas de um ensaio real em **Windows + PowerShell 5.1** (com `data_dir` e portas temporárias).
-> Os comandos do ensaio e as saídas principais estão reproduzidos tal como estão no §6. As partes **【não verificado】** são marcadas explicitamente (backup/restauração de cluster, backup de volume Docker etc.).
+> Os comandos do ensaio e as saídas principais estão reproduzidos tal como estão no §6. As partes **【não verificado】** são marcadas explicitamente (como queda de energia real em máquina física).
+
+> **【verificado (2026-10-11, cluster local de 3 nós do Docker Desktop)】** O kill forçado do processo (`docker kill`) e a escrita concorrente durante a restauração foram testados na prática,
+> os registros estão em §6.2 / §6.3; a definição de "queda de energia" em §2.3 e a lista de status de verificação em §7 foram atualizadas de forma síncrona.
 
 ---
 
@@ -45,7 +48,12 @@ O armazenamento de mensagens é composto por **dois arquivos** (o arquivo de seg
   (sem fsync), e o publisher confirm só é retornado depois disso.
 - Medido: após publicar uma mensagem persistente, consultar **imediatamente** o tamanho do arquivo de segmento já mostra os dados (`t=0ms seg=832`); ou seja, "os bytes visíveis ao SO" ficam basicamente sincronizados com o confirm.
 - **Atenção**: isso só significa "chegou ao buffer do SO"; **matar o processo à força não perde** (processo morto não perde o buffer do SO), mas **uma queda de energia perde**.
-  Para ter "confirm recebido = já gravado com fsync no disco", mude `storage.fsync` para `batch` / `always`. **【cenário de queda de energia não medido】**
+  Para ter "confirm recebido = já gravado com fsync no disco", mude `storage.fsync` para `batch` / `always`.
+  **【verificado (2026-10-11, cluster local de 3 nós do Docker Desktop)】** Teste prático matando um nó à força com `docker kill` (SIGKILL) durante a escrita: em ambos os modos, mensagens confirmadas não se perdem:
+  `fsync: os` matar um follower (50.000 mensagens todas confirmadas, reconciliação missing=0), `fsync: always` matar o leader de uma fila quórum (200.000 mensagens todas confirmadas,
+  missing=0; além disso, 1.355 mensagens já gravadas no disco mas não confirmadas foram reenviadas — a semântica at-least-once permite isso, dedup por ID de mensagem no lado do consumer torna idempotente).
+  Bônus: no modo padrão, durante a publicação, a VM Docker inteira foi parada abruptamente com `wsl --shutdown` (aproxima uma queda de energia da máquina inteira com perda do buffer do SO); após a recuperação, as 69.669 mensagens confirmadas
+  foram reconciliadas por ID com missing=0. **Ainda não verificado**: queda de energia real em máquina física (perda de energia do host, camada de cache do disco) — não é possível simular nesta máquina.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Cada nó faz backup do seu próprio `data_dir`** (os metadados são replicados a todos via Raft; os dados das mensagens ficam no nó Owner; as réplicas das filas quórum ficam em cada diretório Raft).
 - Ordem de parada: **pare um nó por vez**; não pare vários membros votantes ao mesmo tempo (ver `upgrade.md` §7.2).
 - Para obter um **instantâneo consistente de todo o cluster**, é preciso parar todos os nós em sequência e copiar cada um; em produção, o mais comum é "parar/copiar/iniciar nó a nó".
-- **【não verificado】** Não foi feito ensaio real de backup/restauração de cluster nesta máquina.
+- **【verificado (2026-10-10, cluster local de 3 nós do Docker Desktop)】** Em um cluster compose de 3 nós, "parar/copiar/iniciar" nó a nó: cada nó empacotou seu volume nomeado com um contêiner alpine efêmero
+  (`docker run --rm -v <volume>:/data -v <diretório host>:/backup alpine tar czf ...`), e o pacote continha `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`;
+  após a restauração, o nó conseguiu reentrar como membro existente e alcançar o restante (ver §4.2; a evidência é a mesma do `upgrade.md` §7.2).
 
 ### 3.3 Docker (volume nomeado)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【não verificado】** (Docker não foi executado nesta máquina).
+> **【verificado (2026-10-10, Docker Desktop local)】** Esse comando foi realmente executado no volume nomeado do cluster de 3 nós (o pacote continha `meta/`, `quorum/`),
+> e com base nele foi concluído o ensaio de restauração de volume de um único nó (ver §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Pontos-chave:
 
 - Restaurar um único nó: restaure o `data_dir` desse nó conforme o §4.1 e inicie; ele reentra como membro existente e alcança o log Raft.
 - Restaurar o cluster inteiro: **restaure e inicie primeiro os nós da maioria** (≥ metade dos membros votantes) para que o cluster consiga eleger um leader; depois restaure os demais nós.
-- **【não verificado】** A restauração de cluster não foi medida.
+- **【verificado (2026-10-10, cluster local de 3 nós do Docker Desktop)】** Medido "parar n3 → esvaziar seu volume → sobrescrever com o backup do §3.3 → reiniciar":
+  n3 reentrou como follower e alcançou o leader (`commit_index == last_applied`); a contagem de mensagens da fila quórum e a tabela de membros permaneceram inalteradas.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **Nenhum WARN**. Isso mostra que o WARN só aparece no cenário em que "o índice ainda guarda registros já liquidados" (ver §7).
 
+### 6.2 Matar nó à força durante a escrita (`docker kill`, 2026-10-11)
+
+Cluster de 3 nós (`partition_policy=pause_minority`), fila quórum `pwr.q` com 3 réplicas; o cliente usa publisher confirms, cada mensagem tem um ID único e IDs confirmados são gravados em disco para reconciliação.
+
+**Rodada 1 (`fsync: os`, matar follower n3)**: `docker kill pwr-n3` enquanto 50.000 mensagens são publicadas:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**Rodada 2 (`fsync: always`, matar leader quórum n1)**: `docker kill pwr-n1` enquanto 200.000 mensagens são publicadas:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Rodada 1b (`fsync: os`, `wsl --shutdown` para parar abruptamente toda a VM Docker, aproxima uma queda de energia da máquina inteira)**: parada abrupta durante a publicação; o host tinha registrado 69.669 confirmados;
+após a reconstrução da VM e recuperação do cluster:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Atenção: `wsl --shutdown` aproxima apenas "perda do buffer do SO" e **não é equivalente a uma queda de energia em máquina física** (perda de energia do host, camada de cache do disco não coberta — ainda não verificado).
+
+### 6.3 Escrita concorrente durante a restauração (2026-10-11)
+
+Em um cluster `fsync: always`: `docker stop` do follower n2 → acumular 50.000 mensagens publicadas (todas confirmadas) → `docker start pwr-n2`,
+e **no mesmo segundo** continuar publicando 20.000 mensagens para os nós da maioria:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Conclusão: escritas concorrentes durante o catch-up não se perdem nem corrompem; a contagem é exata.
+
 ---
 
 ## 7. Problemas conhecidos e limitações (registrados com honestidade)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` não garante ausência de perda em queda de energia**: para "confirm = já em disco", use `batch` / `always`.
 4. **Senha em texto claro**: no `meta/state.json`, as senhas dos usuários ficam **em texto claro** (medido, é possível ver `"password":"drillpass"`) —
    portanto os arquivos de backup **devem ser tratados como dados sensíveis** (controle de acesso, armazenamento cifrado). Detalhes em `security-baseline.md`.
-5. **【não verificado】** Backup/restauração de cluster, backup/restauração de volume Docker, cenário de queda de energia, escrita concorrente durante a restauração.
+5. **【Status de verificação】** Matar o processo à força (incluindo matar o leader de quórum durante a escrita, nos modos `fsync: os`/`always`) e escrita concorrente durante a restauração (continuar publicando durante o catch-up com aproximadamente 4.000~6.000 mensagens/s, catch-up em 4 s via snapshot, contagem exata, reconciliação missing=0) — **【verificado (2026-10-11, cluster local de 3 nós do Docker Desktop)】**; `wsl --shutdown` para parar abruptamente toda a VM Docker (aproxima uma queda de energia da máquina inteira): na única amostra, nenhuma mensagem confirmada se perdeu, mas **uma queda de energia real em máquina física ainda não foi verificada**; backup/restauração de cluster nó a nó e backup/restauração de volume nomeado do Docker — **【verificado (2026-10-10, cluster local de 3 nós do Docker Desktop)】** (ver §3.2 / §3.3 / §4.2).
+6. **Observações adicionais (registradas com honestidade durante o ensaio de 2026-10-11, não-bloqueantes)**: ① após matar o leader de quórum à força, o caminho de encaminhamento de publicação dos followers continuou apontando para o leader morto por cerca de 76 segundos (novas publicações foram nackadas nesse período, o cliente as reenviou com sucesso, nenhuma mensagem confirmada se perdeu) — há uma janela de oscilação de disponibilidade; ② ao esvaziar uma fila grande de uma só vez (438.000 mensagens), foi observada uma amplificação de reenvio de aproximadamente 153× (a semântica at-least-once permanece válida, finalmente zerada corretamente); ③ durante o catch-up de uma fila grande, ao iniciar um consumer via follower, ocorreu ocasionalmente `i/o timeout`; diretamente no leader funciona normalmente.

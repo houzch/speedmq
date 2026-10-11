@@ -49,16 +49,29 @@ rule_files:
 
 규칙에서는 일관되게 `job="speedmq"`를 사용합니다. job 이름이 다르면 전체에서 바꾸세요.
 
+> **【검증됨(2026-10-10, 로컬 Docker Desktop)】** 이 규칙 파일은 실제 Prometheus(`prom/prometheus:v2.54.1`)로 로드했습니다:
+> `GET /api/v1/rules`는 `speedmq` 그룹의 규칙 10개를 나열하며(이름은 파일 내와 일대일 대응), 규칙 엔진이 실제로 평가·트리거합니다.
+> ⚠️ 규칙을 로드하면서 함께 발견한 점: 커널 `/metrics`에 **두 곳의 잘못된 노출 형식**(`speedmq_build_info` 레이블 위치, `# HELP` 중복)이 있어
+> 실제 Prometheus가 **전체** scrape를 거부합니다(`up==0`). 두 곳 모두 **이번 라운드에서 수정**했습니다(§6 참고); 수정 전 `SpeedMQScrapeDown` 발동은
+> 형식 결함의 연쇄이며 규칙 작성 오류가 아닙니다.
+
 ### 1.3 Grafana 대시보드
 
 `grafana-dashboard.json`은 **Dashboards → Import → JSON 업로드**로 가져오며, 가져올 때 사용할 Prometheus 데이터 소스를 선택합니다
 (대시보드에서는 `${DS_PROMETHEUS}` 변수로 참조). 템플릿 변수 `DS_PROMETHEUS`는 가져오기 매핑에서 값이 할당됩니다.
 
-**【미검증】** 로컬에서 Grafana 인스턴스를 띄우지 않아 실제 가져오기 검증을 하지 않았으며, 해당 JSON은 JSON 문법 검증만 수행했습니다(패널 14개, 파싱 통과).
+**【검증됨(2026-10-10, 로컬 Docker Desktop)】** 실제 Grafana(`grafana/grafana:11.2.0`)로 HTTP API를 통해 가져왔습니다:
+먼저 Prometheus 데이터 소스를 만들고, 그다음 `POST /api/dashboards/import`(`overwrite=true`)를 실행해 `uid=speedmq-overview`를 반환받았습니다;
+`GET /api/dashboards/uid/speedmq-overview`은 패널 14개를 반환했고, 템플릿 변수 `DS_PROMETHEUS`는 생성한 데이터 소스로 해석되었습니다.
 
 ---
 
 ## 2. `/metrics` 실제 일부(증거)
+
+> ⚠️ 이 절의 샘플은 **수정 전** 인스턴스에서 가져온 것으로, 두 줄의 노출 형식이 **잘못**되어 있어 실제 Prometheus가 **전체** scrape를 거부합니다(§6 참고):
+> ① `speedmq_build_info 1{version=...}` —— 레이블은 반드시 값 **앞**에 씁니다(올바른 표기 `speedmq_build_info{version="..."} 1`);
+> ② `speedmq_queue_messages_unacknowledged`에 **두 번째** `# HELP` 줄이 나타났습니다(위 전역 지표와 이름이 같음).
+> 두 곳 모두 이번 라운드(2026-10-10)에서 수정했습니다; 아래 샘플은 수정 후의 **올바른 형태**로 제시합니다.
 
 다음은 로컬 `1.0.0` 인스턴스 `/metrics`의 **실제 출력**입니다(durable 큐 `persist.q`를 하나 만들어서
 `vhost`/`queue` 레이블이 있는 per-queue 지표가 나타났습니다):
@@ -69,7 +82,7 @@ rule_files:
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **이름은 같지만 기저가 다른 두 계열**: `speedmq_queue_messages_unacknowledged`는 **전역 무레이블 계열도** 있고
   **per-queue 레이블 계열도** 있습니다. 반면 "준비" 쪽은 전역이 `speedmq_queue_messages`, per-queue가
   `speedmq_queue_messages_ready`입니다(이름이 비대칭). 규칙을 작성할 때는 `{queue=~".+"}`로 per-queue 계열만 명확히 선택하세요.
+  ⚠️ 다만 같은 지표 이름의 `# HELP`/`# TYPE`은 **한 번만 선언해야 합니다**: 이전에는 두 곳에서 각각 한 번씩 선언되어 실제 Prometheus가
+  `second HELP line for metric name`으로 판정하고 **전체 scrape를 거부**했습니다(이번 라운드에서 수정, §6 참고).
 - **`speedmq_process_memory_bytes`의 규칙**: 구현은 `MemStats.HeapInuse + StackInuse`(**사용 중 메모리**)이며,
   커널 메모리 워터마크 판정과 같은 규칙입니다. 다만 `# HELP` 문구는 "운영체제에 요청한 메모리 바이트 수"라고 적혀 있어 **문구가 실제 규칙과 부합하지 않으므로**,
   이 문서를 기준으로 하세요.
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. 기타 **미검증** 항목
+## 6. 기타 항목의 검증 상태
 
-- Grafana 대시보드는 **실제 Grafana에서 가져오기 검증을 하지 않았습니다**(JSON 문법 검증만 통과).
-- 알림 규칙은 **실제 Prometheus/Alertmanager에서 로드 검증을 하지 않았습니다**(로컬에서 Prometheus를 띄우지 않음).
-  다만 규칙의 **지표 이름은 `/metrics` 실제 출력과 하나씩 대조**했으므로(§2/§3 참고), "이름 오기로 절대 트리거되지 않는" 문제는 없습니다.
+- **【검증됨(2026-10-10, 로컬 Docker Desktop)】** Grafana 대시보드는 실제 Grafana 11.2.0에서 가져오기 검증을 마쳤습니다(패널 14개, `DS_PROMETHEUS` 매핑 성공), §1.3 참고.
+- **【검증됨 + 결함 수정됨(2026-10-10, 로컬 Docker Desktop)】** 알림 규칙은 실제 Prometheus(`prom/prometheus:v2.54.1`)에서 로드되어 사용 가능합니다:
+  `GET /api/v1/rules`는 `speedmq` 그룹의 규칙 10개를 나열하며, 규칙 엔진이 실제로 평가·트리거합니다(§1.2 참고).
+  - **이번 라운드에서 실제 검증 덕분에 커널 `/metrics`의 노출 형식 결함 두 곳을 발견·수정했습니다**(`internal/management/metrics.go`):
+    ① `speedmq_build_info`는 레이블을 값 뒤에 썼습니다(`name 1{labels}`), 올바른 표기는 `name{labels} 1`;
+    ② `speedmq_queue_messages_unacknowledged`에 두 번째 `# HELP`/`# TYPE`이 중복 선언되었습니다.
+    **둘 중 하나만으로도 실제 Prometheus가 전체 scrape를 거부합니다**(`up=0`, `SpeedMQScrapeDown` 발동은 "형식 결함 연쇄"이며 규칙 이름 오기가 아님)——
+    그동안 발견되지 않은 것은 실제 수집 대상으로 검증한 적이 없었기 때문입니다.
+  - **수정 후 증거**: `promtool check metrics`(Prometheus 공식 파서 v2.54.1)는 수정된 `/metrics` 출력에 대해 **종료 코드 0, 오류 없음**을 반환했습니다;
+    또한 이 형식을 고정하는 회귀 테스트 `TestMetricsBuildInfoExpositionFormat`(`speedmq-test/test/unit/management`)을 추가했습니다.
+  - **재실행 안 함**: 수정 후 실제 Prometheus로 "수집 대상 `up`"을 다시 실행하지 않았으므로, 여기서는 "출력이 공식 파서를 통과했다"만 선언하고 **"대상 up이 1로 실측됨"은 선언하지 않습니다**.

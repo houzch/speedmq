@@ -49,16 +49,29 @@ rule_files:
 
 As regras usam `job="speedmq"` de forma uniforme; se o nome do seu job for diferente, substitua no arquivo inteiro.
 
+> **【verificado (2026-10-10, Docker Desktop local)】** Este arquivo de regras foi carregado com um Prometheus real (`prom/prometheus:v2.54.1`):
+> `GET /api/v1/rules` lista 10 regras no grupo `speedmq` (nomes correspondendo um a um aos do arquivo), e o motor de regras de fato as avalia e dispara.
+> ⚠️ Ao carregar as regras, descobrimos de passagem que o `/metrics` do núcleo tinha **dois formatos de exposição ilegais** (posição da label `speedmq_build_info`, `# HELP` duplicado),
+> o que faz um Prometheus real rejeitar a **coleta inteira** (`up==0`). Ambos foram **corrigidos nesta rodada** (ver §6); antes da correção, o disparo do `SpeedMQScrapeDown`
+> era uma reação em cadeia dos defeitos de formato, não uma regra escrita errada.
+
 ### 1.3 Painel do Grafana
 
 Importe `grafana-dashboard.json` via **Dashboards → Import → upload do JSON**, escolhendo sua fonte de dados Prometheus na importação
 (no painel ela é referenciada pela variável `${DS_PROMETHEUS}`). A variável de template `DS_PROMETHEUS` é atribuída no mapeamento da importação.
 
-**【não verificado】** Não foi subida uma instância do Grafana nesta máquina, então não houve validação de importação real; o JSON só passou por validação de sintaxe (14 painéis, análise bem-sucedida).
+**【verificado (2026-10-10, Docker Desktop local)】** O painel foi importado com um Grafana real (`grafana/grafana:11.2.0`) via API HTTP:
+primeiro crie uma fonte de dados Prometheus, depois `POST /api/dashboards/import` (`overwrite=true`), que retorna `uid=speedmq-overview`;
+`GET /api/dashboards/uid/speedmq-overview` recupera 14 painéis, e a variável de template `DS_PROMETHEUS` resolve para a fonte de dados criada.
 
 ---
 
 ## 2. Trecho real de `/metrics` (evidência)
+
+> ⚠️ A amostra desta seção vem da instância **antes da correção**, em que duas linhas têm formato de exposição **ilegal**; um Prometheus real rejeitaria a **coleta inteira** por causa disso (ver §6):
+> ① `speedmq_build_info 1{version=...}` — as labels devem vir **antes** do valor (a forma correta é `speedmq_build_info{version="..."} 1`);
+> ② `speedmq_queue_messages_unacknowledged` tem uma **segunda** linha `# HELP` (mesmo nome da métrica global acima).
+> Ambos foram corrigidos nesta rodada (2026-10-10); a amostra abaixo é dada na **forma corrigida**.
 
 A seguir está a **saída real** do `/metrics` da instância `1.0.0` desta máquina (já existia uma fila durable `persist.q`,
 por isso apareceram as métricas por fila com as labels `vhost`/`queue`):
@@ -69,7 +82,7 @@ por isso apareceram as métricas por fila com as labels `vhost`/`queue`):
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **Duas famílias de séries com o mesmo nome e cardinalidades diferentes**: `speedmq_queue_messages_unacknowledged` tem **tanto** uma série global sem labels
   **quanto** séries por fila com labels; já no lado de "prontas", a global se chama `speedmq_queue_messages` e a por fila se chama
   `speedmq_queue_messages_ready` (os nomes são assimétricos). Ao escrever regras, use `{queue=~".+"}` para pegar explicitamente só a família por fila.
+  ⚠️ Mas o `# HELP`/`# TYPE` do mesmo nome de métrica **só pode ser declarado uma vez**: antes era declarado uma vez em cada um de dois lugares, e um Prometheus real o julgou como
+  `second HELP line for metric name` e **rejeitou a coleta inteira** (corrigido nesta rodada, ver §6).
 - **Critério de `speedmq_process_memory_bytes`**: a implementação é `MemStats.HeapInuse + StackInuse` (**memória em uso**),
   o mesmo critério usado na decisão do nível de memória do núcleo; porém o texto do seu `# HELP` diz "número de bytes de memória solicitados ao sistema operacional", **o texto não bate com o critério real**,
   e vale o que este documento diz.
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. Outros itens **não verificados**
+## 6. Status de verificação dos outros itens
 
-- O painel do Grafana **não foi importado e validado em um Grafana real** (só passou por validação de sintaxe JSON).
-- As regras de alerta **não foram carregadas e validadas em um Prometheus/Alertmanager real** (o Prometheus não foi iniciado nesta máquina).
-  Mas os **nomes das métricas nas regras foram conferidos linha a linha com a saída real de `/metrics`** (ver §2/§3), então não há o problema de "nome escrito errado que nunca dispara".
+- **【verificado (2026-10-10, Docker Desktop local)】** O painel do Grafana foi importado e verificado em um Grafana real 11.2.0 (14 painéis, `DS_PROMETHEUS` mapeado com sucesso), ver §1.3.
+- **【verificado + defeitos corrigidos (2026-10-10, Docker Desktop local)】** As regras de alerta foram carregadas e estão utilizáveis em um Prometheus real (`prom/prometheus:v2.54.1`):
+  `GET /api/v1/rules` lista 10 regras do grupo `speedmq`, e o motor de regras de fato as avalia e dispara (ver §1.2).
+  - **Nesta rodada, a verificação real descobriu e corrigiu dois defeitos de formato de exposição do `/metrics` do núcleo** (`internal/management/metrics.go`):
+    ① `speedmq_build_info` escrevia as labels depois do valor (`name 1{labels}`); a forma correta é `name{labels} 1`;
+    ② `speedmq_queue_messages_unacknowledged` tinha uma segunda linha `# HELP`/`# TYPE` declarada em duplicidade.
+    **Qualquer uma delas faz um Prometheus real rejeitar a coleta inteira** (`up=0`; o `SpeedMQScrapeDown` foi disparado por uma "reação em cadeia de defeitos de formato", não por um nome de regra errado) —
+    nunca havia sido notado porque nunca foi verificado com um endpoint de coleta real.
+  - **Evidência após a correção**: `promtool check metrics` (o parser oficial do Prometheus v2.54.1) reporta, para a saída corrigida de `/metrics`, **código de saída 0 e nenhum erro**;
+    e um caso de regressão `TestMetricsBuildInfoExpositionFormat` (`speedmq-test/test/unit/management`) foi adicionado para travar o formato.
+  - **Não reexecutado**: após a correção, o "alvo de coleta `up`" não foi reexecutado com um Prometheus real, então aqui declaramos apenas "a saída passou pelo parser oficial" e **não** declaramos "o alvo up foi medido como 1".

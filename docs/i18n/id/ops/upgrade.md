@@ -61,7 +61,7 @@ data/
 
 - Dalam mode klaster, file persistensi Raft **langsung diletakkan di bawah `meta/`** (`raft.state` / `raft.log` / `snapshot.json`),
   **tidak ada subdirektori `meta/raft/`**. Dasar: konstanta nama file di `internal/raft/log.go` + `Dir: filepath.Join(b.cfg.DataDir, "meta")`
-  di `internal/broker/cluster.go`. **【Tata letak klaster belum diuji】** (mesin lokal hanya menjalankan instans mandiri).
+  di `internal/broker/cluster.go`. **【Terverifikasi（2026-10-10, klaster 3 node Docker Desktop lokal）】** —— Isi cadangan volume node klaster langsung terlihat memuat `meta/raft.log`, `meta/raft.state`, `meta/*.seeded` (tidak terlihat subdirektori `meta/raft/`).
 - Nama direktori **bukan nama vhost / antrean asli**, melainkan hasil pengodean `store.SafeDirName`: menambahkan awalan `q_`, byte yang bukan `[A-Za-z0-9._-]` di-escape dengan `%XX`.
   Uji nyata: vhost `/` → direktori `q_%2F`, antrean `persist.q` → direktori `q_persist.q`.
   Desain ini untuk menghindari path traversal dan nama perangkat yang direservasi Windows (`con`/`nul` dan lain-lain).
@@ -79,6 +79,8 @@ data/
   Uji nyata (lihat `backup-restore.md` §6): setelah proses berhenti lalu restart, 5 pesan persisten pada antrean durable **semuanya pulih**,
   log memunculkan `已从磁盘恢复队列消息 ... messages=5`.
 
+**【Terverifikasi（2026-10-10, mesin lokal）】** Pembacaan antar-versi mayor telah diuji: data antrean durable yang ditulis dengan tag `v1.1.0` dipulihkan apa adanya di `1.1.05` (perintah dan keluaran lihat §5).
+
 ### 4.2 Ketentuan `vhosts` / `users` di konfigurasi (jebakan yang paling mudah terpicu saat peningkatan)
 
 - Keduanya **hanya berlaku saat bootstrap pertama**: startup pertama akan menulis vhosts/users di konfigurasi ke metadata dan meninggalkan file penanda
@@ -87,6 +89,8 @@ data/
   gunakan API manajemen atau `speedmqctl`.
 - Sebaliknya, peningkatan **tidak akan** menimpa akun yang sudah ada dengan konfigurasi: kata sandi yang diubah saat runtime tidak akan dikembalikan ke nilai lama di konfigurasi oleh restart,
   akun yang dihapus saat runtime juga tidak akan hidup kembali. Dasar: logika penanda seeding di `cluster.go`; README M8-4 / M8-7.
+
+**【Terverifikasi（2026-10-10, mesin lokal）】** Perubahan saat runtime memang tidak ditimpa oleh konfigurasi: sebelum peningkatan, kata sandi `guest` diubah menjadi `rotated` melalui API manajemen; setelah restart dengan `1.1.05` + `data_dir` yang sama, `guest/guest` (kata sandi lama di konfigurasi) mengembalikan **401** dan `guest/rotated` mengembalikan **200**.
 
 ### 4.3 Rotasi segmen dan reklamasi disk
 
@@ -97,7 +101,7 @@ data/
 
 ## 5. Peningkatan biner (bare metal)
 
-> Mesin lokal **belum melakukan latihan nyata antar-versi** (repositori saat ini hanya memiliki satu versi `1.0.0`, tidak ada biner lama untuk diupgrade). Langkah-langkah berikut adalah **verifikasi pengulangan versi yang sama + alur umum** untuk kemampuan yang sudah dimiliki repositori ini, bagian antar-versi ditandai **【Belum Diverifikasi】**.
+> **【Terverifikasi（2026-10-10, mesin lokal）】** Latihan nyata antar-versi mayor: biner lama yang dibangun dengan tag `v1.1.0` menulis exchange/antrean/binding durable + 5 pesan persisten + vhost/akun/izin/policy serta mengubah kata sandi saat runtime; setelah proses dihentikan, dijalankan dengan biner `1.1.05` saat ini + **`data_dir` yang sama + port yang sama** —— proses berjalan normal, objek dan jumlah pesan `/api/queues` konsisten, klien AMQP nyata mengambil kembali seluruh 5 pesan persisten, dan `/metrics` melaporkan `speedmq_build_info{version="1.1.05"}`. Langkah-langkah di bawah tetap merupakan alur umum, dapat diterapkan pada versi berdekatan mana pun; **penurunan** lihat §8.
 
 ### 5.1 Langkah-langkah
 
@@ -160,7 +164,11 @@ docker compose logs -f --tail 100
 > ```
 
 Persistensi data bergantung pada **named volume** `speedmq-data` di compose, data tidak hilang saat kontainer dibuat ulang (sejak M4 benar-benar ditulis ke disk).
-Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangkan `/var/lib/speedmq` (lihat `backup-restore.md` §3.2). **【Peningkatan image belum diuji】** (mesin lokal tidak menjalankan Docker).
+Jika perlu mencadangkan isi volume sebelum peningkatan, setara dengan mencadangkan `/var/lib/speedmq` (lihat `backup-restore.md` §3.2).
+
+> **【Terverifikasi（2026-10-10, Docker Desktop lokal）】** Telah dilakukan latihan peningkatan image yang nyata: image lama `speedmq:1.1.0-old` (git tag `v1.1.0`) dan image baru `speedmq:1.1.05-new` (kode sumber saat ini) dibangun secara lokal, image lama dijalankan dengan compose single-node → membuat antrean durable `persist.q` dan mempublikasikan 5 pesan persisten (`delivery_mode=2`) → `docker compose down` (**tanpa `-v`**, volume bernama `speedmq-data` tetap dipertahankan) → setelah tag image di compose diganti ke image baru, `docker compose up -d`.
+> Hasil: kontainer baru berjalan normal, log startup memunculkan `已从磁盘恢复队列消息 ... queue=persist.q messages=5`, `/metrics` melaporkan `speedmq_build_info{version="1.1.05"}`, `queue_totals.messages=5` di `/api/overview` dan `messages=5` pada antrean `persist.q` konsisten sebelum dan sesudah peningkatan, dan klien AMQP nyata (`rabbitmq/amqp091-go`) mengambil kembali seluruh 5 pesan persisten satu per satu (`deliveryMode=2`).
+> Catatan: `v1.1.0` adalah image merek `speedmq` sebelum pergantian nama (biner `speedmqd`, metrik `speedmq_build_info`, direktori data default `/var/lib/speedmq`), berbeda penamaan dari versi saat ini; dalam latihan, konfigurasi `data_dir=/var/lib/speedmq` yang menjadi acuan, dan pemilik untuk volume bernama disiapkan lebih dulu (image lama tidak memiliki path yang dapat ditulis tersebut). Ini tidak memengaruhi kesimpulan "membangun ulang kontainer dengan mengganti tag tidak menghilangkan data volume bernama".
 
 ---
 
@@ -192,8 +200,15 @@ Sisi platform tidak menyediakan "peningkatan bergulir sekali klik", perlu dioper
    selama peningkatan hindari `add_member` / `remove_member` secara bersamaan.
 5. Setelah peningkatan selesai, periksa bahwa `object_totals` di `GET /api/cluster` sama dengan sebelum peningkatan.
 
-> **【Belum Diverifikasi】** Mesin lokal belum melakukan latihan peningkatan bergulir klaster sungguhan (jalur klaster dan kontainer keduanya belum dijalankan); urutan di atas berasal dari batasan umum
-> middleware pesan dan Raft serta fakta implementasi `pause_minority` / perubahan anggota di repositori ini, bukan kesimpulan uji nyata mesin lokal.
+> **【Terverifikasi（2026-10-10, klaster 3 node Docker Desktop lokal）】** Telah dilakukan latihan peningkatan bergulir **antar-versi** pada klaster nyata: baseline-nya `speedmq:1.1.0-old` yang dibangun lokal (git tag `v1.1.0`), naik satu per satu node (n1 → n2 → n3, satu per satu: hentikan, cadangkan volume bernamanya, ganti image lalu jalankan) ke `1.1.05` saat ini (dibangun lokal `speedmq:1.1.05-new`, compose mengganti image dengan override per node). Sepanjang proses, klaster selalu mempertahankan leader dan mayoritas —— saat leader saat itu dihentikan, leader baru terpilih dalam sekitar 0,6 s, `pause_minority` tidak memicu penundaan, dan tidak ada gangguan eksternal selama penghentian; setelah peningkatan, `object_totals` `GET /api/cluster` konsisten dengan sebelumnya (`queues:1`), jumlah 25 pesan persisten pada antrean quorum 3 replika `qroll` tidak berubah dan dapat dibaca kembali satu per satu, dan setelah mempublikasikan 5 pesan baru, seluruh 30 dapat diambil kembali.
+> Urutan di atas tetap berlaku berdasarkan batasan umum Raft; latihan ini mencakup skenario 3 node. **【Terverifikasi（2026-10-10, Docker Desktop lokal）2 node: menghentikan 1 sudah kehilangan mayoritas】** Selain itu dibuat klaster minimal 2 node (n1/n2, `peers` masing-masing hanya memuat kedua node ini, `partition_policy=pause_minority`) dan diuji: saat kedua node online, `GET /api/cluster` bernilai `has_quorum=true / paused=false` (n1 leader, n2 follower); setelah `docker stop` pada n2, n1 menjadi `has_quorum=false / paused=true` dalam sekitar 2 s —— artinya menghentikan 1 anggota voting sudah kehilangan mayoritas dan `pause_minority` menangguhkan layanan, **menegaskan bahwa 2 node tidak memiliki kemampuan peningkatan bergulir**; setelah `docker start` memulihkan n2, n1 kembali ke `has_quorum=true / paused=false` dalam sekitar 2 s (layanan pulih otomatis).
+
+> **【Terverifikasi（2026-10-11, klaster 3 node Docker Desktop lokal）】Peningkatan bergulir di bawah partisi jaringan telah diuji** (`v1.1.0` → `1.1.05` antar-versi; partisi menggunakan topologi jaringan ganda: Raft RPC antar-node hanya melalui `cluster-net` dengan IP statis, lalu lintas klien/manajemen melalui `client-net`, dan `docker network disconnect/connect` mengubah partisi):
+> - **Follower terpartisi**: sisi mayoritas terus mempertahankan quorum selama partisi, mempublikasikan/mengonsumsi secara normal, dan menyelesaikan "hentikan → ganti image → jalankan → kejar" satu node mayoritas sementara partisi tetap berlangsung; klaster versi campuran (1.1.0 + 1.1.05) tetap melayani. Setelah partisi pulih, node yang terisolasi (versi lama) bergabung kembali dan mengejar; rekonsiliasi pesan berdasarkan himpunan ID unik 35/35 tanpa kehilangan.
+> - **Leader terpartisi**: mayoritas memilih leader baru dalam sekitar **630 ms**; leader lama yang terisolasi mempertahankan `role=leader` tetapi dengan `has_quorum=false / paused=true` (`pause_minority` berlaku, tidak secara aktif menaikkan term); peningkatan node lain di sisi mayoritas selama partisi berhasil; setelah pulih, leader lama bergabung kembali, tanpa split-brain dan tanpa divergensi data.
+> - **Perilaku yang diharapkan tanpa PreVote (dicatat apa adanya)**: follower yang terisolasi segera berkampanye berulang kali, term-nya naik sekitar +2 setiap 2 s (dua grup Raft metadata dan antrean bergantian naik); pada saat pemulihan **merebut kepemimpinan** dengan term yang lebih tinggi (terpilih dalam 1,4 s dalam latihan) —— ada gangguan pergantian leader tetapi tidak ada masalah kebenaran.
+> - **Dua jebakan operasional**: ① jika `peers` menggunakan hostname dan kontainer juga terhubung ke jaringan kedua yang dapat dijangkau, lalu lintas Raft akan memutar dan menyebabkan "partisi semu" (node yang terisolasi masih menampilkan `has_quorum=true` setelah lebih dari satu menit) —— RPC antar-node harus melalui tepat satu jaringan (dengan `peers` menunjuk langsung ke IP statis jaringan tersebut); ② saat pemulihan, `docker network connect` harus membawa `--ip <IP asli>`, jika tidak node mendapat IP baru sementara mayoritas tetap memanggil alamat lama, dan node yang terisolasi —— membawa log yang tertinggal —— berkampanye berulang kali dengan term yang menggelembung (dalam latihan menyeret term klaster dari 320 ke 488 dan commit metadata dari 13 ke 97), dan keadaan sesaat dapat muncul di mana leader menampilkan `quorum=true` namun sebentar `paused=true`.
+> - Selama partisi, API manajemen sisi minoritas tetap dapat dibaca (berguna untuk pengamatan), sementara publikasi AMQP ditolak (`pause_minority` berlaku).
 
 ---
 
@@ -206,5 +221,5 @@ Sisi platform tidak menyediakan "peningkatan bergulir sekali klik", perlu dioper
 - **Hot upgrade plugin/protokol online**: plugin dikompilasi menyatu dengan kernel (bentuk A) atau dinaikkan sesuai konfigurasi `spawn` (bentuk B),
   peningkatan kernel = restart proses; **tidak ada** mekanisme penggantian biner secara hot di tempat.
 - **Migrasi mesin penyimpanan di tempat**: rotasi segmen/kompresi indeks adalah perilaku latar belakang saat runtime, **tidak ada** perintah "migrasi/kompresi data" yang berdiri sendiri.
-- **Peningkatan klaster di jaringan sungguhan**: repositori ini hanya melakukan chaos yang diperkecil (kill di level proses), **belum melakukan** latihan peningkatan di bawah partisi jaringan atau disk penuh.
+- **Peningkatan klaster dengan disk penuh**: **belum diverifikasi**. (Peningkatan bergulir di bawah partisi jaringan telah diuji pada 2026-10-11; lihat catatan di akhir §7.)
 - Dokumen ini **tidak memuat** verifikasi pemindahan data apa pun antara SpeedMQ dan broker lain (RabbitMQ).

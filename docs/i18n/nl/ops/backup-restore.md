@@ -1,7 +1,10 @@
 # SpeedMQ back-up en herstel
 
 > Alle "in de praktijk geteste" conclusies in dit document komen uit één echte oefening op **Windows + PowerShell 5.1** (tijdelijke `data_dir` en tijdelijke poorten).
-> De oefenopdrachten en belangrijke uitvoer staan ongewijzigd in §6. Delen die **【niet geverifieerd】** zijn, worden expliciet gemarkeerd (clusterback-up/-herstel, back-up van Docker-volumes, enz.).
+> De oefenopdrachten en belangrijke uitvoer staan ongewijzigd in §6. Delen die **【niet geverifieerd】** zijn, worden expliciet gemarkeerd (zoals een echte stroomstoring op een fysieke machine).
+
+> **【geverifieerd (2026-10-11, lokale Docker Desktop 3-nodecluster)】** Hard killen van het proces (`docker kill`) en gelijktijdige schrijfacties tijdens het herstel zijn in de praktijk getest,
+> de verslagen staan in §6.2 / §6.3; de "stroomstoring"-bepaling in §2.3 en de verificatiestatuslijst in §7 zijn synchroon bijgewerkt.
 
 ---
 
@@ -45,7 +48,12 @@ De berichtopslag bestaat uit **twee bestanden** (het segmentbestand `*.seg` en h
   (zonder fsync), en de publisher confirm wordt daarna geretourneerd.
 - Praktijkmeting: direct na het publiceren van een persistent bericht is de bestandsgrootte van het segment al zichtbaar (`t=0ms seg=832`); met andere woorden, "de bytes die het OS kan zien" lopen vrijwel synchroon met de confirm.
 - **Let op**: dit betekent alleen dat het "in de OS-buffer is beland"; **het hard killen van het proces leidt niet tot verlies** (het doden van het proces wist de OS-buffer niet), maar **een stroomstoring wel**.
-  Wil je "bij ontvangst van de confirm al naar schijf gefsynct", zet dan `storage.fsync` op `batch` / `always`. **【stroomstoringscenario niet getest】**
+  Wil je "bij ontvangst van de confirm al naar schijf gefsynct", zet dan `storage.fsync` op `batch` / `always`.
+  **【geverifieerd (2026-10-11, lokale Docker Desktop 3-nodecluster)】** Praktijktest waarbij een node tijdens schrijven hard wordt gekilled met `docker kill` (SIGKILL): in beide standen gaan bevestigde berichten niet verloren:
+  `fsync: os` kill van een follower (50.000 berichten allemaal bevestigd, reconciliatie missing=0), `fsync: always` kill van de leader van een quorumqueue (200.000 berichten allemaal bevestigd,
+  missing=0; daarnaast werden 1.355 reeds naar schijf geschreven maar niet-bevestigde berichten opnieuw verzonden — at-least-once-semantiek staat dit toe, dedup op bericht-ID aan de consumerzijde maakt dit idempotent).
+  Bonus: in de standaardstand werd tijdens het publiceren de hele Docker VM abrupt gestopt met `wsl --shutdown` (benadert een stroomstoring van de hele machine met verlies van de OS-buffer); na herstel bleken de 69.669 bevestigde berichten
+  per ID gereconcilieerd met missing=0. **Nog steeds niet geverifieerd**: een echte stroomstoring op een fysieke machine (stroomuitval van de host, schijfcachelaag) — op deze machine niet te simuleren.
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **Elke node back-upt zijn eigen `data_dir`** (metadata wordt via Raft naar alle nodes gerepliceerd, berichtgegevens staan op de Owner-node, en de replicaat van quorumqueues staat in de eigen Raft-map).
 - Volgorde van stoppen: **stop slechts één node per keer**; stop niet meerdere stemgerechtigde leden tegelijk (zie `upgrade.md` §7.2).
 - Voor een **consistente snapshot van het hele cluster** moet je alle nodes na elkaar stoppen en elk afzonderlijk kopiëren; in productie komt "node voor node stoppen/kopiëren/starten" vaker voor.
-- **【niet geverifieerd】** Op deze machine is geen echte clusterback-up/-hersteloefening uitgevoerd.
+- **【geverifieerd (2026-10-10, lokale Docker Desktop 3-nodecluster)】** Op een 3-node compose-cluster "stoppen/kopiëren/starten" node voor node: elke node pakte zijn benoemde volume in met een eenmalige alpine-container
+  (`docker run --rm -v <volume>:/data -v <hostmap>:/backup alpine tar czf ...`), het pakket bevatte `meta/raft.log`, `meta/raft.state`, `meta/*.seeded`, `quorum/...`;
+  na herstel kon die node weer als bestaand lid toetreden en inhalen (zie §4.2; het bewijs is hetzelfde als in `upgrade.md` §7.2).
 
 ### 3.3 Docker (benoemd volume)
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【niet geverifieerd】** (Docker is op deze machine niet uitgevoerd).
+> **【geverifieerd (2026-10-10, lokale Docker Desktop)】** Dit commando is daadwerkelijk uitgevoerd op het benoemde volume van het 3-nodecluster (het pakket bevatte `meta/`, `quorum/`),
+> en op basis daarvan is de volumehersteloefening voor één node afgerond (zie §4.2).
 
 ---
 
@@ -112,7 +123,8 @@ Belangrijke punten:
 
 - Eén node herstellen: herstel de `data_dir` van die node volgens §4.1 en start hem; hij voegt zich als bestaand lid weer toe en haalt de Raft-log in.
 - Het hele cluster herstellen: **herstel en start eerst een meerderheid van de nodes** (≥ de helft van de stemgerechtigde leden), zodat het cluster een leader kan kiezen; herstel daarna de overige nodes.
-- **【niet geverifieerd】** Clusterherstel is niet in de praktijk getest.
+- **【geverifieerd (2026-10-10, lokale Docker Desktop 3-nodecluster)】** Gemeten "stop n3 → volume leegmaken → overschrijven met de back-up van §3.3 → opnieuw starten":
+  n3 trad weer toe als follower en haalde de leader in (`commit_index == last_applied`); het aantal berichten in de quorumqueue en de ledentabel bleven ongewijzigd.
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **Geen enkele WARN**. Dit toont aan dat WARN alleen optreedt in scenario's waarin "de index nog afgewikkelde records bevat" (zie §7).
 
+### 6.2 Node hard killen tijdens schrijven (`docker kill`, 2026-10-11)
+
+3-nodecluster (`partition_policy=pause_minority`), quorumqueue `pwr.q` met 3 replica's; de client gebruikt publisher confirms, elk bericht heeft een unieke ID en bevestigde ID's worden naar schijf geschreven voor reconciliatie.
+
+**Ronde 1 (`fsync: os`, follower n3 killen)**: `docker kill pwr-n3` terwijl 50.000 berichten worden gepubliceerd:
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**Ronde 2 (`fsync: always`, quorum-leader n1 killen)**: `docker kill pwr-n1` terwijl 200.000 berichten worden gepubliceerd:
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**Ronde 1b (`fsync: os`, `wsl --shutdown` om de hele Docker VM abrupt te stoppen, benadert een stroomstoring van de hele machine)**: abrupt stoppen tijdens publicatie; de host had 69.669 bevestigde records geregistreerd;
+na herbouw van de VM en herstel van het cluster:
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+Let op: `wsl --shutdown` benadert alleen "verlies van de OS-buffer" en **is niet gelijk aan een stroomstoring op een fysieke machine** (stroomuitval van de host, schijfcachelaag niet gedekt — nog steeds niet geverifieerd).
+
+### 6.3 Gelijktijdige schrijfacties tijdens het herstel (2026-10-11)
+
+Op een `fsync: always`-cluster: `docker stop` van follower n2 → 50.000 opgestuwde berichten publiceren (allemaal bevestigd) → `docker start pwr-n2`,
+en **in dezelfde seconde** doorgaan met het publiceren van 20.000 berichten naar de meerderheidsnodes:
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+Conclusie: gelijktijdige schrijfacties tijdens het inhalen gaan niet verloren en raken niet corrupt; de telling is exact.
+
 ---
 
 ## 7. Bekende problemen en beperkingen (naar waarheid vastgelegd)
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` garandeert niet dat een stroomstoring geen verlies veroorzaakt**: gebruik `batch` / `always` voor "bij confirm al naar schijf".
 4. **Wachtwoorden in platte tekst**: gebruikerswachtwoorden in `meta/state.json` staan in **platte tekst** (in de praktijk is `"password":"drillpass"` zichtbaar) ——
    back-upbestanden moeten daarom **als gevoelige gegevens worden behandeld** (toegangscontrole, versleutelde opslag). Zie `security-baseline.md`.
-5. **【niet geverifieerd】** Clusterback-up/-herstel, back-up/herstel van Docker-volumes, stroomstoringsscenario's en gelijktijdige schrijfacties tijdens het herstel.
+5. **【verificatiestatus】** Hard killen van het proces (inclusief het killen van de quorum-leader tijdens schrijven, in de standen `fsync: os`/`always`) en gelijktijdige schrijfacties tijdens het herstel (tijdens het inhalen doorgaan met publiceren met ongeveer 4.000~6.000 berichten/s, in 4 s ingehaald via een snapshot, exacte telling, reconciliatie missing=0) — **【geverifieerd (2026-10-11, lokale Docker Desktop 3-nodecluster)】**; `wsl --shutdown` om de hele Docker VM abrupt te stoppen (benadert een stroomstoring van de hele machine): in de enkele steekproef geen enkel bevestigd bericht verloren, maar **een echte stroomstoring op een fysieke machine is nog steeds niet geverifieerd**; clusterback-up/-herstel node voor node en back-up/herstel van benoemde Docker-volumes — **【geverifieerd (2026-10-10, lokale Docker Desktop 3-nodecluster)】** (zie §3.2 / §3.3 / §4.2).
+6. **Bijkomende observaties (naar waarheid vastgelegd tijdens de oefening van 2026-10-11, niet-blokkerend)**: ① na het hard killen van de quorum-leader bleef het publicatie-doorstuurpad van de followers nog ongeveer 76 seconden naar de dode leader wijzen (nieuwe publicaties werden in die periode genackt, de client verzond ze met succes opnieuw, geen bevestigd bericht ging verloren) — er is een beschikbaarheids-schommelingvenster; ② bij het in één keer leegmaken van een grote queue (438.000 berichten) werd een ongeveer 153× herverzendingsamplificatie waargenomen (at-least-once-semantiek blijft overeind, uiteindelijk correct op nul); ③ tijdens het inhalen van een grote queue trad bij het starten van een consumer via een follower af en toe `i/o timeout` op; rechtstreeks op de leader werkt normaal.

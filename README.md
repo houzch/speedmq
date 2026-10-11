@@ -16,6 +16,16 @@ Capabilities already available: persistence (segment log + fsync level + crash r
 
 ***
 
+## Performance and testing caveats
+
+This project makes **no public performance commitments**. The **clustering and performance conclusions** in this README and related reports are all based on a **single-host, reduced-scale environment** (Docker Desktop / WSL2 on one machine, 3 nodes × 4C4G, `fsync=batch`, 3-replica quorum queues) and **single-run** measurements without medians:
+
+- the numbers are meant for **relative comparison within the same environment** (e.g. before/after an optimization, classic vs quorum); **absolute values must not be extrapolated** to production or other hardware;
+- on a single host, inter-node traffic is loopback, so the **cross-node forwarding cost is underestimated**; on a real multi-machine network the relative cost is higher;
+- for production capacity planning, run your own benchmarks on your target hardware and network.
+
+***
+
 ## Quick Start
 
 ### Option 1: Docker (recommended)

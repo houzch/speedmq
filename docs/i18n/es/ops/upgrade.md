@@ -60,7 +60,7 @@ data/
 **Atención (dos puntos que difieren de la intuición; ambos se basan en el código/mediciones)**:
 
 - En modo clúster, los archivos de persistencia de Raft **se colocan directamente bajo `meta/`** (`raft.state` / `raft.log` / `snapshot.json`),
-  y **no existe el subdirectorio `meta/raft/`**. Base: las constantes de nombres de archivo de `internal/raft/log.go` más `Dir: filepath.Join(b.cfg.DataDir, "meta")` en `internal/broker/cluster.go`. **【Distribución de clúster no medida】** (en esta máquina solo se ejecutó una instancia de nodo único).
+  y **no existe el subdirectorio `meta/raft/`**. Base: las constantes de nombres de archivo de `internal/raft/log.go` más `Dir: filepath.Join(b.cfg.DataDir, "meta")` en `internal/broker/cluster.go`. **【Verificado（2026-10-10, clúster de 3 nodos de Docker Desktop local）】** —— El contenido de la copia del volumen de un nodo del clúster muestra directamente `meta/raft.log`, `meta/raft.state`, `meta/*.seeded` (no se observa el subdirectorio `meta/raft/`).
 - Los nombres de directorio **no son los nombres originales de vhost / cola**, sino una codificación de `store.SafeDirName`: se añade el prefijo `q_` y los bytes que no son `[A-Za-z0-9._-]` se escapan como `%XX`.
   Medido: vhost `/` → directorio `q_%2F`; cola `persist.q` → directorio `q_persist.q`.
   Este diseño busca evitar el path traversal y los nombres de dispositivo reservados de Windows (`con`/`nul`, etc.).
@@ -78,6 +78,8 @@ data/
   Medido (véase `backup-restore.md` §6): tras detener el proceso y reiniciarlo, los 5 mensajes persistentes de la cola durable **se recuperan todos**,
   y en el registro aparece `已从磁盘恢复队列消息 ... messages=5`.
 
+**【Verificado（2026-10-10, máquina local）】** Se ha medido la lectura entre versiones mayores: los datos de una cola durable escritos con el tag `v1.1.0` se recuperan tal cual bajo `1.1.05` (comandos y salida, véase §5).
+
 ### 4.2 El criterio de `vhosts` / `users` en la configuración (el error más fácil de cometer al actualizar)
 
 - Ambos **solo tienen efecto en el arranque inicial**: el primer arranque escribe los vhosts/users de la configuración en los metadatos y deja los archivos de marca
@@ -86,6 +88,8 @@ data/
   usa la API de administración o `speedmqctl`.
 - A la inversa, la actualización **no** sobrescribe con la configuración las cuentas existentes: una contraseña cambiada en tiempo de ejecución no vuelve al valor antiguo de la configuración al reiniciar,
   ni una cuenta eliminada en tiempo de ejecución reaparece. Base: la lógica de marcas de siembra de `cluster.go`; README M8-4 / M8-7.
+
+**【Verificado（2026-10-10, máquina local）】** Los cambios en tiempo de ejecución efectivamente no son sobrescritos por la configuración: antes de la actualización se cambió por la API de administración la contraseña de `guest` a `rotated`; tras reiniciar con `1.1.05` + el mismo `data_dir`, `guest/guest` (la contraseña antigua de la configuración) devuelve **401** y `guest/rotated` devuelve **200**.
 
 ### 4.3 Rotación de segmentos y recuperación de espacio en disco
 
@@ -96,7 +100,7 @@ data/
 
 ## 5. Actualización del binario (máquina física)
 
-> En esta máquina **no se realizó un ensayo real entre versiones** (el repositorio actualmente solo tiene una versión, `1.0.0`, sin binario antiguo que actualizar). Los siguientes pasos son una **validación de repetición en la misma versión + un procedimiento general** de las capacidades ya existentes en este repositorio; la parte entre versiones se marca como **【No verificado】**.
+> **【Verificado（2026-10-10, máquina local）】** Prueba real entre versiones mayores: el binario antiguo construido con el tag `v1.1.0` escribió exchange/cola/bindings durable + 5 mensajes persistentes + vhost/cuenta/permisos/políticas y cambió la contraseña en tiempo de ejecución; tras detener el proceso se arrancó con el binario actual `1.1.05` + **el mismo `data_dir` + el mismo puerto** —— el proceso arranca con normalidad, los objetos y el número de mensajes de `/api/queues` coinciden, un cliente AMQP real recupera los 5 mensajes persistentes y `/metrics` reporta `speedmq_build_info{version="1.1.05"}`. Los pasos siguientes siguen siendo un procedimiento genérico aplicable a cualquier par de versiones adyacentes; **degradación**, véase §8.
 
 ### 5.1 Pasos
 
@@ -159,7 +163,11 @@ docker compose logs -f --tail 100
 > ```
 
 La persistencia de datos depende del **volumen con nombre** `speedmq-data` de compose; al reconstruir el contenedor no se pierden datos (desde M4 realmente se escribe en disco).
-Si necesitas hacer copia de seguridad del contenido del volumen antes de actualizar, equivale a respaldar `/var/lib/speedmq` (véase `backup-restore.md` §3.2). **【Actualización de imagen no medida】** (no se ejecutó Docker en esta máquina).
+Si necesitas hacer copia de seguridad del contenido del volumen antes de actualizar, equivale a respaldar `/var/lib/speedmq` (véase `backup-restore.md` §3.2).
+
+> **【Verificado（2026-10-10, Docker Desktop local）】** Se realizó un ensayo real de actualización de imagen: se construyeron localmente la imagen antigua `speedmq:1.1.0-old` (git tag `v1.1.0`) y la nueva `speedmq:1.1.05-new` (código actual); con un compose de un solo nodo se arrancó la imagen antigua → se creó la cola durable `persist.q` y se publicaron 5 mensajes persistentes (`delivery_mode=2`) → `docker compose down` (**sin `-v`**, conservando el volumen con nombre `speedmq-data`) → tras cambiar el tag de image en compose a la nueva imagen, `docker compose up -d`.
+> Resultado: el nuevo contenedor arranca con normalidad, en el log de arranque aparece `已从磁盘恢复队列消息 ... queue=persist.q messages=5`, `/metrics` reporta `speedmq_build_info{version="1.1.05"}`, `queue_totals.messages=5` de `/api/overview` y `messages=5` de la cola `persist.q` coinciden antes y después de la actualización, y un cliente AMQP real (`rabbitmq/amqp091-go`) recupera uno a uno los 5 mensajes persistentes (`deliveryMode=2`).
+> Nota: `v1.1.0` es la imagen de la marca `speedmq` anterior al cambio de nombre (binario `speedmqd`, métrica `speedmq_build_info`, directorio de datos predeterminado `/var/lib/speedmq`), con una nomenclatura distinta a la versión actual; en el ensayo se tomó como referencia la configuración `data_dir=/var/lib/speedmq` y se preajustó el propietario del volumen con nombre (en la imagen antigua no existe esa ruta escribible). Esto no afecta a la conclusión "reconstruir el contenedor cambiando el tag no pierde los datos del volumen con nombre".
 
 ---
 
@@ -191,8 +199,15 @@ La plataforma no ofrece una "actualización rodante con un solo clic"; hay que o
    durante la actualización, evita ejecutar `add_member` / `remove_member` al mismo tiempo.
 5. Una vez completada la actualización, verifica que los `object_totals` de `GET /api/cluster` coincidan con los previos a la actualización.
 
-> **【No verificado】** No se realizó un ensayo real de actualización rodante de clúster en esta máquina (no se ejecutaron ni la ruta de clúster ni el contenedor); el orden anterior proviene de
-> las restricciones generales de los middleware de mensajería y de Raft, así como de los hechos de implementación de `pause_minority` / cambios de miembros en este repositorio, no de conclusiones medidas en esta máquina.
+> **【Verificado（2026-10-10, clúster de 3 nodos de Docker Desktop local）】** Se realizó un ensayo real de actualización rodante **entre versiones** de un clúster: la base fue `speedmq:1.1.0-old` construida localmente (git tag `v1.1.0`), actualizando nodo a nodo (n1 → n2 → n3, de uno en uno: primero detener, luego respaldar su volumen con nombre, luego cambiar la imagen y arrancar) hasta el actual `1.1.05` (construido localmente `speedmq:1.1.05-new`, compose cambiaba la imagen con un override por nodo). Durante todo el proceso el clúster conservó siempre leader y mayoría —— al detener el leader actual se eligió un nuevo leader en unos 0,6 s, `pause_minority` no provocó suspensión y no hubo interrupción externa durante la parada; tras la actualización los `object_totals` de `GET /api/cluster` coinciden con los previos (`queues:1`), el recuento de los 25 mensajes persistentes de la cola de quórum de 3 réplicas `qroll` no cambia y son recuperables uno a uno, y tras publicar 5 mensajes nuevos los 30 en total son recuperables.
+> El orden anterior sigue cumpliendo las restricciones generales de Raft; este ensayo cubre el escenario de 3 nodos. **【Verificado（2026-10-10, Docker Desktop local）2 nodos: detener 1 ya pierde la mayoría】** Se creó además un clúster mínimo de 2 nodos (n1/n2, cuyos `peers` solo contienen esos dos, `partition_policy=pause_minority`) y se midió: con ambos nodos en línea, `GET /api/cluster` es `has_quorum=true / paused=false` (n1 leader, n2 follower); tras `docker stop` de n2, n1 pasa en unos 2 s a `has_quorum=false / paused=true` —— es decir, detener 1 miembro votante ya pierde la mayoría y `pause_minority` suspende el servicio, **confirmando que 2 nodos no tienen capacidad de actualización rodante**; tras `docker start` para restaurar n2, n1 vuelve en unos 2 s a `has_quorum=true / paused=false` (el servicio se recupera automáticamente).
+
+> **【Verificado（2026-10-11, clúster de 3 nodos de Docker Desktop local）】La actualización rodante bajo partición de red ya se midió** (entre versiones `v1.1.0` → `1.1.05`; la partición usó una topología de doble red: el RPC Raft entre nodos solo va por `cluster-net` con IP estáticas, el tráfico de clientes/interfaz de gestión va por `client-net`, y `docker network disconnect/connect` conmuta la partición):
+> - **Follower particionado**: el lado mayoritario conservó el quórum durante toda la partición, publicó/consumió con normalidad y completó el "detener → cambiar imagen → arrancar → ponerse al día" de un nodo mayoritario mientras la partición persistía; el clúster de versiones mixtas (1.1.0 + 1.1.05) siguió dando servicio. Al restablecerse la partición, el nodo aislado (versión antigua) se reincorporó y se puso al día; la reconciliación de mensajes por conjunto de ID únicos dio 35/35 sin pérdidas.
+> - **Leader particionado**: la mayoría eligió un nuevo leader en unos **630 ms**; el antiguo leader aislado mantuvo `role=leader` pero con `has_quorum=false / paused=true` (`pause_minority` en vigor, sin elevar proactivamente su mandato); la actualización de otro nodo del lado mayoritario durante la partición tuvo éxito; tras el restablecimiento, el antiguo leader se reincorporó sin split-brain ni divergencia de datos.
+> - **Comportamiento esperado sin PreVote (registrado con honestidad)**: el follower aislado inició de inmediato campañas repetidas, con el mandato subiendo unas +2 cada 2 s (los dos grupos Raft, de metadatos y de cola, elevándose alternadamente); en el instante del restablecimiento **se hizo con el liderazgo** con su mandato más alto (elegido en 1,4 s en el ensayo) — hay perturbación por cambio de leader, pero ningún problema de corrección.
+> - **Dos trampas operativas**: ① si `peers` usa nombres de host y los contenedores están además conectados a una segunda red alcanzable, el tráfico Raft se desvía y provoca una "falsa partición" (el nodo aislado seguía mostrando `has_quorum=true` tras más de un minuto) — el RPC entre nodos debe ir por una única red (`peers` apuntando directamente a las IP estáticas de esa red); ② al restablecer, `docker network connect` debe llevar `--ip <IP original>`, de lo contrario el nodo obtiene una IP nueva mientras la mayoría sigue marcando la dirección antigua, y el nodo aislado —con un registro atrasado— hace campañas repetidas con un mandato inflado (en el ensayo arrastró el term del clúster de 320 a 488 y el commit de metadatos de 13 a 97), pudiendo aparecer un estado transitorio en el que el leader muestra `quorum=true` pero brevemente `paused=true`.
+> - Durante la partición, la API de gestión del lado minoritario siguió siendo legible (útil para observar), mientras que la publicación AMQP era rechazada (`pause_minority` en vigor).
 
 ---
 
@@ -205,5 +220,5 @@ La plataforma no ofrece una "actualización rodante con un solo clic"; hay que o
 - **Actualización en caliente de plugins/protocolos en línea**: los plugins se compilan con el núcleo (forma A) o se lanzan mediante `spawn` según la configuración (forma B);
   actualizar el núcleo = reiniciar el proceso; **no** hay mecanismo de sustitución en caliente del binario in situ.
 - **Migración in situ del motor de almacenamiento**: la rotación de segmentos y la compresión del índice son comportamientos en segundo plano en tiempo de ejecución; **no** hay un comando independiente de "migración/compresión de datos".
-- **Actualización de clúster en red real**: este repositorio solo realizó caos a escala reducida (kill a nivel de proceso); **no se realizaron** ensayos de actualización bajo partición de red o disco lleno.
+- **Actualización de clúster con disco lleno**: **no verificada**. (La actualización rodante bajo partición de red se midió el 2026-10-11; véase la nota al final de §7.)
 - Este documento **no incluye** ninguna validación de traslado de datos entre SpeedMQ y otros brokers (RabbitMQ).

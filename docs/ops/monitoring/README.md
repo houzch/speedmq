@@ -51,16 +51,29 @@ rule_files:
 
 规则里统一使用 `job="speedmq"`；若你的 job 名不同，请全文替换。
 
+> **【已验证（2026-10-10，本机 Docker Desktop）】** 本规则文件已用真实 Prometheus（`prom/prometheus:v2.54.1`）加载：
+> `GET /api/v1/rules` 列出 `speedmq` 组 10 条规则（名称与文件内一一对应），规则引擎实际评估并触发。
+> ⚠️ 加载规则时顺带发现：内核 `/metrics` 曾有**两处非法曝光格式**（`speedmq_build_info` 标签位置、重复 `# HELP`），
+> 会让真实 Prometheus 拒绝**整份**抓取（`up==0`）。两处已在**本轮修复**（见 §6）；修复前 `SpeedMQScrapeDown` 的触发
+> 是格式缺陷连锁，并非规则写错。
+
 ### 1.3 Grafana 仪表盘
 
 `grafana-dashboard.json` 通过 **Dashboards → Import → 上传 JSON** 导入，导入时选择你的 Prometheus 数据源
 （仪表盘里用 `${DS_PROMETHEUS}` 变量引用）。模板变量 `DS_PROMETHEUS` 会在导入映射里赋值。
 
-**【未验证】** 本机未起 Grafana 实例，未做真实导入验证；该 JSON 仅做了 JSON 语法校验（14 个面板，解析通过）。
+**【已验证（2026-10-10，本机 Docker Desktop）】** 已用真实 Grafana（`grafana/grafana:11.2.0`）通过 HTTP API 导入：
+先建 Prometheus 数据源，再 `POST /api/dashboards/import`（`overwrite=true`），返回 `uid=speedmq-overview`；
+`GET /api/dashboards/uid/speedmq-overview` 取回面板数 14，模板变量 `DS_PROMETHEUS` 解析到已建数据源。
 
 ---
 
 ## 2. `/metrics` 真实片段（证据）
+
+> ⚠️ 本节样本取自**修复前**的实例，其中两行曝光格式**非法**，真实 Prometheus 会因之拒绝**整份**抓取（见 §6）：
+> ① `speedmq_build_info 1{version=...}` —— 标签必须写在数值**之前**（正确写法 `speedmq_build_info{version="..."} 1`）；
+> ② `speedmq_queue_messages_unacknowledged` 出现**第二条** `# HELP`（与上文全局指标同名）。
+> 两处均已在本轮（2026-10-10）修复；下面样本已按修复后的**正确形态**给出。
 
 以下为本机 `1.0.0` 实例 `/metrics` 的**真实输出**（已建一条 durable 队列 `persist.q`，
 故带 `vhost`/`queue` 标签的 per-queue 指标出现了）：
@@ -71,7 +84,7 @@ rule_files:
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -113,8 +126,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -178,6 +189,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **同名不同基数的两族序列**：`speedmq_queue_messages_unacknowledged` **既**有全局无标签序列、
   **又**有 per-queue 带标签序列；而"就绪"侧全局叫 `speedmq_queue_messages`、per-queue 叫
   `speedmq_queue_messages_ready`（名字不对称）。写规则时用 `{queue=~".+"}` 明确只取 per-queue 一族。
+  ⚠️ 但同一指标名的 `# HELP`/`# TYPE` **只能声明一次**：曾在两处各声明一次，被真实 Prometheus 判为
+  `second HELP line for metric name` 而**拒绝整份抓取**（本轮已修，见 §6）。
 - **`speedmq_process_memory_bytes` 的口径**：实现是 `MemStats.HeapInuse + StackInuse`（**在用内存**），
   与内核内存水位判定同一口径；但它的 `# HELP` 文案写的是"向操作系统申请的内存字节数"，**文案与实际口径不符**，
   以本文为准。
@@ -221,8 +234,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. 其他**未验证**项
+## 6. 其他项的验证状态
 
-- Grafana 仪表盘**未在真实 Grafana 中导入验证**（仅 JSON 语法校验通过）。
-- 告警规则**未在真实 Prometheus/Alertmanager 中加载验证**（本机未起 Prometheus）。
-  但规则里的**指标名已逐条对照 `/metrics` 真实输出**（见 §2/§3），不存在"名字写错导致永不触发"的问题。
+- **【已验证（2026-10-10，本机 Docker Desktop）】** Grafana 仪表盘已在真实 Grafana 11.2.0 中导入验证（14 面板、`DS_PROMETHEUS` 映射成功），见 §1.3。
+- **【已验证 + 缺陷已修（2026-10-10，本机 Docker Desktop）】** 告警规则已在真实 Prometheus（`prom/prometheus:v2.54.1`）中加载并可用：
+  `GET /api/v1/rules` 列出 `speedmq` 组 10 条规则，规则引擎实际评估并触发（见 §1.2）。
+  - **本轮借真实验证发现并修复了两处内核 `/metrics` 曝光格式缺陷**（`internal/management/metrics.go`）：
+    ① `speedmq_build_info` 把标签写在了数值之后（`name 1{labels}`），正确应为 `name{labels} 1`；
+    ② `speedmq_queue_messages_unacknowledged` 被重复声明了第二条 `# HELP`/`# TYPE`。
+    **任一处都会让真实 Prometheus 拒绝整份抓取**（`up=0`，`SpeedMQScrapeDown` 是"格式缺陷连锁"触发，并非规则名写错）——
+    此前一直未被发现，是因为从未用真实抓取端验证。
+  - **修复后证据**：`promtool check metrics`（Prometheus 官方解析器 v2.54.1）对修复后的 `/metrics` 输出**退出码 0、无报错**；
+    并新增回归用例 `TestMetricsBuildInfoExpositionFormat`（`speedmq-test/test/unit/management`）锁定该格式。
+  - **未复跑**：修复后未再用真实 Prometheus 复跑"抓取目标 `up`"，故此处只声明"输出已通过官方解析器"，**不**声明"目标 up 实测为 1"。

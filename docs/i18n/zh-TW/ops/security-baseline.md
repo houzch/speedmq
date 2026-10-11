@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] `administrator` 標籤僅授予極少數維運帳號
 
-### A-4. `remote_access`：限制帳號僅本機登入 【未驗證（同機無法模擬遠端來源）】
+### A-4. `remote_access`：限制帳號僅本機登入 【已驗證（2026-10-10，本機 + Docker 容器）】
 
 - **為什麼**：對齊 RabbitMQ，內建 `guest` 預設僅允許本機登入；對外部署時應確保特權帳號的來源受限。
 - **怎麼做 / 定義（重要限制）**：
@@ -78,7 +78,11 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
     依據 `internal/broker/observe.go` 的 `UpsertUser` 註解與實測 `meta/state.json` 中
     `"remote_access":true`。也就是說 **API 目前無法把某個帳號限制為僅本機**。
 - **如何驗證**：從**另一台主機**（非 `127.0.0.1`）用該帳號連線，應被 403；本機連線應成功。
-  **【未驗證】**：本機環境無法構造真實遠端來源，未實測。
+  **【已驗證（2026-10-10，本機 + Docker 容器）】** 本機迴環 `127.0.0.1:5676` 下 `localonly`（`remote_access:false`）登入**成功**；
+  在 `python:3.12-slim` 容器內經**宿主 LAN IP** 連線（`localonly@192.168.124.2:5676`）被 **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`，broker 日誌記錄 `认证失败 ... remote=192.168.124.2:...`；
+  `remoteok`（`remote_access:true`）同一來源登入**成功**；經管理 API 新建的 `apiuser` 同一來源也**成功**
+  （印證「API 建號預設放開遠端」：其首次嘗試被拒的是 **vhost 權限**那條 `ACCESS_REFUSED`，補權限後即 `LOGIN OK`）。
 - [ ] 特權帳號的來源限制已依上述定義評估（注意 API 建立帳號預設開放遠端）
 
 ---
@@ -224,7 +228,7 @@ services:
 - [ ] A-1 預設帳號已修改/已刪除 【已驗證流程】
 - [ ] A-2 業務帳號最小權限（正規表達式），無管理員標籤 【已驗證 403 路徑】
 - [ ] A-3 `administrator` 標籤僅授予維運帳號 【已驗證隱含權限定義】
-- [ ] A-4 特權帳號來源限制已評估（注意 API 建立帳號預設開放遠端）
+- [ ] A-4 特權帳號來源限制已評估（注意 API 建立帳號預設開放遠端）【已驗證 remote_access 生效】
 - [ ] B-1 對外連接埠啟用 TLS，設定錯誤即拒絕啟動 【已驗證】
 - [ ] B-2 `min_version` ≥ 1.2 【已驗證】
 - [ ] B-3 需要 mTLS 的連接埠設定 `require_and_verify` + `ca_file`

@@ -63,7 +63,7 @@ data/
 
 - 集群模式下 Raft 持久化文件**直接放在 `meta/` 下**（`raft.state` / `raft.log` / `snapshot.json`），
   **不存在 `meta/raft/` 子目录**。依据：`internal/raft/log.go` 的文件名常量 + `internal/broker/cluster.go`
-  里 `Dir: filepath.Join(b.cfg.DataDir, "meta")`。**【集群布局未实测】**（本机只跑了单机实例）。
+  里 `Dir: filepath.Join(b.cfg.DataDir, "meta")`。**【已验证（2026-10-10，本机 Docker Desktop 3 节点集群）】** —— 集群节点卷备份内容直接可见 `meta/raft.log`、`meta/raft.state`、`meta/*.seeded`（未见 `meta/raft/` 子目录）。
 - 目录名**不是原始 vhost / 队列名**，而是 `store.SafeDirName` 编码：加前缀 `q_`，非 `[A-Za-z0-9._-]` 字节按 `%XX` 转义。
   实测：vhost `/` → 目录 `q_%2F`，队列 `persist.q` → 目录 `q_persist.q`。
   这样设计是为避免路径穿越与 Windows 保留设备名（`con`/`nul` 等）。
@@ -81,6 +81,8 @@ data/
   实测（见 `backup-restore.md` §6）：进程停止后重启，durable 队列的 5 条持久消息**全部恢复**，
   日志出现 `已从磁盘恢复队列消息 ... messages=5`。
 
+**【已验证（2026-10-10，本机）】** 跨大版本读取已实测：用 tag `v1.1.0` 写入的 durable 队列数据在 `1.1.05` 下原样恢复（命令与输出见 §5）。
+
 ### 4.2 配置里 `vhosts` / `users` 的口径（升级时最容易踩的坑）
 
 - 二者**只在首次引导时生效**：首次启动会把配置里的 vhosts/users 写进元数据并落下标记文件
@@ -89,6 +91,9 @@ data/
   请用管理 API 或 `speedmqctl`。
 - 反过来，升级**不会**用配置覆盖已有账号：运行期改过的口令不会被重启打回配置里的旧值，
   运行期删掉的账号也不会复活。依据：`cluster.go` 的播种标记逻辑；README M8-4 / M8-7。
+
+**【已验证（2026-10-10，本机）】** 运行期改动确实不被配置覆盖：升级前经管理 API 把 `guest` 口令改为 `rotated`，
+用 `1.1.05` + 同一 `data_dir` 重启后，`guest/guest`（配置里的旧口令）返回 **401**、`guest/rotated` 返回 **200**。
 
 ### 4.3 段轮转与磁盘回收
 
@@ -99,7 +104,11 @@ data/
 
 ## 5. 二进制升级（裸机）
 
-> 本机**未跨版本真机演练**（仓库当前只有一个版本 `1.0.0`，无可升级的旧二进制）。以下步骤为本仓库已具备能力的**同版本重放验证 + 通用流程**，跨版本部分标注 **【未验证】**。
+> **【已验证（2026-10-10，本机）】** 跨大版本真机演练：用 tag `v1.1.0` 构建的旧二进制写入
+> durable 交换机/队列/绑定 + 5 条持久消息 + vhost/账号/权限/策略并运行期改口令；停进程后改用当前 `1.1.05`
+> 二进制 + **同一 `data_dir` + 同一端口**启动 —— 进程正常起、`/api/queues` 对象与消息数一致、真实 AMQP
+> 客户端取回全部 5 条持久消息、`/metrics` 报 `speedmq_build_info{version="1.1.05"}`。
+> 以下步骤仍为通用流程，可套用于任意相邻版本；**降级**见 §8。
 
 ### 5.1 步骤
 
@@ -162,7 +171,11 @@ docker compose logs -f --tail 100
 > ```
 
 数据持久化依赖 compose 的**命名卷** `speedmq-data`，容器重建不丢数据（M4 起真正落盘）。
-升级前若需备份卷内容，等价于备份 `/var/lib/speedmq`（见 `backup-restore.md` §3.2）。**【镜像升级未实测】**（本机未跑 Docker）。
+升级前若需备份卷内容，等价于备份 `/var/lib/speedmq`（见 `backup-restore.md` §3.2）。
+
+> **【已验证（2026-10-10，本机 Docker Desktop）】** 已做真实镜像升级演练：本地构建旧镜像 `speedmq:1.1.0-old`（git tag `v1.1.0`）与新镜像 `speedmq:1.1.05-new`（当前源码），用单机 compose 起旧镜像 → 建 durable 队列 `persist.q` 并发布 5 条持久消息（`delivery_mode=2`）→ `docker compose down`（**不加 `-v`**，命名卷 `speedmq-data` 保留）→ compose 的镜像 tag 换成新镜像后 `docker compose up -d`。
+> 结果：新容器正常起、启动日志出现 `已从磁盘恢复队列消息 ... queue=persist.q messages=5`、`/metrics` 报 `speedmq_build_info{version="1.1.05"}`、`/api/overview` 的 `queue_totals.messages=5` 与队列 `persist.q` 的 `messages=5` 升级前后一致，且真实 AMQP 客户端（`rabbitmq/amqp091-go`）逐条取回全部 5 条持久消息（`deliveryMode=2`）。
+> 注：`v1.1.0` 是改名前的 `speedmq` 品牌镜像（二进制 `speedmqd`、指标 `speedmq_build_info`、默认数据目录 `/var/lib/speedmq`），与现版命名不同；演练中以配置 `data_dir=/var/lib/speedmq` 为准、并为命名卷预置属主（旧镜像内无该可写路径）。这不影响"换 tag 重建容器、命名卷数据不丢"的结论。
 
 ---
 
@@ -194,8 +207,19 @@ docker compose logs -f --tail 100
    升级期间请避免同时 `add_member` / `remove_member`。
 5. 升级完成后核对 `GET /api/cluster` 的 `object_totals` 与升级前一致。
 
-> **【未验证】** 本机未做真实集群的滚动升级演练（集群路径与容器均未跑）；上述顺序来自消息中间件
-> 与 Raft 的通用约束以及本仓库 `pause_minority` / 成员变更的实现事实，不是本机实测结论。
+> **【已验证（2026-10-10，本机 Docker Desktop 3 节点集群）】** 已做真实集群的**跨版本**滚动升级演练：基线为本地构建的
+> `speedmq:1.1.0-old`（git tag `v1.1.0`），逐节点（n1 → n2 → n3，一次一个：先停、再备份其命名卷、再换镜像启动）升级到当前 `1.1.05`
+> （本地构建 `speedmq:1.1.05-new`，compose 用逐节点 override 切镜像）。全程集群始终保有 leader 与多数派——停当前 leader 时约 0.6 s 选出新 leader、
+> `pause_minority` 未触发暂停、停机期间无外部中断；升级后 `GET /api/cluster` 的 `object_totals` 与升级前一致（`queues:1`），
+> 3 副本仲裁队列 `qroll` 的 25 条持久消息计数不变且可逐条读回，另发布 5 条新消息后共 30 条可全部取回。
+> 上述顺序仍成立于 Raft 的通用约束，本次演练覆盖 3 节点场景。**【已验证（2026-10-10，本机 Docker Desktop）2 节点停 1 个即失去多数派】** 另起一个最小 2 节点集群（n1/n2，各自 `peers` 只含这两台，`partition_policy=pause_minority`）实测：两节点均在线时 `GET /api/cluster` 为 `has_quorum=true / paused=false`（n1 leader、n2 follower）；`docker stop` 掉 n2 后，n1 在约 2 s 内变为 `has_quorum=false / paused=true` —— 即停 1 个投票成员就失去多数派、`pause_minority` 暂停服务，**印证 2 节点不具备滚动升级能力**；`docker start` 恢复 n2 后 n1 在约 2 s 内回到 `has_quorum=true / paused=false`（服务自动恢复）。
+
+> **【已验证（2026-10-11，本机 Docker Desktop 3 节点集群）】网络分区下的滚动升级已实测**（`v1.1.0` → `1.1.05` 跨版本，分区用双网络拓扑：节点间 Raft RPC 只走静态 IP 的 `cluster-net`，客户端/管理面走 `client-net`，`docker network disconnect/connect` 切分区）：
+> - **分区 follower**：多数派侧在分区期间持续保有 quorum、正常发布/消费，并在分区持续状态下完成一个多数派节点的"停→换镜像→起→追平"；混合版本（1.1.0 + 1.1.05）集群可服务。恢复分区后被隔离节点（旧版本）重新加入并追平，消息按唯一 ID 集合对账 35/35 无丢失。
+> - **分区 leader**：多数派约 **630 ms** 选出新 leader；被隔离旧 leader 保持 `role=leader` 但 `has_quorum=false / paused=true`（`pause_minority` 生效，不主动抬任期）；分区中升级多数派侧另一节点成功；恢复后旧 leader 重新加入，无 split-brain、无数据分叉。
+> - **无 PreVote 的预期行为（如实记录）**：被隔离 follower 立即反复竞选、任期约每 2 s +2（元数据与队列两个 Raft 组交替抬升）；恢复瞬间以高任期**抢主**（实测 1.4 s 内当选）——有 leader 切换扰动但无正确性问题。
+> - **两个运维坑**：① `peers` 若用主机名且容器同时挂第二张可达网络，Raft 流量会绕路造成"假分区"（被隔离节点一分多钟仍 `has_quorum=true`）——节点间 RPC 必须只走一张网（peers 直指该网静态 IP）；② 恢复时 `docker network connect` 必须带 `--ip <原IP>`，否则节点拿到新 IP 后多数派仍拨旧地址，被隔离节点带落后日志以膨胀任期反复竞选（实测把集群 term 从 320 拖到 488、元数据 commit 从 13 冲到 97），并可能出现 leader `quorum=true` 却短暂 `paused=true` 的瞬态。
+> - 分区期间少数派侧管理 API 可读（便于观测），AMQP 发布被拒（`pause_minority` 生效）。
 
 ---
 
@@ -208,5 +232,5 @@ docker compose logs -f --tail 100
 - **在线插件/协议热升级**：插件随内核编译进来（A 形态）或按配置 `spawn` 拉起（B 形态），
   升级内核 = 重启进程；**没有**原地热替换二进制的机制。
 - **存储引擎原地迁移**：段轮转/索引压缩是运行期后台行为，**没有**独立的"数据迁移/压缩"命令。
-- **真实网络下的集群升级**：本仓库只做了缩比混沌（进程级 kill），**未做**网络分区、磁盘写满下的升级演练。
+- **磁盘写满下的集群升级**：**未验证**。（网络分区下的滚动升级已于 2026-10-11 实测，见 §7 末尾注记。）
 - 本文档**未包含**任何 SpeedMQ 与其他 broker（RabbitMQ）之间的数据搬运验证。

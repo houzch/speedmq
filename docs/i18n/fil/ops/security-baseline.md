@@ -69,7 +69,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] Ang `administrator` tag ay ibinibigay lamang sa napakakaunting ops account
 
-### A-4. `remote_access`: paglimita sa account na lokal na pag-login lamang 【hindi pa na-verify (hindi kayang gayahin ang remote source sa parehong makina)】
+### A-4. `remote_access`: paglimita sa account na lokal na pag-login lamang 【na-verify na (2026-10-10, makinang ito + Docker container)】
 
 - **Bakit**: Naka-align sa RabbitMQ, ang built-in na `guest` ay pinapayagan lamang ang lokal na pag-login bilang default; sa deployment na nakaharap sa labas, dapat siguraduhing limitado ang pinagmulan ng privileged account.
 - **Paano / pagtrato (mahalagang limitasyon)**:
@@ -77,8 +77,12 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **Ang account na ginawa sa pamamagitan ng management API / `speedmqctl` ay laging `remote_access=true`** (pinapayagan ang pag-login mula sa kahit anong pinagmulan)——
     base sa `UpsertUser` comment sa `internal/broker/observe.go` at sa aktwal na nasubok sa `meta/state.json` na
     `"remote_access":true`. Ibig sabihin, **sa kasalukuyan ay hindi kayang limitahan ng API ang isang account sa lokal lamang**.
-- **Paano i-verify**: Mula sa **ibang host** (hindi `127.0.0.1`), kumonekta gamit ang account na iyon; dapat makatanggap ng 403; ang lokal na koneksyon ay dapat magtagumpay.
-  **【hindi pa na-verify】**: Hindi kayang bumuo ng tunay na remote source ang kapaligiran ng makinang ito, kaya hindi pa naisagawa.
+- **Paano i-verify**: Kumonekta gamit ang account na iyon mula sa **pinagmulang hindi `127.0.0.1`**; dapat makatanggap ng 403; ang lokal (loopback) na koneksyon ay dapat magtagumpay.
+  **【na-verify na (2026-10-10, makinang ito + Docker container)】** Sa makinang ito, ang pag-login ng `localonly` (`remote_access:false`) sa loopback `127.0.0.1:5676` ay **nagtagumpay**;
+  mula sa loob ng `python:3.12-slim` container, ang koneksyon sa pamamagitan ng **LAN IP ng host** (`localonly@192.168.124.2:5676`) ay **tinanggihan ng 403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`, at naitala ng broker log ang `认证失败 ... remote=192.168.124.2:...`;
+  ang `remoteok` (`remote_access:true`) ay **nagtagumpay** mula sa parehong pinagmulan; ang `apiuser` na bago lang ginawa sa pamamagitan ng management API ay **nagtagumpay** rin mula sa parehong pinagmulan
+  (nagpapatunay na "ang account na ginawa sa API ay bumubukas sa remote bilang default": ang tinanggihan sa una nitong pagsubok ay ang entry na **vhost permission** na `ACCESS_REFUSED`, at pagkatapos idagdag ang permission ay `LOGIN OK`).
 - [ ] Nasuri na ang paglimita sa pinagmulan ng privileged account ayon sa pagtrato sa itaas (tandaan: binuksan ng API ang remote bilang default kapag gumagawa ng account)
 
 ---
@@ -224,7 +228,7 @@ Ang mga sumusunod ay lahat **faktwal na kakulangan**; tahasang kilalanin ang mga
 - [ ] A-1 Napalitan/nabura na ang default account 【na-verify na ang proseso】
 - [ ] A-2 Least privilege ng business account (regex), walang administrator tag 【na-verify na ang 403 path】
 - [ ] A-3 Ang `administrator` tag ay ibinibigay lamang sa ops account 【na-verify na ang pagtrato sa implicit permission】
-- [ ] A-4 Nasuri na ang paglimita sa pinagmulan ng privileged account (tandaan: binuksan ng API ang remote bilang default kapag gumagawa ng account)
+- [ ] A-4 Nasuri na ang paglimita sa pinagmulan ng privileged account (tandaan: binuksan ng API ang remote bilang default kapag gumagawa ng account) 【na-verify na: gumagana ang remote_access】
 - [ ] B-1 Naka-enable ang TLS sa mga port na nakaharap sa labas, at tinatanggihan ang pag-start kapag mali ang config 【na-verify na】
 - [ ] B-2 `min_version` ≥ 1.2 【na-verify na】
 - [ ] B-3 Ang mga port na nangangailangan ng mTLS ay may `require_and_verify` + `ca_file`

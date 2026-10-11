@@ -49,16 +49,29 @@ rule_files:
 
 تستخدم القواعد `job="speedmq"` بشكل موحّد؛ فإن كان اسم job لديك مختلفًا، فاستبدله في كل المواضع.
 
+> **【مُتحقَّق منه (2026-10-10، Docker Desktop المحلي)】** حُمِّل ملف القواعد هذا فعليًا باستخدام Prometheus حقيقي (`prom/prometheus:v2.54.1`):
+> ويسرد `GET /api/v1/rules` مجموعة `speedmq` وتضم 10 قواعد (أسماؤها مطابقة لقواعد الملف واحدًا واحدًا)، ويقيّم محرّك القواعد ويُطلق فعليًا.
+> ⚠️ وأثناء تحميل القواعد ظهر أيضًا: أن `/metrics` في النواة كان فيه **موضعان بصيغة عرض غير قانونية** (موضع وسم `speedmq_build_info`، وتكرار `# HELP`)،
+> ما يجعل Prometheus الحقيقي يرفض **كامل** عملية التجميع (`up==0`). وقد أُصلح الموضعان **في هذه الجولة** (انظر §6)؛ وإطلاق `SpeedMQScrapeDown` قبل الإصلاح
+> كان سلسلة ناجمة عن خلل الصيغة، لا عن خطأ في القواعد.
+
 ### 1.3 لوحة Grafana
 
 يُستورد `grafana-dashboard.json` عبر **Dashboards → Import → رفع JSON**، واختر مصدر بيانات Prometheus لديك عند الاستيراد
 (وتُشار إليه في اللوحة بمتغير `${DS_PROMETHEUS}`). ويُسند متغير القالب `DS_PROMETHEUS` في تعيين الاستيراد.
 
-**【غير مُتحقَّق منه】** لم تُشغَّل نسخة Grafana على هذا الجهاز، ولم يُجرَّ تحقق استيراد حقيقي؛ وقد خضع ملف JSON فقط لتحقق نحوي (14 لوحة، والتحليل ناجح).
+**【مُتحقَّق منه (2026-10-10، Docker Desktop المحلي)】** استُورد فعليًا باستخدام Grafana حقيقي (`grafana/grafana:11.2.0`) عبر HTTP API:
+أُنشئ مصدر بيانات Prometheus أولًا، ثم `POST /api/dashboards/import` (`overwrite=true`)، وأُعيد `uid=speedmq-overview`؛
+وباستدعاء `GET /api/dashboards/uid/speedmq-overview` عاد عدد اللوحات 14، وحُلَّ متغير القالب `DS_PROMETHEUS` إلى مصدر البيانات المُنشأ.
 
 ---
 
 ## 2. مقتطف حقيقي من `/metrics` (دليل)
+
+> ⚠️ عينة هذا القسم مأخوذة من نسخة **قبل الإصلاح**، وفيها سطران بصيغة عرض **غير قانونية**، فيرفض Prometheus الحقيقي بسببهما **كامل** التجميع (انظر §6):
+> ① `speedmq_build_info 1{version=...}` —— يجب كتابة الوسوم **قبل** القيمة (الكتابة الصحيحة `speedmq_build_info{version="..."} 1`)؛
+> ② يظهر في `speedmq_queue_messages_unacknowledged` **سطر `# HELP` ثانٍ** (مطابق بالاسم للمقياس العمومي أعلاه).
+> وقد أُصلح الموضعان في هذه الجولة (2026-10-10)؛ وأُعطيت العينة أدناه بالصيغة **الصحيحة** بعد الإصلاح.
 
 ما يلي هو **المخرج الحقيقي** لـ `/metrics` من نسخة `1.0.0` على هذا الجهاز (وقد أُنشئ طابور durable واحد `persist.q`،
 فظهرت مقاييس per-queue الموسومة بـ `vhost`/`queue`):
@@ -69,7 +82,7 @@ rule_files:
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **سلاسل من عائلتين باسم واحد وبأساس مختلف**: لدى `speedmq_queue_messages_unacknowledged` **كلٌّ من** سلسلة عمومية بلا وسوم
   **و**سلسلة per-queue موسومة؛ أما جانب «الجاهزة» فالعمومي يُسمّى `speedmq_queue_messages`، وper-queue يُسمّى
   `speedmq_queue_messages_ready` (الاسمان غير متماثلين). عند كتابة القواعد استخدم `{queue=~".+"}` لتأخذ عائلة per-queue فقط بوضوح.
+  ⚠️ لكن `# HELP`/`# TYPE` للاسم المقياس نفسه **يُعلَن مرة واحدة فقط**: فقد سبق إعلانه مرة في كل موضع من موضعين، فحكم Prometheus الحقيقي بأنه
+  `second HELP line for metric name` و**رفض كامل التجميع** (أُصلح في هذه الجولة، انظر §6).
 - **ضبط `speedmq_process_memory_bytes`**: التنفيذ هو `MemStats.HeapInuse + StackInuse` (**الذاكرة قيد الاستخدام**)،
   بنفس ضبط تحديد عتبة ذاكرة النواة؛ لكن نص `# HELP` الخاص به مكتوب «عدد بايتات الذاكرة المطلوبة من نظام التشغيل»، و**النص لا يوافق الضبط الفعلي**،
   وهذا المستند هو المرجع.
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. بنود أخرى **غير مُتحقَّق منها**
+## 6. حالة التحقق للبنود الأخرى
 
-- لوحة Grafana **لم يُتحقق استيرادها في Grafana حقيقي** (واكتُفي باجتياز التحقق النحوي لـ JSON).
-- قواعد التنبيه **لم يُتحقق تحميلها في Prometheus/Alertmanager حقيقي** (فلم تُشغَّل Prometheus على هذا الجهاز).
-  غير أن **أسماء المقاييس في القواعد قُوبلت بندًا بندًا مع المخرج الحقيقي لـ `/metrics`** (انظر §2/§3)، فليس هناك مشكلة «اسم مكتوب خطأً يؤدي إلى عدم الإطلاق أبدًا».
+- **【مُتحقَّق منه (2026-10-10، Docker Desktop المحلي)】** لوحة Grafana تحقّق استيرادها في Grafana حقيقي 11.2.0 (14 لوحة، ونجح تعيين `DS_PROMETHEUS`)، انظر §1.3.
+- **【مُتحقَّق منه + أُصلح الخلل (2026-10-10، Docker Desktop المحلي)】** قواعد التنبيه حُمِّلت وصارت قابلة للاستخدام في Prometheus حقيقي (`prom/prometheus:v2.54.1`):
+  ويسرد `GET /api/v1/rules` مجموعة `speedmq` وتضم 10 قواعد، ويقيّم محرّك القواعد ويُطلق فعليًا (انظر §1.2).
+  - **في هذه الجولة اكتُشف بفضل التحقق الحقيقي وأُصلح موضعان لخلل صيغة عرض `/metrics` في النواة** (`internal/management/metrics.go`):
+    ① `speedmq_build_info` كتب الوسوم بعد القيمة (`name 1{labels}`)، والصحيح `name{labels} 1`؛
+    ② `speedmq_queue_messages_unacknowledged` أُعلن فيه سطر `# HELP`/`# TYPE` ثانٍ مكرّر.
+    **أيٌّ منهما يجعل Prometheus الحقيقي يرفض كامل التجميع** (`up=0`، وإطلاق `SpeedMQScrapeDown` «سلسلة خلل الصيغة»، لا خطأ في اسم القاعدة)——
+    ولم يُكتشف ذلك سابقًا لأن التحقق لم يُجرَ قط بجهة تجميع حقيقية.
+  - **دليل ما بعد الإصلاح**: أعطى `promtool check metrics` (محلّل Prometheus الرسمي v2.54.1) على مخرج `/metrics` بعد الإصلاح **رمز خروج 0 وبلا أخطاء**؛
+    وأُضيفت حالة اختبار انحدار `TestMetricsBuildInfoExpositionFormat` (`speedmq-test/test/unit/management`) تثبّت هذه الصيغة.
+  - **لم يُعَد التشغيل**: لم يُعَد تشغيل «تجميع الهدف `up`» بـ Prometheus حقيقي بعد الإصلاح، لذا نكتفي هنا بإعلان «المخرج اجتاز المحلّل الرسمي»، و**لا** نعلن «الهدف up مُختبَر عند 1».

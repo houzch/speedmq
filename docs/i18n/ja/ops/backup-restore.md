@@ -1,7 +1,10 @@
 # SpeedMQ バックアップと復元
 
 > 本書の「実測」結論はすべて **Windows + PowerShell 5.1** 上での 1 回の実運用ドリル（一時的な `data_dir` と一時ポート）によるものです。
-> ドリルのコマンドと主要な出力は §6 にそのまま貼り付けています。**【未検証】** の部分は明示的に注記します（クラスタのバックアップ/復元、Docker ボリュームのバックアップなど）。
+> ドリルのコマンドと主要な出力は §6 にそのまま貼り付けています。**【未検証】** の部分は明示的に注記します（真の物理マシンの電源断など）。
+
+> **【検証済み（2026-10-11、本機 Docker Desktop 3 ノードクラスタ）】** プロセスの強制 kill（`docker kill`）と復元中の並行書き込みは実測済みで、
+> 記録は §6.2 / §6.3 を参照してください；§2.3 の「電源断」の記述と §7 の検証状態リストも同期更新済みです。
 
 ---
 
@@ -45,7 +48,12 @@
   （fsync はしない）。publisher confirm もこの後に返されます。
 - 実測：永続メッセージを publish した**直後**にセグメントファイルサイズを確認すると、既にデータが見えています（`t=0ms seg=832`）。つまり「OS から見えるバイト」と confirm はほぼ同期しています。
 - **注意**：これは「OS バッファに届いた」ことのみを示し、**プロセスを強制 kill しても失われません**（プロセスが kill されても OS バッファは失われない）が、**電源断では失われます**。
-  「confirm を受信した時点で fsync によりディスクに書き込まれている」ようにしたい場合は、`storage.fsync` を `batch` / `always` に変更してください。**【電源断シナリオは未実測】**
+  「confirm を受信した時点で fsync によりディスクに書き込まれている」ようにしたい場合は、`storage.fsync` を `batch` / `always` に変更してください。
+  **【検証済み（2026-10-11、本機 Docker Desktop 3 ノードクラスタ）】** 書き込み中の `docker kill`（SIGKILL）によるノード強制 kill は、両 fsync 設定とも confirm 済みメッセージを失わないことを実測：
+  `fsync: os` で follower を kill（5 万件すべて confirm、突合 missing=0）、`fsync: always` で仲裁キュー leader を kill（20 万件すべて confirm、
+  missing=0；さらに 1,355 件のディスク書き込み済み・confirm 未返却のメッセージが再配信された。at-least-once セマンティクスで許容され、消費側がメッセージ ID で重複除去すれば冪等）。
+  補足：デフォルト設定での publish 中に `wsl --shutdown` で Docker VM 全体を強制停止（OS バッファを失うマシン全体の電源断に近似）したところ、復旧後に 69,669 件の confirm 済みメッセージを
+  ID ごとに突合して missing=0。**依然未検証**：真の物理マシンの電源断（ホストの電源喪失、ディスクキャッシュ層）は本機ではシミュレート不可。
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **各ノードがそれぞれ自分の `data_dir` をバックアップします**（メタデータは Raft で全体に複製され、メッセージデータは Owner ノードに、クォーラムキューのレプリカは各自の Raft ディレクトリにあります）。
 - 停止順序：**一度に 1 ノードのみ停止**してください。複数の投票メンバーを同時に停止しないでください（`upgrade.md` §7.2 を参照）。
 - **クラスタ全体で一貫したスナップショット**を得るには、全ノードを順に停止してからそれぞれコピーする必要があります。本番では「ノードごとに停止/コピー/起動」がより一般的です。
-- **【未検証】** 本機では実際のクラスタバックアップ/復元ドリルを行っていません。
+- **【検証済み（2026-10-10、本機 Docker Desktop の 3 ノードクラスタ）】** 3 ノード compose クラスタでノードごとに「停止/コピー/起動」を実施：各ノードの名前付きボリュームを一時 alpine コンテナでパッケージ
+  （`docker run --rm -v <ボリューム>:/data -v <ホストディレクトリ>:/backup alpine tar czf ...`）、パッケージには `meta/raft.log`、`meta/raft.state`、`meta/*.seeded`、`quorum/...` が含まれました；
+  復元後、そのノードは既存メンバーとして再参加し追いつくことができました（§4.2 を参照、証拠は `upgrade.md` §7.2 と同じ）。
 
 ### 3.3 Docker（名前付きボリューム）
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【未検証】**（本機では Docker を実行していません）。
+> **【検証済み（2026-10-10、本機 Docker Desktop）】** このコマンドを 3 ノードクラスタの名前付きボリューム上で実際に実行しました（パッケージには `meta/`、`quorum/` が含まれる）。
+> そしてこれに基づき単一ノードのボリューム復元ドリルを完了しました（§4.2 を参照）。
 
 ---
 
@@ -112,7 +123,8 @@ Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 - 単一ノードの復元：§4.1 に従ってそのノードの `data_dir` を復元してから起動すると、既存メンバーとして再参加し Raft ログに追いつきます。
 - クラスタ全体の復元：**まず多数派ノード（投票メンバーの半数以上）を復元して起動**し、クラスタが leader を選出できるようにしてから、残りのノードを復元します。
-- **【未検証】** クラスタ復元は未実測です。
+- **【検証済み（2026-10-10、本機 Docker Desktop の 3 ノードクラスタ）】** 「n3 を停止 → そのボリュームを空にする → §3.3 のバックアップで上書き → 再起動」を実測：
+  n3 は follower として再参加し leader に追いつきました（`commit_index == last_applied`）。クォーラムキューのメッセージ数とメンバーテーブルは不変でした。
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **WARN は一切なし**。WARN は「インデックスに決済済みレコードが残っている」シーンでのみ発生することが分かります（§7 を参照）。
 
+### 6.2 書き込み中のノード強制 kill（`docker kill`、2026-10-11）
+
+3 ノードクラスタ（`partition_policy=pause_minority`）、3 レプリカ仲裁キュー `pwr.q`；クライアントは publisher confirms を有効化し、各メッセージに一意 ID を付与、confirm 済み ID をディスクに保存して突合します。
+
+**ラウンド 1（`fsync: os`、follower n3 を kill）**：50,000 件の publish 中に `docker kill pwr-n3`：
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**ラウンド 2（`fsync: always`、仲裁 leader n1 を kill）**：200,000 件の publish 中に `docker kill pwr-n1`：
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**ラウンド 1b（`fsync: os`、`wsl --shutdown` で Docker VM 全体を強制停止、マシン全体の電源断に近似）**：publish 中に強制停止、ホスト側の confirm 記録は 69,669 行；
+VM 再作成・クラスタ復旧後：
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+注意：`wsl --shutdown` は「OS バッファを失う」ことの近似に過ぎず、**物理マシンの電源断とは等価ではありません**（ホスト電源喪失、ディスクキャッシュ層はカバーされず、依然未検証）。
+
+### 6.3 復元中の並行書き込み（2026-10-11）
+
+`fsync: always` クラスタで：follower n2 を `docker stop` → 50,000 件を滞留 publish（すべて confirm）→ `docker start pwr-n2`、
+**同じ秒から**多数派側ノードへ 20,000 件を publish 継続：
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+結論：追いつき中の並行書き込みは失われず、壊れず、カウントは正確でした。
+
 ---
 
 ## 7. 既知の問題と制限（正直に記載）
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` は電源断で失わないことを保証しない**：「confirm 即ディスク書き込み」にしたい場合は `batch` / `always` を使用してください。
 4. **パスワードが平文**：`meta/state.json` 内のユーザーパスワードは**平文**です（実測で `"password":"drillpass"` が確認できる）——
    そのためバックアップファイルは**機密データとして扱う必要があります**（アクセス制御、暗号化保存）。詳細は `security-baseline.md` を参照。
-5. **【未検証】** クラスタのバックアップ/復元、Docker ボリュームのバックアップ/復元、電源断シナリオ、復元中の並行書き込み。
+5. **【検証状態】** プロセスの強制 kill（書き込み中の仲裁 leader の kill を含む、`fsync: os`/`always` 両設定）と復元中の並行書き込み（追いつき中に約 4,000~6,000 件/秒で publish 継続、4 秒でスナップショット追いつき、カウント正確、突合 missing=0）—— **【検証済み（2026-10-11、本機 Docker Desktop 3 ノードクラスタ）】**；`wsl --shutdown` で Docker VM 全体を強制停止（マシン全体の電源断に近似）した単一サンプルでは confirm 済みメッセージの損失ゼロ、ただし**真の物理マシンの電源断は依然未検証**；クラスタのノードごとのバックアップ/復元、Docker 名前付きボリュームのバックアップ/復元 —— **【検証済み（2026-10-10、本機 Docker Desktop 3 ノードクラスタ）】**（§3.2 / §3.3 / §4.2 を参照）。
+6. **付帯観察（2026-10-11 ドリルで実際に記録、非ブロッキング）**：① 仲裁 leader 強制 kill 後、follower の publish 転送経路が約 76 秒間 dead leader を指し続けた（その間の新規 publish は nack、クライアントの再送はすべて成功、confirm 済みメッセージの損失なし）—— 可用性に揺らぎの窓があります；② 大規模キュー（43.8 万件）の一括ドレインで約 153 倍の再配送増幅を観察（at-least-once セマンティクスは成立し、最終的に正確にゼロまで消化）；③ 大規模キューの追いつき中に follower 経由で consumer を起動すると `i/o timeout` が偶発、leader 直結は正常。

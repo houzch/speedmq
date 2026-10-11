@@ -60,7 +60,7 @@ data/
 **Tandaan (dalawang punto na taliwas sa intuwisyon, batay sa code/aktwal na pagsusubok)**:
 
 - Sa cluster mode, ang Raft persistence files ay **direktang nasa ilalim ng `meta/`** (`raft.state` / `raft.log` / `snapshot.json`),
-  at **walang `meta/raft/` subdirectory**. Base: ang filename constants sa `internal/raft/log.go` + ang `Dir: filepath.Join(b.cfg.DataDir, "meta")` sa `internal/broker/cluster.go`. **【hindi pa nasubok ang cluster layout】** (single-node instance lang ang pinatakbo sa makinang ito).
+  at **walang `meta/raft/` subdirectory**. Base: ang filename constants sa `internal/raft/log.go` + ang `Dir: filepath.Join(b.cfg.DataDir, "meta")` sa `internal/broker/cluster.go`. **【na-verify na（2026-10-10, 3-node cluster ng Docker Desktop sa lokal na makina）】** —— Direktang nakikita sa nilalaman ng backup ng volume ng cluster node ang `meta/raft.log`, `meta/raft.state`, `meta/*.seeded` (hindi nakita ang `meta/raft/` subdirectory).
 - Ang pangalan ng directory ay **hindi ang orihinal na vhost / queue name**, kundi ang encoding ng `store.SafeDirName`: nagdadagdag ng prefix na `q_`, at ang mga byte na hindi `[A-Za-z0-9._-]` ay ini-escape gamit ang `%XX`.
   Aktwal na nasubok: vhost `/` → directory `q_%2F`, queue `persist.q` → directory `q_persist.q`.
   Dinisenyo ito upang maiwasan ang path traversal at mga reserved device name ng Windows (`con`/`nul` atbp.).
@@ -78,6 +78,8 @@ data/
   Aktwal na nasubok (tingnan ang `backup-restore.md` §6): pagkatapos ng pagtigil at pag-restart ng process, **lahat na-recover** ang 5 persistent messages ng durable queue,
   at lumitaw sa log ang `已从磁盘恢复队列消息 ... messages=5`.
 
+**【na-verify na（2026-10-10, lokal na makina）】** Nasubok na ang pagbasa sa pagitan ng malalaking bersyon: ang data ng durable queue na isinulat gamit ang tag `v1.1.0` ay naibabalik nang tulad ng dati sa ilalim ng `1.1.05` (mga command at output, tingnan ang §5).
+
 ### 4.2 Ang pagtrato sa `vhosts` / `users` sa config (ang pinakamadaling mapitakang bitag sa upgrade)
 
 - Ang dalawa ay **epektibo lamang sa unang bootstrap**: sa unang pag-start, isusulat ang vhosts/users sa config papunta sa metadata at gagawa ng marker files na
@@ -86,6 +88,8 @@ data/
   gamitin ang management API o `speedmqctl`.
 - Sa kabaligtaran, **hindi** i-override ng upgrade ang mga umiiral na account gamit ang config: ang password na binago sa runtime ay hindi ibabalik ng restart sa lumang halaga sa config,
   at ang account na binura sa runtime ay hindi na muling bubuhayin. Base: ang seeding marker logic sa `cluster.go`; README M8-4 / M8-7.
+
+**【na-verify na（2026-10-10, lokal na makina）】** Totoong hindi nao-override ng config ang mga pagbabago sa runtime: bago ang upgrade ay binago sa pamamagitan ng management API ang password ng `guest` tungong `rotated`; pagkatapos i-restart gamit ang `1.1.05` + parehong `data_dir`, ang `guest/guest` (lumang password sa config) ay nagbabalik ng **401** at ang `guest/rotated` ay nagbabalik ng **200**.
 
 ### 4.3 Segment rotation at disk reclaim
 
@@ -96,7 +100,7 @@ data/
 
 ## 5. Binary upgrade (bare metal)
 
-> **Walang cross-version na drill sa tunay na makina** sa makinang ito (isang bersyon lang ang kasalukuyang nasa repository na `1.0.0`, walang lumang binary na mai-upgrade). Ang mga hakbang sa ibaba ay **same-version replay verification + pangkalahatang proseso** ng mga kakayahang mayroon na ang repository na ito, at ang cross-version na bahagi ay nakamarkahan ng **【hindi pa na-verify】**.
+> **【na-verify na（2026-10-10, lokal na makina）】** Cross-major-version na drill sa tunay na makina: ang lumang binary na binuo gamit ang tag `v1.1.0` ay nagsulat ng durable exchange/queue/binding + 5 persistent na mensahe + vhost/account/permission/policy at binago ang password sa runtime; pagkatapos itigil ang process, sinimulan gamit ang kasalukuyang binary na `1.1.05` + **parehong `data_dir` + parehong port** —— normal na nagsimula ang process, pareho ang object at bilang ng mensahe sa `/api/queues`, nakuha ng tunay na AMQP client ang lahat ng 5 persistent na mensahe, at iniulat ng `/metrics` ang `speedmq_build_info{version="1.1.05"}`. Ang mga hakbang sa ibaba ay nananatiling pangkalahatang proseso, naaangkop sa alinmang magkadikit na bersyon; **downgrade** tingnan ang §8.
 
 ### 5.1 Mga hakbang
 
@@ -159,7 +163,11 @@ docker compose logs -f --tail 100
 > ```
 
 Ang data persistence ay umaasa sa **named volume** na `speedmq-data` ng compose; hindi nawawala ang data kapag muling itinayo ang container (totoong nagsusulat sa disk mula M4).
-Kung kailangang i-backup ang nilalaman ng volume bago ang upgrade, katumbas ito ng pag-backup ng `/var/lib/speedmq` (tingnan ang `backup-restore.md` §3.2). **【hindi pa nasubok ang image upgrade】** (hindi pinatakbo ang Docker sa makinang ito).
+Kung kailangang i-backup ang nilalaman ng volume bago ang upgrade, katumbas ito ng pag-backup ng `/var/lib/speedmq` (tingnan ang `backup-restore.md` §3.2).
+
+> **【na-verify na（2026-10-10, lokal na Docker Desktop）】** Ginawa ang tunay na drill ng image upgrade: lokal na binuo ang lumang image na `speedmq:1.1.0-old` (git tag `v1.1.0`) at ang bagong image na `speedmq:1.1.05-new` (kasalukuyang source), sinimulan ang lumang image gamit ang single-node compose → ginawa ang durable queue na `persist.q` at nag-publish ng 5 persistent na mensahe (`delivery_mode=2`) → `docker compose down` (**hindi nilagyan ng `-v`**, pinanatili ang named volume na `speedmq-data`) → pagkatapos palitan ang image tag sa compose tungong bagong image, `docker compose up -d`.
+> Resulta: normal na nagsimula ang bagong container, lumitaw sa startup log ang `已从磁盘恢复队列消息 ... queue=persist.q messages=5`, iniulat ng `/metrics` ang `speedmq_build_info{version="1.1.05"}`, pareho bago at pagkatapos ng upgrade ang `queue_totals.messages=5` ng `/api/overview` at ang `messages=5` ng queue na `persist.q`, at isa-isang nakuha ng tunay na AMQP client (`rabbitmq/amqp091-go`) ang lahat ng 5 persistent na mensahe (`deliveryMode=2`).
+> Tandaan: ang `v1.1.0` ay ang image ng brand na `speedmq` bago ang pagpapalit ng pangalan (binary `speedmqd`, metric `speedmq_build_info`, default na data directory `/var/lib/speedmq`), naiiba sa pangalan ng kasalukuyang bersyon; sa drill, ang batayan ay ang config na `data_dir=/var/lib/speedmq`, at paunang itinakda ang may-ari para sa named volume (wala ang nasusulatang path na ito sa lumang image). Hindi nito naaapektuhan ang konklusyong "muling pagbuo ng container sa pagpapalit ng tag, hindi nawawala ang data ng named volume".
 
 ---
 
@@ -191,8 +199,15 @@ Walang ibinibigay ang platform side na "one-click rolling upgrade"; kailangang m
    sa panahon ng upgrade, iwasan ang sabay na `add_member` / `remove_member`.
 5. Pagkatapos ng upgrade, i-verify na ang `object_totals` ng `GET /api/cluster` ay kapareho ng bago ang upgrade.
 
-> **【hindi pa na-verify】** Walang tunay na cluster rolling upgrade drill na ginawa sa makinang ito (hindi pinatakbo ang cluster path at container); ang pagkakasunod-sunod sa itaas ay nagmula sa pangkalahatang constraint ng message middleware
-> at Raft gayundin sa katotohanan ng implementasyon ng `pause_minority` / pagbabago ng member sa repository na ito, at hindi konklusyon mula sa aktwal na pagsusubok sa makinang ito.
+> **【na-verify na（2026-10-10, 3-node cluster ng Docker Desktop sa lokal na makina）】** Ginawa ang tunay na **cross-version** rolling upgrade drill ng isang tunay na cluster: ang baseline ay ang lokal na binuong `speedmq:1.1.0-old` (git tag `v1.1.0`), paisa-isang node (n1 → n2 → n3, isa sa isang pagkakataon: itigil, i-backup ang named volume, palitan ang image at simulan) hanggang sa kasalukuyang `1.1.05` (lokal na binuo `speedmq:1.1.05-new`, binago ng compose ang image gamit ang per-node override). Sa buong proseso ay palaging may leader at majority ang cluster —— nang itinigil ang kasalukuyang leader, mga 0.6 s na naghalal ng bagong leader, hindi nag-trigger ng suspension ang `pause_minority`, at walang panlabas na pagkaantala sa panahon ng pagtigil; pagkatapos ng upgrade, pareho ang `object_totals` ng `GET /api/cluster` sa bago nito (`queues:1`), hindi nagbago ang bilang ng 25 persistent na mensahe ng 3-replica quorum queue na `qroll` at nababasa pabalik nang isa-isa, at pagkatapos mag-publish ng 5 bagong mensahe ay nakukuha ang lahat ng 30.
+> Ang nasa itaas na pagkakasunod-sunod ay nananatiling wasto ayon sa pangkalahatang constraint ng Raft; saklaw ng drill na ito ang 3-node na senaryo. **【na-verify na（2026-10-10, lokal na Docker Desktop）2 node: itigil ang 1, nawawala na ang majority】** Gumawa pa ng minimum na 2-node cluster (n1/n2, ang `peers` ng bawat isa ay naglalaman lamang ng dalawang ito, `partition_policy=pause_minority`) at sinubok: kapag online ang dalawang node, ang `GET /api/cluster` ay `has_quorum=true / paused=false` (n1 leader, n2 follower); pagkatapos ng `docker stop` sa n2, ang n1 ay nagiging `has_quorum=false / paused=true` sa loob ng mga 2 s —— ibig sabihin, ang pagtigil ng 1 voting member ay nagpapawala na ng majority at ipinapahinto ng `pause_minority` ang serbisyo, **na nagpapatunay na ang 2 node ay walang kakayahan sa rolling upgrade**; pagkatapos ng `docker start` upang ibalik ang n2, ang n1 ay bumabalik sa `has_quorum=true / paused=false` sa loob ng mga 2 s (automatikong bumabalik ang serbisyo).
+
+> **【na-verify na（2026-10-11, 3-node cluster ng Docker Desktop sa lokal na makina）】Nasubok na ang rolling upgrade sa ilalim ng network partition** (`v1.1.0` → `1.1.05` cross-version; gumamit ang partition ng dual-network topology: ang inter-node Raft RPC ay dumadaan lamang sa `cluster-net` na may static IPs, ang client/management traffic ay dumadaan sa `client-net`, at ang `docker network disconnect/connect` ang nagpa-flip ng partition):
+> - **Partitioned follower**: pinanatili ng side ng majority ang quorum sa buong panahon ng partition, normal na nag-publish/consume, at nakumpleto ang "itigil → palitan ang image → simulan → catch up" ng isang node ng majority habang nagpapatuloy ang partition; nanatiling serviceable ang mixed-version (1.1.0 + 1.1.05) cluster. Pagkatapos gumaling ang partition, muling sumali at nag-catch up ang isolated node (lumang bersyon); ang reconciliation ng mensahe ayon sa unique-ID set ay 35/35 nang walang nawala.
+> - **Partitioned leader**: naghalal ang majority ng bagong leader sa loob ng humigit-kumulang **630 ms**; pinanatili ng isolated na lumang leader ang `role=leader` ngunit may `has_quorum=false / paused=true` (may bisa ang `pause_minority`, hindi nito kusang itinaas ang term); matagumpay ang pag-upgrade ng isa pang node sa side ng majority sa panahon ng partition; pagkatapos gumaling, muling sumali ang lumang leader nang walang split-brain at walang divergence ng data.
+> - **Inaasahang gawi kapag walang PreVote (tapat na naitala)**: kaagad na paulit-ulit na nag-campaign ang isolated follower, ang term nito ay tumataas nang humigit-kumulang +2 bawat 2 s (salitan ang dalawang Raft group ng metadata at queue); sa sandaling gumaling ay **agawin nito ang leadership** gamit ang mas mataas na term (nahalal sa loob ng 1.4 s sa drill) —— may leader-switch na gulo ngunit walang correctness issue.
+> - **Dalawang operational pitfall**: ① kung gumagamit ang `peers` ng hostnames at ang mga container ay nakakabit din sa pangalawang maabot na network, ang Raft traffic ay lumiliko at nagdudulot ng "false partition" (ang isolated node ay nagpakita pa rin ng `has_quorum=true` pagkalipas ng higit sa isang minuto) —— ang inter-node RPC ay dapat dumadaan sa eksaktong isang network (ang `peers` ay direktang tumuturo sa static IPs ng network na iyon); ② sa panahon ng paggaling, ang `docker network connect` ay dapat may dalang `--ip <original na IP>`, kung hindi ay makakakuha ang node ng bagong IP habang patuloy na tina-dial ng majority ang lumang address, at ang isolated node —— na may dalang luma nang log —— ay paulit-ulit na nag-campaign na may pinalaking term (sa drill ay hinila nito ang cluster term mula 320 hanggang 488 at ang metadata commit mula 13 hanggang 97), at maaaring lumitaw ang pansamantalang estado kung saan ang leader ay nagpapakita ng `quorum=true` ngunit panandalian `paused=true`.
+> - Sa panahon ng partition, nanatiling nababasa ang management API ng side ng minorya (kapaki-pakinabang para sa pagmamasid), habang tinanggihan ang AMQP publishing (may bisa ang `pause_minority`).
 
 ---
 
@@ -205,5 +220,5 @@ Walang ibinibigay ang platform side na "one-click rolling upgrade"; kailangang m
 - **Online plugin/protocol hot upgrade**: ang plugin ay kinokompile kasama ng kernel (form A) o pinapataas gamit ang `spawn` ayon sa config (form B);
   ang pag-upgrade ng kernel = pag-restart ng process; **walang** mekanismo para sa in-place hot replacement ng binary.
 - **In-place migration ng storage engine**: ang segment rotation/index compaction ay runtime background na gawi; **walang** independiyenteng command na "data migration/compaction".
-- **Cluster upgrade sa ilalim ng tunay na network**: scaled-down chaos (process-level kill) lamang ang ginawa ng repository na ito, at **hindi** ginawa ang upgrade drill sa ilalim ng network partition o punong disk.
+- **Cluster upgrade kapag puno ang disk**: **hindi pa na-verify**. (Nasubok na ang rolling upgrade sa ilalim ng network partition noong 2026-10-11; tingnan ang tala sa dulo ng §7.)
 - Ang dokumentong ito ay **hindi naglalaman** ng anumang verification ng data transfer sa pagitan ng SpeedMQ at ibang broker (RabbitMQ).

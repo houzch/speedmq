@@ -15,6 +15,19 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # 手动触发：用于重跑某个已发布 tag 的发布，或 dry-run 演练。
+  # 注意：手动触发时 GITHUB_REF_NAME 是**分支名**（不是 tag），所以必须显式填 `tag`（形如 v1.1.0）。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（形如 v1.1.0）；必须与源码版本号一致'
+        required: false
+        default: ''
+      dry_run:
+        description: '试运行：只跑版本门禁与交叉编译打包，跳过建 Release 与推镜像'
+        type: boolean
+        required: false
+        default: true
 
 # 建 Release 需要 contents: write；推 GHCR 需要 packages: write
 permissions:
@@ -39,13 +52,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 校验 tag 与源码版本号
+        env:
+          # push：GITHUB_REF_NAME 即 tag；手动触发：用输入的 tag（留空则回退到 ref_name）。
+          REF: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          want="${GITHUB_REF_NAME#v}"          # v1.1.0 -> 1.1.0
+          ref="${REF}"
+          want="${ref#v}"                      # v1.1.0 -> 1.1.0
           fail=0
           check() {                            # check 名称 实际值
             if [ "$2" != "${want}" ]; then
-              echo "::error::$1 = '$2'，与 tag ${GITHUB_REF_NAME} 不一致（应为 ${want}）"
+              echo "::error::$1 = '$2'，与 tag ${ref} 不一致（应为 ${want}）"
               fail=1
             else
               echo "OK   $1 = $2"
@@ -105,7 +122,7 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          REF: ${{ github.ref_name }}
+          REF: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           ver="${REF#v}"                       # v1.0.0 -> 1.0.0
@@ -139,6 +156,8 @@ jobs:
   # ---------- 2) 汇总归档 + 校验和 + 创建 Release ----------
   release:
     needs: binaries
+    # dry_run 时跳过：只做版本门禁与交叉编译打包，不建 Release。
+    if: ${{ inputs.dry_run != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -156,17 +175,20 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          gh release create "${GITHUB_REF_NAME}" dist/* \
+          gh release create "${REF}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "SpeedMQ ${GITHUB_REF_NAME}" \
+            --title "SpeedMQ ${REF}" \
             --generate-notes
 
   # ---------- 3) 构建多架构镜像并推到公共仓库（GHCR + 可选 Docker Hub）----------
   # 容器只出 Linux：本项目不提供 Windows 容器镜像
   image:
     needs: verify-version
+    # dry_run 时跳过：不推任何镜像到 GHCR / Docker Hub。
+    if: ${{ inputs.dry_run != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -196,9 +218,10 @@ jobs:
       - name: Build and push
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          REF: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"   # v1.0.0 -> 1.0.0
+          version="${REF#v}"               # v1.0.0 -> 1.0.0
           minor="${version%.*}"            # 1.0.0 -> 1.0
           major="${version%%.*}"           # 1.0.0 -> 1
 

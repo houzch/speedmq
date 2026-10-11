@@ -16,6 +16,16 @@ Recursos já disponíveis: persistência (log de segmentos + níveis de fsync + 
 
 ***
 
+## Critérios de desempenho e testes
+
+Este projeto **não oferece qualquer compromisso público de desempenho**. As **conclusões sobre cluster e desempenho** neste README e nos relatórios relacionados baseiam-se todas num **ambiente reduzido em um único host** (Docker Desktop / WSL2 numa única máquina, 3 nós de 4C4G cada, `fsync=batch`, filas quórum com 3 réplicas) e numa **única execução**, sem mediana:
+
+- os números servem apenas para **comparação relativa dentro do mesmo ambiente** (por exemplo, antes/depois de uma otimização, classic vs quorum); **os valores absolutos não devem ser extrapolados** para produção ou outro hardware;
+- num único host, o tráfego entre nós passa por loopback, portanto o **custo de encaminhamento entre nós é subestimado**; numa rede real com várias máquinas, o custo relativo é maior;
+- se precisar de planejamento de capacidade para produção, realize seus próprios testes de carga no hardware e na rede de destino.
+
+***
+
 ## Início rápido
 
 ### Opção 1: Docker (recomendado)

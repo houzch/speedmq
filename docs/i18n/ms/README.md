@@ -16,6 +16,16 @@ Keupayaan yang sedia ada: kegigihan (log segmen + gred fsync + pemulihan ranap),
 
 ***
 
+## Kayu ukur prestasi dan pengujian
+
+Projek ini **tidak memberikan sebarang janji prestasi kepada umum**. **Kesimpulan tentang kluster dan prestasi** dalam README ini dan laporan berkaitan semuanya berdasarkan **persekitaran diperkecil pada satu hos** (Docker Desktop / WSL2 pada satu mesin, 3 nod masing-masing 4C4G, `fsync=batch`, baris gilir kuorum 3 replika) dan **satu pusingan** tanpa mengambil median:
+
+- angka-angka hanya untuk **perbandingan relatif dalam persekitaran yang sama** (contohnya sebelum/selepas pengoptimuman, classic vs quorum); **nilai mutlak tidak boleh diekstrapolasi** ke produksi atau perkakasan lain;
+- pada satu hos, trafik antara nod melalui loopback, jadi **kos penghantaran antara nod dipandang rendah**; pada rangkaian sebenar berbilang mesin, kos relatifnya lebih tinggi;
+- jika anda memerlukan perancangan kapasiti produksi, jalankan penanda aras sendiri pada perkakasan dan rangkaian sasaran anda.
+
+***
+
 ## Mula Pantas
 
 ### Kaedah satu: Docker (disyorkan)

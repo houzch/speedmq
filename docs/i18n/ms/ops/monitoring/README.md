@@ -49,16 +49,29 @@ rule_files:
 
 Peraturan menggunakan `job="speedmq"` secara seragam; jika nama job anda berbeza, sila gantikan di seluruh fail。
 
+> **【Telah diverifikasi（2026-10-10，Docker Desktop mesin tempatan）】** Fail peraturan ini telah dimuatkan dengan Prometheus sebenar（`prom/prometheus:v2.54.1`）:
+> `GET /api/v1/rules` menyenaraikan 10 peraturan dalam kumpulan `speedmq`（nama sepadan satu lawan satu dengan dalam fail），enjin peraturan benar-benar menilai dan mencetuskan。
+> ⚠️ Semasa memuatkan peraturan, secara sampingan mendapati: kernel `/metrics` pernah mempunyai**dua format pendedahan tidak sah**（kedudukan tag `speedmq_build_info`、`# HELP` berulang），
+> akan menyebabkan Prometheus sebenar menolak**seluruh**pengambilan（`up==0`）。Kedua-duanya telah **dibaiki dalam pusingan ini**（lihat §6）；sebelum pembaikan pencetusan `SpeedMQScrapeDown`
+> ialah rantaian kecacatan format, bukan peraturan yang salah tulis。
+
 ### 1.3 Papan pemuka Grafana
 
 `grafana-dashboard.json` diimport melalui **Dashboards → Import → muat naik JSON**，semasa import pilih sumber data Prometheus anda
 （dalam papan pemuka menggunakan pembolehubah `${DS_PROMETHEUS}`）。Pembolehubah templat `DS_PROMETHEUS` akan diberi nilai dalam pemetaan import。
 
-**【Belum diverifikasi】** Mesin ini tidak memulakan instans Grafana, tiada pengesahan import sebenar; JSON tersebut hanya menjalani pengesahan sintaks JSON（14 panel, penghuraian lulus）。
+**【Telah diverifikasi（2026-10-10，Docker Desktop mesin tempatan）】** Papan pemuka Grafana telah diimport dengan Grafana sebenar（`grafana/grafana:11.2.0`）melalui HTTP API:
+bina sumber data Prometheus dahulu, kemudian `POST /api/dashboards/import`（`overwrite=true`），memulangkan `uid=speedmq-overview`；
+`GET /api/dashboards/uid/speedmq-overview` mengambil semula bilangan panel 14，pembolehubah templat `DS_PROMETHEUS` diselesaikan kepada sumber data yang telah dibina。
 
 ---
 
 ## 2. Serpihan sebenar `/metrics` (bukti)
+
+> ⚠️ Sampel dalam bahagian ini diambil daripada instans **sebelum pembaikan**，di mana dua baris format pendedahan **tidak sah**，Prometheus sebenar akan menolak**seluruh**pengambilan（lihat §6）:
+> ① `speedmq_build_info 1{version=...}` —— tag mesti ditulis **sebelum** nilai（tulisan betul `speedmq_build_info{version="..."} 1`）；
+> ② `speedmq_queue_messages_unacknowledged` mempunyai**baris kedua** `# HELP`（sama nama dengan metrik global di atas）。
+> Kedua-duanya telah dibaiki dalam pusingan ini（2026-10-10）；sampel di bawah diberikan dalam **bentuk betul** selepas pembaikan。
 
 Yang berikut ialah **output sebenar** `/metrics` instans `1.0.0` mesin ini（telah membina satu baris gilir durable `persist.q`，
 jadi metrik per-queue dengan tag `vhost`/`queue` muncul）:
@@ -69,7 +82,7 @@ jadi metrik per-queue dengan tag `vhost`/`queue` muncul）:
 speedmq_up 1
 # HELP speedmq_build_info Maklumat binaan
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked Sama ada paras sumber menyekat pengeluar (1=sedang menyekat)
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready Bilangan mesej sedia dalam baris gilir
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged Bilangan mesej belum diakui dalam baris gilir
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers Bilangan pengguna pada baris gilir
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes Anggaran penggunaan memori baris gilir
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **Dua keluarga siri dengan nama sama tetapi kardinaliti berbeza**: `speedmq_queue_messages_unacknowledged` **mempunyai** siri global tanpa tag、
   **dan juga** siri per-queue dengan tag; manakala bahagian "sedia" global dipanggil `speedmq_queue_messages`、per-queue dipanggil
   `speedmq_queue_messages_ready`（nama tidak simetri）。Semasa menulis peraturan gunakan `{queue=~".+"}` untuk jelas hanya mengambil keluarga per-queue。
+  ⚠️ Tetapi `# HELP`/`# TYPE` bagi nama metrik yang sama **boleh diisytiharkan sekali sahaja**: pernah diisytiharkan sekali di dua tempat, dinilai oleh Prometheus sebenar sebagai
+  `second HELP line for metric name` dan **menolak seluruh pengambilan**（dibaiki pusingan ini，lihat §6）。
 - **Skop `speedmq_process_memory_bytes`**: pelaksanaannya ialah `MemStats.HeapInuse + StackInuse`（**memori sedang digunakan**），
   sama skop dengan penentuan paras memori kernel; tetapi teks `# HELP`nya menulis "bilangan bait memori yang dipohon daripada sistem pengendalian"，**teks tidak selaras dengan skop sebenar**，
   gunakan dokumen ini sebagai rujukan。
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. Item lain **belum diverifikasi**
+## 6. Status pengesahan item lain
 
-- Papan pemuka Grafana **belum disahkan melalui import dalam Grafana sebenar**（hanya pengesahan sintaks JSON lulus）。
-- Peraturan amaran **belum disahkan dimuatkan dalam Prometheus/Alertmanager sebenar**（mesin ini tidak memulakan Prometheus）。
-  Tetapi **nama metrik dalam peraturan telah disemak satu per satu terhadap output sebenar `/metrics`**（lihat §2/§3），tiada masalah "nama salah tulis menyebabkan tidak pernah mencetuskan"。
+- **【Telah diverifikasi（2026-10-10，Docker Desktop mesin tempatan）】** Papan pemuka Grafana telah diimport dan disahkan dalam Grafana sebenar 11.2.0（14 panel、`DS_PROMETHEUS` pemetaan berjaya），lihat §1.3。
+- **【Telah diverifikasi + kecacatan telah dibaiki（2026-10-10，Docker Desktop mesin tempatan）】** Peraturan amaran telah dimuatkan dan boleh digunakan dalam Prometheus sebenar（`prom/prometheus:v2.54.1`）:
+  `GET /api/v1/rules` menyenaraikan 10 peraturan kumpulan `speedmq`，enjin peraturan benar-benar menilai dan mencetuskan（lihat §1.2）。
+  - **Pusingan ini melalui pengesahan sebenar menemui dan membetulkan dua kecacatan format pendedahan kernel `/metrics`**（`internal/management/metrics.go`）:
+    ① `speedmq_build_info` menulis tag selepas nilai（`name 1{labels}`），yang betul sepatutnya `name{labels} 1`；
+    ② `speedmq_queue_messages_unacknowledged` telah diisytiharkan semula `# HELP`/`# TYPE` kedua。
+    **Mana-mana satu akan menyebabkan Prometheus sebenar menolak seluruh pengambilan**（`up=0`，`SpeedMQScrapeDown` ialah pencetusan "rantaian kecacatan format"，bukan nama peraturan salah tulis）——
+    sebelum ini tidak pernah ditemui kerana tidak pernah disahkan dengan titik akhir pengambilan sebenar。
+  - **Bukti selepas pembaikan**: `promtool check metrics`（penghurai rasmi Prometheus v2.54.1）terhadap output `/metrics` selepas pembaikan**kod keluar 0、tiada ralat**；
+    dan menambah kes regresi `TestMetricsBuildInfoExpositionFormat`（`speedmq-test/test/unit/management`）untuk mengunci format tersebut。
+  - **Belum dijalankan semula**: selepas pembaikan tidak lagi menjalankan semula "sasaran pengambilan `up`" dengan Prometheus sebenar, jadi di sini hanya mengisytiharkan "output telah lulus penghurai rasmi"，**tidak**mengisytiharkan "sasaran up diukur sebagai 1"。

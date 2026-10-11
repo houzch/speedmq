@@ -49,16 +49,29 @@ rule_files:
 
 ในกฎใช้ `job="speedmq"` เป็นค่าเดียวกันทั้งหมด; ถ้าชื่อ job ของคุณต่างออกไป โปรดแทนทั้งไฟล์
 
+> **【ยืนยันแล้ว（2026-10-10，Docker Desktop เครื่องเดียวกัน）】** ไฟล์กฎนี้ถูกโหลดด้วย Prometheus จริง（`prom/prometheus:v2.54.1`）:
+> `GET /api/v1/rules` แสดงรายการ 10 กฎในกลุ่ม `speedmq`（ชื่อตรงกับในไฟล์แบบหนึ่งต่อหนึ่ง）และเอนจินกฎประเมินและทริกเกอร์จริง
+> ⚠️ ตอนโหลดกฎพบโดยบังเอิญว่า `/metrics` ของ kernel เคยมี**รูปแบบการเปิดเผยที่ไม่ถูกต้องสองจุด**（ตำแหน่งป้าย `speedmq_build_info`、`# HELP` ซ้ำ）
+> ทำให้ Prometheus จริงปฏิเสธการดึงข้อมูล**ทั้งชุด**（`up==0`）ทั้งสองจุดถูก**แก้ไขในรอบนี้**（ดู §6）; ก่อนแก้ การทริกเกอร์ของ `SpeedMQScrapeDown`
+> เป็นการต่อกันเป็นลูกโซ่ของข้อบกพร่องรูปแบบ ไม่ใช่เขียนชื่อกฎผิด
+
 ### 1.3 แดชบอร์ด Grafana
 
 นำเข้า `grafana-dashboard.json` ผ่าน **Dashboards → Import → อัปโหลด JSON** ตอนนำเข้าเลือก data source Prometheus ของคุณ
 （ในแดชบอร์ดอ้างอิงด้วยตัวแปร `${DS_PROMETHEUS}`）ตัวแปรเทมเพลต `DS_PROMETHEUS` จะถูกกำหนดค่าในการแมปตอนนำเข้า
 
-**【ยังไม่ได้ยืนยัน】** เครื่องนี้ยังไม่ได้สตาร์ทอินสแตนซ์ Grafana ยังไม่ได้ตรวจสอบการนำเข้าจริง; JSON นั้นตรวจสอบเพียงไวยากรณ์ JSON（14 แผง แยกวิเคราะห์ผ่าน）
+**【ยืนยันแล้ว（2026-10-10，Docker Desktop เครื่องเดียวกัน）】** นำเข้าแดชบอร์ดด้วย Grafana จริง（`grafana/grafana:11.2.0`）ผ่าน HTTP API:
+สร้าง data source Prometheus ก่อน จากนั้น `POST /api/dashboards/import`（`overwrite=true`）คืนค่า `uid=speedmq-overview`;
+`GET /api/dashboards/uid/speedmq-overview` ดึงจำนวนแผง 14 และตัวแปรเทมเพลต `DS_PROMETHEUS` แปลงเป็น data source ที่สร้างไว้
 
 ---
 
 ## 2. ตัวอย่างจริงของ `/metrics`（หลักฐาน）
+
+> ⚠️ ตัวอย่างในส่วนนี้มาจากอินสแตนซ์**ก่อนการแก้ไข** ซึ่งมีสองบรรทัดที่มีรูปแบบการเปิดเผย**ไม่ถูกต้อง** Prometheus จริงจะปฏิเสธการดึงข้อมูล**ทั้งชุด**เพราะสิ่งนี้（ดู §6）:
+> ① `speedmq_build_info 1{version=...}` —— ป้ายต้องเขียน**ก่อน**ค่า（รูปแบบที่ถูกต้อง `speedmq_build_info{version="..."} 1`）;
+> ② `speedmq_queue_messages_unacknowledged` มี `# HELP`**บรรทัดที่สอง**（ชื่อเดียวกับเมตริกทั่วทั้งระบบด้านบน）
+> ทั้งสองจุดแก้ไขในรอบนี้（2026-10-10）; ตัวอย่างด้านล่างให้ตาม**รูปแบบที่ถูกต้อง**หลังแก้ไข
 
 ต่อไปนี้คือ**output จริง**ของ `/metrics` ของอินสแตนซ์ `1.0.0` บนเครื่องนี้（สร้าง durable queue `persist.q` ไว้หนึ่งคิว
 จึงมีเมตริกระดับ per-queue ที่มีป้าย `vhost`/`queue` ปรากฏขึ้น）:
@@ -69,7 +82,7 @@ rule_files:
 speedmq_up 1
 # HELP speedmq_build_info 构建信息
 # TYPE speedmq_build_info gauge
-speedmq_build_info 1{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"}
+speedmq_build_info{version="1.0.0",node="speedmq@DESKTOP-HBDCVPA"} 1
 # HELP speedmq_resource_blocked 资源水位是否阻塞了生产者（1=阻塞中）
 # TYPE speedmq_resource_blocked gauge
 speedmq_resource_blocked 0
@@ -111,8 +124,6 @@ speedmq_memory_high_watermark 0.4
 speedmq_disk_free_limit_bytes 52428800
 # HELP speedmq_queue_messages_ready 队列中的就绪消息数
 # TYPE speedmq_queue_messages_ready gauge
-# HELP speedmq_queue_messages_unacknowledged 队列中的未确认消息数
-# TYPE speedmq_queue_messages_unacknowledged gauge
 # HELP speedmq_queue_consumers 队列上的消费者数
 # TYPE speedmq_queue_consumers gauge
 # HELP speedmq_queue_memory_bytes 队列内存占用估算值
@@ -176,6 +187,8 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 - **สองตระกูลอนุกรมที่ชื่อเดียวกันแต่ความหลากหลายของป้ายต่างกัน**: `speedmq_queue_messages_unacknowledged` **ทั้ง**มีอนุกรมทั่วทั้งระบบที่ไม่มีป้าย
   **และ**มีอนุกรม per-queue ที่มีป้าย; ส่วนฝั่ง「พร้อมใช้」ทั่วทั้งระบบชื่อ `speedmq_queue_messages`、per-queue ชื่อ
   `speedmq_queue_messages_ready`（ชื่อไม่สมมาตรกัน）เวลเขียนกฎให้ใช้ `{queue=~".+"}` ระบุให้ชัดว่าเอาเฉพาะตระกูล per-queue
+  ⚠️ แต่ `# HELP`/`# TYPE` ของชื่อเมตริกเดียวกัน**ประกาศได้ครั้งเดียวเท่านั้น**: เคยประกาศครั้งละหนึ่งในสองแห่ง Prometheus จริงตัดสินว่าเป็น
+  `second HELP line for metric name` และ**ปฏิเสธการดึงข้อมูลทั้งชุด**（แก้ไขแล้วในรอบนี้ ดู §6）
 - **หลักเกณฑ์ของ `speedmq_process_memory_bytes`**: การทำงานจริงคือ `MemStats.HeapInuse + StackInuse`（**หน่วยความจำที่กำลังใช้**）
   ใช้หลักเกณฑ์เดียวกับการตัดสินระดับน้ำหน่วยความจำของ kernel; แต่ข้อความ `# HELP` ของมันเขียนว่า「ไบต์หน่วยความจำที่ร้องขอจากระบบปฏิบัติการ」**ข้อความไม่ตรงกับหลักเกณฑ์จริง**
   ให้ยึดเอกสารนี้เป็นหลัก
@@ -219,8 +232,16 @@ speedmq_plugin_up{name="mqtt",state="enabled"} 1
 
 ---
 
-## 6. รายการ**ยังไม่ได้ยืนยัน**อื่น ๆ
+## 6. สถานะการยืนยันของรายการอื่น
 
-- แดชบอร์ด Grafana **ยังไม่ได้ตรวจสอบการนำเข้าใน Grafana จริง**（ตรวจสอบผ่านเฉพาะไวยากรณ์ JSON）
-- กฎการแจ้งเตือน**ยังไม่ได้ตรวจสอบการโหลดใน Prometheus/Alertmanager จริง**（เครื่องนี้ยังไม่ได้สตาร์ท Prometheus）
-  แต่**ชื่อเมตริกในกฎได้เทียบทีละรายการกับ output จริงของ `/metrics` แล้ว**（ดู §2/§3）จึงไม่มีปัญหา「เขียนชื่อผิดจนไม่ทริกเกอร์ตลอดกาล」
+- **【ยืนยันแล้ว（2026-10-10，Docker Desktop เครื่องเดียวกัน）】** แดชบอร์ด Grafana นำเข้าและยืนยันใน Grafana จริง 11.2.0 แล้ว（14 แผง、แมป `DS_PROMETHEUS` สำเร็จ）ดู §1.3
+- **【ยืนยันแล้ว + แก้ข้อบกพร่องแล้ว（2026-10-10，Docker Desktop เครื่องเดียวกัน）】** กฎการแจ้งเตือนโหลดและใช้งานได้ใน Prometheus จริง（`prom/prometheus:v2.54.1`）:
+  `GET /api/v1/rules` แสดงรายการ 10 กฎของกลุ่ม `speedmq` เอนจินกฎประเมินและทริกเกอร์จริง（ดู §1.2）
+  - **รอบนี้จากการยืนยันจริงพบและแก้ไขข้อบกพร่องรูปแบบการเปิดเผย `/metrics` ของ kernel สองจุด**（`internal/management/metrics.go`）:
+    ① `speedmq_build_info` เขียนป้ายไว้หลังค่า（`name 1{labels}`）ที่ถูกต้องควรเป็น `name{labels} 1`;
+    ② `speedmq_queue_messages_unacknowledged` ถูกประกาศ `# HELP`/`# TYPE` บรรทัดที่สองซ้ำ
+    **จุดใดจุดหนึ่งจะทำให้ Prometheus จริงปฏิเสธการดึงข้อมูลทั้งชุด**（`up=0`、`SpeedMQScrapeDown` ทริกเกอร์จาก "การต่อกันเป็นลูกโซ่ของข้อบกพร่องรูปแบบ" ไม่ใช่ชื่อกฎเขียนผิด）——
+    ก่อนหน้านี้ไม่เคยถูกพบเพราะไม่เคยตรวจสอบด้วยปลายทางการดึงข้อมูลจริง
+  - **หลักฐานหลังแก้ไข**: `promtool check metrics`（ตัวแยกวิเคราะห์ Prometheus ทางการ v2.54.1）สำหรับ output `/metrics` หลังแก้ไข**รหัสออก 0、ไม่มีข้อผิดพลาด**;
+    และเพิ่มกรณีทดสอบถดถอย `TestMetricsBuildInfoExpositionFormat`（`speedmq-test/test/unit/management`）ล็อกรูปแบบนั้น
+  - **ยังไม่รันซ้ำ**: หลังแก้ไขยังไม่ได้รัน "เป้าหมายการดึง `up`" ซ้ำด้วย Prometheus จริง ดังนั้นที่นี่ประกาศเพียง "output ผ่านตัวแยกวิเคราะห์ทางการ" **ไม่**ประกาศ "เป้าหมาย up วัดได้เป็น 1"

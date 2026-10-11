@@ -71,7 +71,7 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   ```
 - [ ] `administrator` 标签仅授予极少数运维账号
 
-### A-4. `remote_access`：限制账号仅本机登录 【未验证（同机无法模拟远端来源）】
+### A-4. `remote_access`：限制账号仅本机登录 【已验证（2026-10-10，本机 + Docker 容器）】
 
 - **为什么**：对齐 RabbitMQ，内置 `guest` 默认仅允许本机登录；对外部署时应确保特权账号的来源受限。
 - **怎么做 / 口径（重要限制）**：
@@ -79,8 +79,12 @@ curl -u guest:guest -X PUT http://127.0.0.1:15672/api/permissions/%2F/appuser \
   - **通过管理 API / `speedmqctl` 创建的账号一律 `remote_access=true`**（允许任意来源登录）——
     依据 `internal/broker/observe.go` 的 `UpsertUser` 注释与实测 `meta/state.json` 中
     `"remote_access":true`。也就是说 **API 目前无法把某个账号限制为仅本机**。
-- **怎么验证**：从**另一台主机**（非 `127.0.0.1`）用该账号连接，应被 403；本机连接应成功。
-  **【未验证】**：本机环境无法构造真实远端来源，未实测。
+- **怎么验证**：从**非 `127.0.0.1` 的来源**用该账号连接，应被 403；本机（回环）连接应成功。
+  **【已验证（2026-10-10，本机 + Docker 容器）】** 本机回环 `127.0.0.1:5676` 下 `localonly`（`remote_access:false`）登录**成功**；
+  在 `python:3.12-slim` 容器内经**宿主 LAN IP** 连接（`localonly@192.168.124.2:5676`）被 **403**
+  `ACCESS_REFUSED - user "localonly" can only connect via localhost`，broker 日志记录 `认证失败 ... remote=192.168.124.2:...`；
+  `remoteok`（`remote_access:true`）同一来源登录**成功**；经管理 API 新建的 `apiuser` 同一来源也**成功**
+  （印证"API 建号默认放开远端"：其首次尝试被拒的是 **vhost 权限**那条 `ACCESS_REFUSED`，补权限后即 `LOGIN OK`）。
 - [ ] 特权账号的来源限制已按上述口径评估（注意 API 建号默认放开远端）
 
 ---
@@ -226,7 +230,7 @@ services:
 - [ ] A-1 默认账号已改/已删 【已验证流程】
 - [ ] A-2 业务账号最小权限（正则），无管理员标签 【已验证 403 路径】
 - [ ] A-3 `administrator` 标签仅授予运维账号 【已验证隐式权限口径】
-- [ ] A-4 特权账号来源限制已评估（注意 API 建号默认放开远端）
+- [ ] A-4 特权账号来源限制已评估（注意 API 建号默认放开远端）【已验证 remote_access 生效】
 - [ ] B-1 对外端口启用 TLS，配错即拒绝启动 【已验证】
 - [ ] B-2 `min_version` ≥ 1.2 【已验证】
 - [ ] B-3 需要 mTLS 的端口配 `require_and_verify` + `ca_file`

@@ -60,7 +60,7 @@ data/
 **Attention (deux points contre-intuitifs, tous deux fondés sur le code/mesures)** :
 
 - En mode cluster, les fichiers persistants Raft sont **placés directement sous `meta/`** (`raft.state` / `raft.log` / `snapshot.json`) ;
-  il **n'existe pas de sous-répertoire `meta/raft/`**. Références : les constantes de nom de fichier de `internal/raft/log.go` + `Dir: filepath.Join(b.cfg.DataDir, "meta")` dans `internal/broker/cluster.go`. **【agencement de cluster non mesuré】** (seule une instance autonome a été exécutée sur cette machine).
+  il **n'existe pas de sous-répertoire `meta/raft/`**. Références : les constantes de nom de fichier de `internal/raft/log.go` + `Dir: filepath.Join(b.cfg.DataDir, "meta")` dans `internal/broker/cluster.go`. **【vérifié（2026-10-10, cluster à 3 nœuds Docker Desktop local）】** —— Le contenu de la sauvegarde du volume d'un nœud du cluster montre directement `meta/raft.log`, `meta/raft.state`, `meta/*.seeded` (aucun sous-répertoire `meta/raft/` observé).
 - Les noms de répertoires **ne sont pas les noms bruts vhost / file**, mais un encodage `store.SafeDirName` : préfixe `q_` ajouté, les octets hors `[A-Za-z0-9._-]` échappés en `%XX`.
   Mesuré : vhost `/` → répertoire `q_%2F`, file `persist.q` → répertoire `q_persist.q`.
   Cette conception vise à éviter la traversée de chemin et les noms de périphériques réservés de Windows (`con`/`nul` etc.).
@@ -78,6 +78,8 @@ data/
   Mesuré (voir §6 de `backup-restore.md`) : après arrêt puis redémarrage du processus, les 5 messages persistants de la file durable sont **tous restaurés**,
   et le log affiche `已从磁盘恢复队列消息 ... messages=5`.
 
+**【vérifié（2026-10-10, machine locale）】** La lecture entre versions majeures a été mesurée : les données d'une file durable écrites avec le tag `v1.1.0` sont restaurées telles quelles sous `1.1.05` (commandes et sortie, voir §5).
+
 ### 4.2 Portée des `vhosts` / `users` dans la configuration (le piège le plus courant lors d'une mise à niveau)
 
 - Les deux **ne prennent effet qu'au premier amorçage** : au premier démarrage, les vhosts/users de la configuration sont écrits dans les métadonnées et les fichiers marqueurs
@@ -86,6 +88,8 @@ data/
   utilisez l'API d'administration ou `speedmqctl`.
 - Inversement, la mise à niveau **n'**écrase **pas** les comptes existants avec la configuration : un mot de passe modifié pendant l'exécution n'est pas ramené à l'ancienne valeur de la configuration par un redémarrage,
   et un compte supprimé pendant l'exécution ne réapparaît pas. Références : la logique des marqueurs d'amorçage de `cluster.go` ; README M8-4 / M8-7.
+
+**【vérifié（2026-10-10, machine locale）】** Les modifications à chaud ne sont effectivement pas écrasées par la configuration : avant la mise à niveau, le mot de passe de `guest` a été changé en `rotated` via l'API d'administration ; après un redémarrage avec `1.1.05` + le même `data_dir`, `guest/guest` (l'ancien mot de passe de la configuration) renvoie **401** et `guest/rotated` renvoie **200**.
 
 ### 4.3 Rotation des segments et récupération d'espace disque
 
@@ -96,7 +100,7 @@ data/
 
 ## 5. Mise à niveau du binaire (machine physique)
 
-> Aucun **exercice de changement de version sur machine réelle** n'a été effectué (le dépôt ne contient actuellement qu'une version `1.0.0`, sans ancien binaire à mettre à niveau). Les étapes ci-dessous constituent une **validation par rejeu de la même version + une procédure générique** des capacités déjà présentes dans ce dépôt ; les parties inter-versions sont marquées **【non vérifié】**.
+> **【vérifié（2026-10-10, machine locale）】** Exercice réel entre versions majeures : l'ancien binaire construit avec le tag `v1.1.0` a écrit un exchange/une file/des bindings durable + 5 messages persistants + vhost/compte/permissions/politiques et a modifié le mot de passe à chaud ; après arrêt du processus, redémarrage avec le binaire actuel `1.1.05` + **le même `data_dir` + le même port** —— le processus démarre normalement, les objets et le nombre de messages de `/api/queues` concordent, un vrai client AMQP récupère les 5 messages persistants, et `/metrics` renvoie `speedmq_build_info{version="1.1.05"}`. Les étapes ci-dessous restent une procédure générique applicable à toute version adjacente ; **rétrogradation** voir §8.
 
 ### 5.1 Étapes
 
@@ -159,7 +163,11 @@ docker compose logs -f --tail 100
 > ```
 
 La persistance des données repose sur le **volume nommé** `speedmq-data` de compose ; la reconstruction du conteneur ne perd pas les données (véritable écriture sur disque depuis M4).
-Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela équivaut à sauvegarder `/var/lib/speedmq` (voir §3.2 de `backup-restore.md`). **【mise à niveau d'image non mesurée】** (Docker n'a pas été exécuté sur cette machine).
+Si vous devez sauvegarder le contenu du volume avant la mise à niveau, cela équivaut à sauvegarder `/var/lib/speedmq` (voir §3.2 de `backup-restore.md`).
+
+> **【vérifié（2026-10-10, Docker Desktop local）】** Un exercice réel de mise à niveau d'image a été effectué : construction locale de l'ancienne image `speedmq:1.1.0-old` (git tag `v1.1.0`) et de la nouvelle `speedmq:1.1.05-new` (code source actuel) ; démarrage de l'ancienne image avec un compose mono-nœud → création de la file durable `persist.q` et publication de 5 messages persistants (`delivery_mode=2`) → `docker compose down` (**sans `-v`**, le volume nommé `speedmq-data` étant conservé) → après passage du tag image du compose à la nouvelle image, `docker compose up -d`.
+> Résultat : le nouveau conteneur démarre normalement, les logs de démarrage affichent `已从磁盘恢复队列消息 ... queue=persist.q messages=5`, `/metrics` renvoie `speedmq_build_info{version="1.1.05"}`, `queue_totals.messages=5` de `/api/overview` et `messages=5` de la file `persist.q` concordent avant et après la mise à niveau, et un vrai client AMQP (`rabbitmq/amqp091-go`) récupère un à un les 5 messages persistants (`deliveryMode=2`).
+> Note : `v1.1.0` est l'image de la marque `speedmq` d'avant le changement de nom (binaire `speedmqd`, métrique `speedmq_build_info`, répertoire de données par défaut `/var/lib/speedmq`), de nomenclature différente de la version actuelle ; dans l'exercice, la configuration `data_dir=/var/lib/speedmq` fait foi et le propriétaire du volume nommé a été préconfiguré (l'ancienne image n'a pas ce chemin inscriptible). Cela n'affecte pas la conclusion « recréer le conteneur en changeant le tag ne perd pas les données du volume nommé ».
 
 ---
 
@@ -191,8 +199,15 @@ La plateforme ne fournit pas de « mise à niveau progressive en un clic » ; il
    pendant la mise à niveau, évitez d'appeler simultanément `add_member` / `remove_member`.
 5. Après la mise à niveau, vérifier que les `object_totals` de `GET /api/cluster` correspondent à ceux d'avant la mise à niveau.
 
-> **【non vérifié】** Aucun exercice de mise à niveau progressive sur un vrai cluster n'a été réalisé sur cette machine (ni le chemin cluster ni le conteneur n'ont été exécutés) ; l'ordre ci-dessus provient des contraintes générales des intergiciels de messagerie
-> et de Raft ainsi que des faits d'implémentation de `pause_minority` / du changement de membres dans ce dépôt ; ce n'est pas une conclusion mesurée sur cette machine.
+> **【vérifié（2026-10-10, cluster à 3 nœuds Docker Desktop local）】** Un exercice réel de mise à niveau progressive **inter-versions** d'un vrai cluster a été effectué : la base était `speedmq:1.1.0-old` construit localement (git tag `v1.1.0`), nœud par nœud (n1 → n2 → n3, un à la fois : arrêt, sauvegarde de son volume nommé, échange d'image puis démarrage) jusqu'à l'actuel `1.1.05` (construit localement `speedmq:1.1.05-new`, compose basculant l'image via un override par nœud). Tout au long de l'opération, le cluster a toujours conservé un leader et la majorité —— lors de l'arrêt du leader courant, un nouveau leader a été élu en environ 0,6 s, `pause_minority` n'a pas déclenché de suspension, et aucune interruption externe n'est survenue pendant l'arrêt ; après la mise à niveau, les `object_totals` de `GET /api/cluster` concordent avec ceux d'avant (`queues:1`), le décompte des 25 messages persistants de la file quorum à 3 répliques `qroll` reste inchangé et ceux-ci restent relisibles un à un, et après publication de 5 nouveaux messages les 30 au total sont récupérables.
+> L'ordre ci-dessus reste valable selon les contraintes générales de Raft ; cet exercice couvre le scénario à 3 nœuds. **【vérifié（2026-10-10, Docker Desktop local）2 nœuds : en arrêter 1 fait déjà perdre la majorité】** Un cluster minimal à 2 nœuds a en outre été créé (n1/n2, dont les `peers` ne contiennent que ces deux, `partition_policy=pause_minority`) et mesuré : les deux nœuds en ligne, `GET /api/cluster` vaut `has_quorum=true / paused=false` (n1 leader, n2 follower) ; après `docker stop` de n2, n1 passe en environ 2 s à `has_quorum=false / paused=true` —— autrement dit, l'arrêt de 1 membre votant fait perdre la majorité et `pause_minority` suspend le service, **ce qui confirme que 2 nœuds n'offrent pas de capacité de mise à niveau progressive** ; après `docker start` pour restaurer n2, n1 revient en environ 2 s à `has_quorum=true / paused=false` (service rétabli automatiquement).
+
+> **【vérifié（2026-10-11, cluster à 3 nœuds Docker Desktop local）】La mise à niveau progressive sous partition réseau a été mesurée** (inter-versions `v1.1.0` → `1.1.05` ; la partition utilisait une topologie à double réseau : le RPC Raft inter-nœuds ne passe que par `cluster-net` avec des IP statiques, le trafic clients/interface de gestion passe par `client-net`, et `docker network disconnect/connect` bascule la partition) :
+> - **Follower partitionné** : le côté majoritaire a conservé le quorum pendant toute la partition, a publié/consommé normalement et a mené à bien l'« arrêt → échange d'image → démarrage → rattrapage » d'un nœud majoritaire pendant que la partition persistait ; le cluster en versions mixtes (1.1.0 + 1.1.05) est resté opérationnel. Après rétablissement de la partition, le nœud isolé (ancienne version) a rejoint le cluster et rattrapé son retard ; la réconciliation des messages par ensemble d'ID uniques a donné 35/35 sans perte.
+> - **Leader partitionné** : la majorité a élu un nouveau leader en environ **630 ms** ; l'ancien leader isolé a conservé `role=leader` mais avec `has_quorum=false / paused=true` (`pause_minority` en vigueur, sans élévation proactive de son mandat) ; la mise à niveau d'un autre nœud du côté majoritaire pendant la partition a réussi ; après rétablissement, l'ancien leader a rejoint le cluster sans split-brain ni divergence de données.
+> - **Comportement attendu sans PreVote (consigné fidèlement)** : le follower isolé a immédiatement mené des campagnes électorales répétées, son mandat augmentant d'environ +2 toutes les 2 s (les deux groupes Raft, métadonnées et file, s'élevant en alternance) ; à l'instant du rétablissement, il s'est **emparé du leadership** avec son mandat plus élevé (élu en 1,4 s lors de l'exercice) — une perturbation par changement de leader, mais aucun problème de correction.
+> - **Deux pièges opérationnels** : ① si `peers` utilise des noms d'hôte et que les conteneurs sont aussi rattachés à un second réseau accessible, le trafic Raft fait un détour et provoque une « fausse partition » (le nœud isolé affichait encore `has_quorum=true` après plus d'une minute) — le RPC inter-nœuds ne doit passer que par un seul réseau (`peers` pointant directement vers les IP statiques de ce réseau) ; ② au rétablissement, `docker network connect` doit porter `--ip <IP d'origine>`, sinon le nœud obtient une nouvelle IP tandis que la majorité continue d'appeler l'ancienne adresse, et le nœud isolé — porteur d'un journal en retard — mène des campagnes répétées avec un mandat gonflé (lors de l'exercice, cela a fait passer le term du cluster de 320 à 488 et le commit des métadonnées de 13 à 97), et un état transitoire peut apparaître où le leader affiche `quorum=true` tout en étant brièvement `paused=true`.
+> - Pendant la partition, l'API de gestion du côté minoritaire restait lisible (pratique pour l'observation), tandis que la publication AMQP était rejetée (`pause_minority` en vigueur).
 
 ---
 
@@ -205,5 +220,5 @@ La plateforme ne fournit pas de « mise à niveau progressive en un clic » ; il
 - **Mise à niveau à chaud des plugins/protocoles** : le plugin est compilé avec le noyau (forme A) ou lancé via `spawn` selon la configuration (forme B) ;
   mettre à niveau le noyau = redémarrer le processus ; il **n'**existe **aucun** mécanisme de remplacement à chaud du binaire sur place.
 - **Migration sur place du moteur de stockage** : la rotation des segments/compression de l'index est un comportement d'arrière-plan en cours d'exécution ; il **n'**existe **aucune** commande distincte de « migration/compression de données ».
-- **Mise à niveau de cluster en conditions réseau réelles** : ce dépôt n'a réalisé qu'un chaos à échelle réduite (kill au niveau du processus), **sans** exercice de mise à niveau sous partition réseau ni disque plein.
+- **Mise à niveau de cluster avec disque plein** : **non vérifiée**. (La mise à niveau progressive sous partition réseau a été mesurée le 2026-10-11 ; voir la note en fin de §7.)
 - Ce document **ne contient** aucune validation de transfert de données entre SpeedMQ et d'autres brokers (RabbitMQ).

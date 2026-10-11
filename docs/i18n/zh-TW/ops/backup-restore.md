@@ -1,7 +1,10 @@
 # SpeedMQ 備份與還原
 
 > 本文中的「實測」結論全部來自 **Windows + PowerShell 5.1** 上的一次真實演練（臨時 `data_dir` 與臨時連接埠）。
-> 演練命令與關鍵輸出原樣貼在 §6。**【未驗證】** 的部分會明確標註（叢集備份/還原、Docker 磁碟區備份等）。
+> 演練命令與關鍵輸出原樣貼在 §6。**【未驗證】** 的部分會明確標註（如真·物理機斷電）。
+
+> **【已驗證（2026-10-11，本機 Docker Desktop 3 節點叢集）】** 強制終止處理程序（`docker kill`）與還原過程並行寫入已實測，
+> 記錄見 §6.2 / §6.3；§2.3 的「斷電」口徑與 §7 的驗證狀態清單已同步更新。
 
 ---
 
@@ -45,7 +48,12 @@
   （不 fsync），publisher confirm 也在此之後返回。
 - 實測：發布持久訊息後**立即**查段檔案大小，已經能看到資料（`t=0ms seg=832`）；即「可被 OS 看到的位元組」與 confirm 基本同步。
 - **注意**：這只說明「到了 OS 緩衝」，**強制終止處理程序不會遺失**（處理程序被終止不會遺失 OS 緩衝），但**斷電會遺失**。
-  要「收到 confirm 即已 fsync 落盤」，請把 `storage.fsync` 改成 `batch` / `always`。**【斷電情境未實測】**
+  要「收到 confirm 即已 fsync 落盤」，請把 `storage.fsync` 改成 `batch` / `always`。
+  **【已驗證（2026-10-11，本機 Docker Desktop 3 節點叢集）】** 寫入中以 `docker kill`（SIGKILL）強制終止節點，實測兩檔均不遺失已 confirm 訊息：
+  `fsync: os` 終止 follower（5 萬筆全部 confirm，對帳 missing=0）、`fsync: always` 終止仲裁佇列 leader（20 萬筆全部 confirm，
+  missing=0；另有 1,355 筆已落盤未 confirm 的訊息被重新投遞，at-least-once 語意允許，消費端依訊息 ID 去重即冪等）。
+  加分項：預設檔下發布中以 `wsl --shutdown` 急停整個 Docker VM（近似整機斷電遺失 OS 緩衝），還原後 69,669 筆已 confirm 訊息
+  逐 ID 對帳 missing=0。**仍未驗證**：真·物理機斷電（宿主電源遺失、磁碟快取層），本機無法模擬。
 
 ---
 
@@ -71,7 +79,9 @@ Get-Content "C:\backup\speedmq-...\meta\state.json" -Raw | ConvertFrom-Json | Se
 - **每個節點各自備份自己的 `data_dir`**（中繼資料經 Raft 複製到全體，訊息資料在 Owner 節點，仲裁佇列副本在各自 Raft 目錄）。
 - 停機順序：**一次只停一個節點**；不要同時停多個投票成員（見 `upgrade.md` §7.2）。
 - 要得到**全叢集一致快照**，需依序停止全部節點後各自複製；生產環境中更常見的是「逐節點停/複製/啟動」。
-- **【未驗證】** 本機未做真實叢集備份/還原演練。
+- **【已驗證（2026-10-10，本機 Docker Desktop 3 節點叢集）】** 在 3 節點 compose 叢集上逐節點「停/複製/啟動」：每節點用一次性 alpine 容器打包其具名磁碟區
+  （`docker run --rm -v <磁碟區>:/data -v <宿主機目錄>:/backup alpine tar czf ...`），包內含 `meta/raft.log`、`meta/raft.state`、`meta/*.seeded`、`quorum/...`；
+  還原後該節點能作為既有成員重新加入並追上（見 §4.2，證據同 `upgrade.md` §7.2）。
 
 ### 3.3 Docker（具名磁碟區）
 
@@ -81,7 +91,8 @@ docker compose down
 docker run --rm -v speedmq-data:/data -v ${PWD}:/backup alpine `
   tar czf /backup/speedmq-data.tar.gz -C /data .
 ```
-> **【未驗證】**（本機未執行 Docker）。
+> **【已驗證（2026-10-10，本機 Docker Desktop）】** 已在 3 節點叢集的具名磁碟區上真實執行該命令（包內含 `meta/`、`quorum/`），
+> 並據此完成單節點磁碟區還原演練（見 §4.2）。
 
 ---
 
@@ -112,7 +123,8 @@ Copy-Item -Recurse -Force "C:\backup\speedmq-YYYYMMDD-HHMMSS" "C:\speedmq\data"
 
 - 還原單一節點：依 §4.1 還原該節點 `data_dir` 後啟動，它會以既有成員身分重新加入並追上 Raft 日誌。
 - 還原整個叢集：**先還原並啟動多數派節點**（≥ 半數投票成員），叢集才能選出 leader；再還原其餘節點。
-- **【未驗證】** 叢集還原未實測。
+- **【已驗證（2026-10-10，本機 Docker Desktop 3 節點叢集）】** 實測「停 n3 → 清空其磁碟區 → 用 §3.3 的備份覆蓋 → 重啟」：
+  n3 以 follower 重新加入並追上 leader（`commit_index == last_applied`），仲裁佇列訊息數與成員表保持不變。
 
 ---
 
@@ -251,6 +263,53 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 ```
 **無任何 WARN**。說明 WARN 只出現在「索引裡還留著已結算記錄」的情境（見 §7）。
 
+### 6.2 寫入中強制終止節點（`docker kill`，2026-10-11）
+
+3 節點叢集（`partition_policy=pause_minority`），3 副本仲裁佇列 `pwr.q`；用戶端開啟 publisher confirms、每筆訊息帶唯一 ID、已 confirm ID 落盤對帳。
+
+**輪 1（`fsync: os`，終止 follower n3）**：發布 50,000 筆進行中 `docker kill pwr-n3`：
+
+```
+DONE published=50000 confirmed=50000 nacked=0 retries=0 elapsed=28.267s   # 杀后速率无可见变化
+docker start pwr-n3 → 三节点 commit_index==last_applied==12，has_quorum=true
+DRAIN total=50000 unique=50000 duplicates=0
+confirmed_unique=50000 consumed_unique=50000 missing=0 extra=0
+```
+
+**輪 2（`fsync: always`，終止仲裁 leader n1）**：發布 200,000 筆進行中 `docker kill pwr-n1`：
+
+```
+DONE published=200000 confirmed=200000 nacked=3843 retries=3843 elapsed=2m7.494s
+# nack 来自转发到已死 leader 的发布（"与节点 n1 通信失败"），客户端重投全部成功
+docker start pwr-n1 → 三节点 commit_index==last_applied==16
+DRAIN 对账：confirmed_unique=436785 consumed_unique=438140 missing=0 extra=1355
+# extra=已落盘但 confirm 未返回的消息，at-least-once 允许，按 ID 去重即幂等
+```
+
+**輪 1b（`fsync: os`，`wsl --shutdown` 急停整個 Docker VM，近似整機斷電）**：發布進行中急停，宿主已 confirm 記錄 69,669 行；
+VM 重建、叢集復原後：
+
+```
+{"name":"pwr.q","messages":69669,"messages_ready":69669}
+DRAIN total=69669 unique=69669 duplicates=0 ；missing=0 extra=0
+```
+
+注意：`wsl --shutdown` 只近似「遺失 OS 緩衝」，**不等價物理機斷電**（宿主電源遺失、磁碟快取層未涵蓋，仍為未驗證）。
+
+### 6.3 還原過程中的並行寫入（2026-10-11）
+
+`fsync: always` 叢集上：`docker stop` follower n2 → 積壓發布 50,000 筆（全部 confirm）→ `docker start pwr-n2`，
+**同一秒起**繼續向多數派節點發布 20,000 筆：
+
+```
+DONE published=20000 confirmed=20000 nacked=0 retries=0 elapsed=5.978s   # 约 3,300~6,400 条/秒
+n2 日志：msg=已安装快照 component=broker index=4096 term=4              # 约 4 秒经快照追平
+三节点 commit_index==last_applied==20；queue_totals.messages=82000       # 与四批发布总数精确相符
+DRAIN total=82000 unique=80000 missing=0 extra=0                          # 2,000 重复为同 ID 重发批次的预期重复
+```
+
+結論：追上期間並行寫入不遺失、不錯亂，計數精確。
+
 ---
 
 ## 7. 已知問題與限制（如實登錄）
@@ -265,4 +324,5 @@ level=INFO msg=队列已恢复持久化消息 component=broker vhost=/ queue=cle
 3. **`fsync: os` 不保證斷電不遺失**：要「confirm 即落盤」請用 `batch` / `always`。
 4. **密碼為明文**：`meta/state.json` 裡的使用者密碼是**明文**（實測可見 `"password":"drillpass"`）——
    備份檔案因此**必須視為敏感資料處理**（存取控制、加密存放）。詳見 `security-baseline.md`。
-5. **【未驗證】** 叢集備份/還原、Docker 磁碟區備份/還原、斷電情境、還原過程中的並行寫入。
+5. **【驗證狀態】** 強制終止處理程序（含寫入中終止仲裁 leader，`fsync: os`/`always` 兩檔）與還原過程中的並行寫入（追上期間以約 4,000~6,000 筆/秒繼續發布，4 秒快照追上，計數精確、對帳 missing=0）—— **【已驗證（2026-10-11，本機 Docker Desktop 3 節點叢集）】**；`wsl --shutdown` 急停整個 Docker VM（近似整機斷電）單次樣本已 confirm 訊息零遺失，但**真·物理機斷電仍未驗證**；叢集逐節點備份/還原、Docker 具名磁碟區備份/還原 —— **【已驗證（2026-10-10，本機 Docker Desktop 3 節點叢集）】**（見 §3.2 / §3.3 / §4.2）。
+6. **附帶觀察（2026-10-11 演練中如實記錄，非阻斷）**：① 強制終止仲裁 leader 後，追隨者的發布轉發路徑曾持續指向已死 leader 約 76 秒（期間新發布被 nack、用戶端重投成功，無已 confirm 訊息遺失）——可用性有抖動窗口；② 大佇列（43.8 萬筆）一次排空觀察到約 153 倍重投放大（at-least-once 語意成立，最終正確清零）；③ 大佇列追上期間經 follower 起消費者偶發 `i/o timeout`，直連 leader 正常。
